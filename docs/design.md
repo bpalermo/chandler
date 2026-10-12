@@ -248,8 +248,10 @@ State lives under a hostPath so mounts and cache survive driver restarts:
 
 ```
 /var/lib/chandler/
-  blobs/sha256/<aa>/<digest>          node cache: content-addressed, node-wide
-  index.db                            alias → cache_key → versions → manifest
+  cache/                              node cache, node-wide
+    blobs/sha256/<aa>/<digest>        file contents, content-addressed
+    manifests/<digest>.json           one bundle: its files and the blob of each
+    index.json                        canonical URI → versions held, newest first
   volumes/<volume-id>/                CSI volume ID; kubelet derives it from pod UID and volume name
     meta.json                         sources, applied versions (for resubscribe)
     data/                             bind-mounted read-only into the pod
@@ -744,8 +746,8 @@ What exists today, against the design above.
 
 | Area | Built | Not built yet |
 |---|---|---|
-| Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for the version a driver already wrote, full resync on reconnect | Resend after 60s without an answer, max connection age, `AppReport` |
-| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart | Node cache (`blobs/`, `index.db`), `failurePolicy: UseCached` (parsed, behaves as `Fail`), `no_store` tmpfs, application acknowledgement |
+| Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect | Resend after 60s without an answer, max connection age, `AppReport` |
+| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | Hardlinking files from the cache (they are copied), `no_store` tmpfs (such content skips the cache but is written to the volume's disk), application acknowledgement |
 | Server | One watch per canonical URI shared by its subscriptions, envelope checks, provider reconnect with `known_revision`, serving the held version through a provider outage | Persistent cache and its quotas, aliases and `vary_on`, freshness, negative caching, peer sync, rollouts, authorisation |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
 | Security | None: connections are plaintext and unauthenticated, and any pod may read any URI | Everything in section 9 |

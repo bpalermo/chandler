@@ -23,7 +23,7 @@ test:e2e --test_tag_filters=e2e
 test:e2e --nocache_test_results
 test:e2e --test_env=KUBECONFIG
 test:e2e --test_env=PATH
-test:e2e --test_timeout=600
+test:e2e --test_timeout=1500
 
 # CI: the lockfile must already be up to date.
 common:ci --lockfile_mode=error

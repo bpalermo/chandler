@@ -21,8 +21,9 @@ const (
 
 	// FailurePolicyFail fails the mount when a source has no answer.
 	FailurePolicyFail = "Fail"
-	// FailurePolicyUseCached mounts from the node cache when the server is
-	// unreachable. There is no node cache yet, so it behaves as Fail.
+	// FailurePolicyUseCached mounts from the node cache when the server
+	// cannot be reached or has no version, and fails only if the node holds
+	// nothing for a source.
 	FailurePolicyUseCached = "UseCached"
 
 	maxSources = 32

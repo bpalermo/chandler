@@ -26,6 +26,11 @@ const (
 // consumerPod is a pod that mounts a Chandler inline volume with the given
 // sources, the YAML list a pod author writes.
 func consumerPod(name string, readOnly bool, sources string) string {
+	return consumerPodWithPolicy(name, readOnly, sources, "Fail")
+}
+
+// consumerPodWithPolicy is consumerPod with a failurePolicy.
+func consumerPodWithPolicy(name string, readOnly bool, sources, failurePolicy string) string {
 	quoted, err := json.Marshal(sources)
 	if err != nil {
 		panic(err)
@@ -52,7 +57,8 @@ spec:
         readOnly: %t
         volumeAttributes:
           sources: %s
-`, name, busybox, mountPath, driverName, readOnly, quoted)
+          failurePolicy: %s
+`, name, busybox, mountPath, driverName, readOnly, quoted, failurePolicy)
 }
 
 // inspectorPod looks at the driver's state directory on the node.
@@ -313,4 +319,90 @@ func TestWritableVolumeIsRefused(t *testing.T) {
 	if phase := mustKubectl(ctx, t, "get", "pod", "writable", "-n", ns, "-o", "jsonpath={.status.phase}"); phase != "Pending" {
 		t.Errorf("pod phase = %q, want Pending", phase)
 	}
+}
+
+// The node cache: with the config server gone, a pod that allows it starts
+// from what the node already holds, a pod that does not waits, and both get
+// the server's version once it is back.
+func TestPodStartsFromTheNodeCache(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	ns := newNamespace(ctx, t)
+	key := ns + ".app.yaml"
+	sources := fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)
+
+	// A first pod puts the version on the node.
+	publish(ctx, t, key, "v1")
+	mustApply(ctx, t, ns, consumerPod("warm", true, sources))
+	if _, err := waitForPodPhase(ctx, ns, "warm", "Running"); err != nil {
+		t.Fatal(err)
+	}
+
+	scale := func(ctx context.Context, replicas int) error {
+		if _, err := kubectl(ctx, "scale", "deployment/chandler-server", "-n", driverNamespace, fmt.Sprintf("--replicas=%d", replicas)); err != nil {
+			return err
+		}
+		if replicas == 0 {
+			_, err := kubectl(ctx, "wait", "--for=delete", "pod", "-n", driverNamespace,
+				"-l", "app.kubernetes.io/component=server", "--timeout=120s")
+			return err
+		}
+		_, err := kubectl(ctx, "rollout", "status", "deployment/chandler-server", "-n", driverNamespace, "--timeout=180s")
+		return err
+	}
+	t.Cleanup(func() {
+		// Whatever happened, the next test needs a server.
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		if err := scale(ctx, 1); err != nil {
+			t.Errorf("restoring the config server: %v", err)
+		}
+	})
+	if err := scale(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	mustApply(ctx, t, ns, consumerPodWithPolicy("cached", true, sources, "UseCached"))
+	mustApply(ctx, t, ns, consumerPod("strict", true, sources))
+	if _, err := waitForPodPhase(ctx, ns, "cached", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustKubectl(ctx, t, "exec", "cached", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+		t.Errorf("the pod started from the cache reads %q, want v1", got)
+	}
+	// The running pod kept its files through the outage.
+	if got := mustKubectl(ctx, t, "exec", "warm", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+		t.Errorf("the running pod reads %q during the outage, want v1", got)
+	}
+	err := eventually(ctx, func() error {
+		events, err := kubectl(ctx, "get", "events", "-n", ns,
+			"--field-selector", "involvedObject.name=strict,reason=FailedMount",
+			"-o", "jsonpath={.items[*].message}")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(events, "unreachable") {
+			return fmt.Errorf("no FailedMount event saying the server is unreachable yet; events: %q", events)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase := mustKubectl(ctx, t, "get", "pod", "strict", "-n", ns, "-o", "jsonpath={.status.phase}"); phase != "Pending" {
+		t.Errorf("the pod that must not use the cache is %q, want Pending", phase)
+	}
+
+	// The server returns: everything converges on what it serves.
+	if err := scale(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	publish(ctx, t, key, "v2")
+	for _, pod := range []string{"cached", "warm"} {
+		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+	}
+	if _, err := waitForPodPhase(ctx, ns, "strict", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	expectFile(ctx, t, ns, "strict", "app.yaml", "v2")
 }

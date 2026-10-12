@@ -55,6 +55,12 @@ const (
 	// the pod's event carries this driver's explanation rather than a bare
 	// deadline.
 	DefaultPublishTimeout = 90 * time.Second
+
+	// DefaultCachedAfter is how long a volume that may use the node cache
+	// waits for an unreachable server first. Long enough for a driver that
+	// has just started to connect; short enough that an outage does not
+	// hold pods back.
+	DefaultCachedAfter = 5 * time.Second
 )
 
 // Subscriber is the driver's side of the stream to the config server.
@@ -72,12 +78,14 @@ type Driver struct {
 	csi.UnimplementedIdentityServer
 	csi.UnimplementedNodeServer
 
-	nodeID   string
-	version  string
-	stateDir string
-	mounter  mount.Mounter
-	server   Subscriber
-	timeout  time.Duration
+	nodeID      string
+	version     string
+	stateDir    string
+	mounter     mount.Mounter
+	server      Subscriber
+	cache       volume.Cache
+	timeout     time.Duration
+	cachedAfter time.Duration
 
 	// mu guards published.
 	mu sync.Mutex
@@ -101,9 +109,15 @@ type Config struct {
 	Mounter mount.Mounter
 	// Server delivers the configuration.
 	Server Subscriber
+	// Cache is the node cache.
+	Cache volume.Cache
 	// PublishTimeout bounds the wait for a volume's sources; zero means
 	// DefaultPublishTimeout.
 	PublishTimeout time.Duration
+	// CachedAfter is how long a volume with failurePolicy UseCached waits
+	// for an unreachable server before it is mounted from the node cache;
+	// zero means DefaultCachedAfter.
+	CachedAfter time.Duration
 }
 
 // New returns a Driver, creating its state directory if needed.
@@ -117,21 +131,28 @@ func New(cfg Config) (*Driver, error) {
 		return nil, errors.New("mounter is required")
 	case cfg.Server == nil:
 		return nil, errors.New("config server client is required")
+	case cfg.Cache == nil:
+		return nil, errors.New("node cache is required")
 	}
 	if cfg.PublishTimeout == 0 {
 		cfg.PublishTimeout = DefaultPublishTimeout
+	}
+	if cfg.CachedAfter == 0 {
+		cfg.CachedAfter = DefaultCachedAfter
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, volumesDir), dirMode); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
 	return &Driver{
-		nodeID:   cfg.NodeID,
-		version:  cfg.Version,
-		stateDir:  cfg.StateDir,
-		mounter:   cfg.Mounter,
-		server:    cfg.Server,
-		timeout:   cfg.PublishTimeout,
-		published: make(map[string]*volume.Volume),
+		nodeID:      cfg.NodeID,
+		version:     cfg.Version,
+		stateDir:    cfg.StateDir,
+		mounter:     cfg.Mounter,
+		server:      cfg.Server,
+		cache:       cfg.Cache,
+		timeout:     cfg.PublishTimeout,
+		cachedAfter: cfg.CachedAfter,
+		published:   make(map[string]*volume.Volume),
 	}, nil
 }
 
@@ -214,21 +235,19 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 			ServiceAccount: attributes[serviceAccountKey],
 		},
 		Spec: spec,
-	})
+	}, d.cache)
 	if err != nil {
 		d.discard(volumeID)
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 	d.subscribe(v)
 
-	waitCtx, cancel := context.WithTimeout(ctx, d.timeout)
-	defer cancel()
-	if err := v.WaitReady(waitCtx); err != nil {
+	if err := d.waitReady(ctx, v, spec.FailurePolicy); err != nil {
 		d.discard(volumeID)
 		// When the server cannot be reached, that is the cause worth
 		// showing in the pod's event.
 		if serverErr := d.server.Err(); serverErr != nil && status.Code(err) == codes.Unavailable {
-			return nil, status.Errorf(codes.Unavailable, "%v", serverErr)
+			return nil, status.Errorf(codes.Unavailable, "%s: %v", status.Convert(err).Message(), serverErr)
 		}
 		return nil, err
 	}
@@ -291,7 +310,7 @@ func (d *Driver) Restore() error {
 			continue
 		}
 		unlock := d.volumes.lock(volumeID)
-		v, err := volume.Load(d.volumePath(volumeID))
+		v, err := volume.Load(d.volumePath(volumeID), d.cache)
 		mounted := false
 		if err == nil {
 			mounted, err = d.mounter.IsMountPoint(v.Meta().TargetPath)
@@ -307,6 +326,51 @@ func (d *Driver) Restore() error {
 		unlock()
 	}
 	return nil
+}
+
+// waitReady waits until every source of v is written.
+//
+// With failurePolicy UseCached, a source the server cannot supply is written
+// from the node cache instead: when the server has been unreachable for a
+// short while, when it says it has no version because its provider is down,
+// or when the wait runs out. The subscriptions stay, so the volume converges
+// on the server's version once it answers.
+func (d *Driver) waitReady(ctx context.Context, v *volume.Volume, policy string) error {
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+	if policy != volume.FailurePolicyUseCached {
+		return v.WaitReady(ctx)
+	}
+
+	started := time.Now()
+	for {
+		step, stop := context.WithTimeout(ctx, time.Second)
+		err := v.WaitReady(step)
+		stop()
+		if err == nil || status.Code(err) != codes.Unavailable {
+			return err
+		}
+		unreachable := d.server.Err() != nil && time.Since(started) >= d.cachedAfter
+		refused := v.Failure() != nil
+		if unreachable || refused || ctx.Err() != nil {
+			if cacheErr := v.ApplyCached(); cacheErr != nil {
+				return cacheErr
+			}
+			return nil
+		}
+	}
+}
+
+// InUse returns the canonical URIs of the volumes on this node, which the
+// node cache must keep.
+func (d *Driver) InUse() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var uris []string
+	for _, v := range d.published {
+		uris = append(uris, v.URIs()...)
+	}
+	return uris
 }
 
 // subscribe registers every source of v with the config server.
@@ -359,6 +423,7 @@ func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
 }
 func (h sourceHandler) Fail(st *rpcstatus.Status) { h.volume.Fail(h.index, st) }
 func (h sourceHandler) Applied() string           { return h.volume.Applied(h.index) }
+func (h sourceHandler) Cached() []string          { return h.volume.CachedVersions(h.index) }
 
 func (d *Driver) volumePath(volumeID string) string {
 	return filepath.Join(d.stateDir, volumesDir, volumeID)

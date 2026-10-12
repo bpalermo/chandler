@@ -9,6 +9,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//common/version",
+        "//csi/internal/cache",
         "//csi/internal/client",
         "//csi/internal/driver",
         "//csi/internal/mount",

@@ -62,7 +62,7 @@ in [api/chandler/v1](api/chandler/v1).
 | Part | State |
 |---|---|
 | Protocol definitions | Written, for all three protocols |
-| CSI driver | Mounts a volume once every source is delivered, replaces files atomically on change, and resumes after a restart |
+| CSI driver | Mounts a volume once every source is delivered, replaces files atomically on change, and resumes after a restart. Keeps a node cache, so a pod with `failurePolicy: UseCached` can start while the server is down |
 | Config server | Shares one provider watch between subscriptions and pushes each new revision; holds content in memory only |
 | File provider | Serves files and directories from a volume, such as a ConfigMap |
 | S3 provider | Serves objects and prefixes from allow-listed buckets, on AWS or an S3-compatible store |

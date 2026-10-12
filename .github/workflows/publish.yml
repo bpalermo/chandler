@@ -28,7 +28,7 @@ concurrency:
 
 # WHERE everything goes is one setting, bazel/registry.bzl. Bazel loads it;
 # each job reads it through scripts/registry.sh into its environment
-# (SERVER_IMAGE, CSI_IMAGE, PROVIDER_S3_IMAGE, CHART_REPOSITORY,
+# (SERVER_IMAGE, CSI_IMAGE, PROVIDER_S3_IMAGE, PROVIDER_FILE_IMAGE, CHART_REPOSITORY,
 # IMAGE_REGISTRY_HOST, ...), and scripts/check-registry-config.sh fails CI on a
 # registry spelled out here.
 #
@@ -121,23 +121,23 @@ jobs:
             //server:image_push //server:image_index \
             //csi:image_push //csi:image_index \
             //providers/s3:image_push //providers/s3:image_index \
+            //providers/file:image_push //providers/file:image_index \
             //charts/chandler:chandler //charts/chandler:chandler.push_registry \
             //bazel/cosign //bazel/cosign:verify_image
 
       # The chart is published under its version, which must be this commit's;
       # an unstamped package (rules_helm's placeholder version) would be pushed
-      # as a tag naming no commit. And the digest the chart pins must be the
-      # digest of the CSI index this job is about to push -- both come from the
-      # build, so this fails only if the pin ever stops being derived from the
-      # image. A pin that silently is not one is worse than a failed run.
-      - name: Require a stamped chart that pins the image built from this commit
+      # as a tag naming no commit. And the digest the chart pins for each image
+      # must be the digest of the index this job is about to push -- both come
+      # from the build, so this fails only if a pin ever stops being derived
+      # from its image. A pin that silently is not one is worse than a failed
+      # run.
+      - name: Require a stamped chart that pins the images built from this commit
         run: |
           set -euo pipefail
           chart="$(bazel cquery --config=ci //charts/chandler:chandler --output=files 2>/dev/null | grep -E '\.tgz$' | head -1)"
-          index_file="$(bazel cquery --config=ci //csi:image_index --output=files 2>/dev/null | grep -E '_index\.json$' | head -1)"
-          digest_file="${index_file%_index.json}_digest"
-          if [ -z "${chart}" ] || [ ! -s "${chart}" ] || [ ! -s "${digest_file}" ]; then
-            echo "::error::could not find the chart package (${chart}) or the CSI index digest (${digest_file})" >&2
+          if [ -z "${chart}" ] || [ ! -s "${chart}" ]; then
+            echo "::error::could not find the chart package (${chart})" >&2
             exit 1
           fi
           # The same script that stamped the build says what it stamped; the
@@ -147,26 +147,36 @@ jobs:
             echo "::error::the workspace status reports snapshot '${snapshot}', which is not commit ${GITHUB_SHA}" >&2
             exit 1
           fi
-          want_version="0.0.0-dev.${snapshot}"
+          want_version="0.1.0-dev.${snapshot}"
           echo "CHART_VERSION=${want_version}" >> "${GITHUB_ENV}"
           got_version="$(tar -xzOf "${chart}" chandler/Chart.yaml | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
           if [ "${got_version}" != "${want_version}" ]; then
             echo "::error::the chart is version '${got_version}', want '${want_version}' (an unstamped build?)" >&2
             exit 1
           fi
-          csi_digest="$(cat "${digest_file}")"
-          values="$(tar -xzOf "${chart}" chandler/values.yaml)"
-          pinned="$(printf '%s\n' "${values}" | sed -nE 's/^    digest:[[:space:]]*"?(sha256:[0-9a-f]{64})"?[[:space:]]*$/\1/p')"
-          repo="$(printf '%s\n' "${values}" | sed -nE 's/^    repository:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p' | head -1)"
-          if [ "${pinned}" != "${csi_digest}" ]; then
-            echo "::error::the chart pins '${pinned}', but the CSI index is ${csi_digest}" >&2
-            exit 1
-          fi
-          if [ "${repo}" != "${CSI_IMAGE}" ]; then
-            echo "::error::the chart defaults the CSI repository to '${repo}', want ${CSI_IMAGE}" >&2
-            exit 1
-          fi
-          echo "chart ${got_version} will pin ${CSI_IMAGE}@${csi_digest}"
+          # Every image the chart deploys: its index label and its repository.
+          pinned() {
+            local label="$1" image="$2" index_file digest_file built pin
+            index_file="$(bazel cquery --config=ci "${label}" --output=files 2>/dev/null | grep -E '_index\.json$' | head -1)"
+            digest_file="${index_file%_index.json}_digest"
+            if [ -z "${index_file}" ] || [ ! -s "${digest_file}" ]; then
+              echo "::error::could not find the image index digest of ${label} (${digest_file})" >&2
+              exit 1
+            fi
+            built="$(cat "${digest_file}")"
+            if ! pin="$(scripts/chart-pin.sh "${chart}" chandler "${image}")"; then
+              echo "::error::the chart does not pin ${image} by digest" >&2
+              exit 1
+            fi
+            if [ "${pin}" != "${built}" ]; then
+              echo "::error::the chart pins ${image}@${pin}, but ${label} is ${built}" >&2
+              exit 1
+            fi
+            echo "chart ${got_version} will pin ${image}@${built}"
+          }
+          pinned //csi:image_index "${CSI_IMAGE}"
+          pinned //server:image_index "${SERVER_IMAGE}"
+          pinned //providers/file:image_index "${PROVIDER_FILE_IMAGE}"
 
       # One login covers everything below: image_push (rules_img) and cosign
       # read the Docker config this writes. The chart push logs in on its own,
@@ -180,7 +190,7 @@ jobs:
       - name: Push the multi-arch images
         run: |
           set -euo pipefail
-          for target in //server:image_push //csi:image_push //providers/s3:image_push; do
+          for target in //server:image_push //csi:image_push //providers/s3:image_push //providers/file:image_push; do
             bazel run --config=ci "${target}"
           done
 
@@ -217,6 +227,7 @@ jobs:
           record server //server:image_index "${SERVER_IMAGE}"
           record csi //csi:image_index "${CSI_IMAGE}"
           record provider_s3 //providers/s3:image_index "${PROVIDER_S3_IMAGE}"
+          record provider_file //providers/file:image_index "${PROVIDER_FILE_IMAGE}"
 
       # --recursive signs the index and every child manifest. Without it, anyone
       # pulling the amd64 or arm64 manifest by its own digest gets something
@@ -234,6 +245,7 @@ jobs:
             ${{ steps.digest.outputs.server }}
             ${{ steps.digest.outputs.csi }}
             ${{ steps.digest.outputs.provider_s3 }}
+            ${{ steps.digest.outputs.provider_file }}
           REGISTRY_USERNAME: ${{ secrets.QUAY_USERNAME }}
           REGISTRY_PASSWORD: ${{ secrets.QUAY_TOKEN }}
           REGISTRY_CREDENTIAL_HOST: ${{ env.IMAGE_REGISTRY_HOST }}
@@ -292,11 +304,12 @@ jobs:
           bazel run --config=ci //bazel/cosign:verify_image -- \
             "${{ steps.digest.outputs.server }}" \
             "${{ steps.digest.outputs.csi }}" \
-            "${{ steps.digest.outputs.provider_s3 }}"
+            "${{ steps.digest.outputs.provider_s3 }}" \
+            "${{ steps.digest.outputs.provider_file }}"
 
-      # The chart carries the CSI image's digest, pinned at package time, so
-      # this publishes a chart that can only ever reference the image signed
-      # above (and the step before the login checked that the pin is that
+      # The chart carries the digest of every image it deploys, pinned at
+      # package time, so this publishes a chart that can only ever reference
+      # the images signed above (and the step before the login checked that the pin is that
       # digest). `helm push` appends the chart's name to the base the target
       # names, so it lands in CHART_REPOSITORY under its version. rules_helm
       # logs in to the registry with the HELM_REGISTRY_* variables.

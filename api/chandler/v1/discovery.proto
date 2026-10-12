@@ -355,7 +355,8 @@ message AppReport {
 //   NOT_FOUND           the provider has no such resource
 //   PERMISSION_DENIED   the workload may not read this URI
 //   INVALID_ARGUMENT    malformed URI, or parameters the provider refuses
-//   RESOURCE_EXHAUSTED  a cache or subscription quota would be exceeded
+//   RESOURCE_EXHAUSTED  a cache or subscription quota would be exceeded, or
+//                       the resource is larger than a bundle may be
 //   UNAVAILABLE         provider down and nothing servable in the cache
 message SubscriptionError {
   // The subscription the error is for.

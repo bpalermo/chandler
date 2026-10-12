@@ -2,6 +2,9 @@
 
 Status: draft, 2026-10-12
 
+This document describes the target. What is built so far is listed under
+"Implementation status" at the end.
+
 Chandler mounts configuration files into pods through a Kubernetes CSI driver.
 A pod names what it wants with URIs (`<provider-name>://...`); the driver
 subscribes to a config server, which sources the content from pluggable
@@ -100,6 +103,12 @@ volumes:
             path: flags
         failurePolicy: UseCached      # or Fail (default)
 ```
+
+Each source has a `uri`, a `path` and an optional `name` (default: the path).
+The `path` is where the source appears in the volume, and sources may not
+overlap. For a URI naming one object it is the file itself, so the pod chooses
+the file name whatever the object is called at the origin. For a directory URI
+(trailing slash) it is the directory the bundle's files are placed in.
 
 The `CSIDriver` object sets `attachRequired: false`,
 `volumeLifecycleModes: [Ephemeral]`, `podInfoOnMount: true` and a
@@ -443,6 +452,32 @@ sequenceDiagram
 - On reconnect the server re-watches everything with `known_revision`; the
   provider answers `NotModified` for what has not changed.
 
+### File provider
+
+The file provider serves the files below one directory. It is the smallest
+provider there can be, with no credentials and no network origin, which makes
+it the plainest example of the protocol and lets the end-to-end suite run
+without any external service. It is also useful as it is: the directory can be
+a mounted ConfigMap, or a checkout a git-sync sidecar keeps current.
+
+Like the S3 provider it has no upload path of its own and emits whatever is in
+the directory; whoever writes there is responsible for its validity.
+
+| Aspect | Behaviour |
+|---|---|
+| URI | `<name>:///<path>` for one file; `<name>:///<path>/` for a directory tree. An authority or any query parameter is rejected. |
+| `cache_key` | The canonical path. |
+| `vary_on` | empty |
+| `revision` | The content address of the bundle. |
+| Change detection | Poll (default 2s). A resource is read twice and emitted only when both reads agree, so a directory being rewritten is not emitted half old and half new. |
+| Links | Followed, so a directory maintained by an atomic writer reads as its current content. Entries whose name starts with `..` are that writer's bookkeeping and are never served. |
+| Limits | A resource over the server's limits is reported `RESOURCE_EXHAUSTED` without being read into a bundle. |
+| Deletion | `Deleted` once a file or directory that was served is gone. |
+
+A change to a mounted ConfigMap reaches the provider's pod only when kubelet
+refreshes the mount, about once a minute, so that is the delay to expect with
+that origin.
+
 ### S3 provider (reference implementation)
 
 The S3 provider is a reference implementation of `ConfigProvider`, not the
@@ -700,3 +735,21 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
    answer "use your newest cached version, marked stale" so that pods on
    nodes with a node cache start regardless of `failurePolicy`. Not adopted
    yet.
+
+## 13. Implementation status
+
+What exists today, against the design above.
+
+| Area | Built | Not built yet |
+|---|---|---|
+| Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for the version a driver already wrote, full resync on reconnect | Resend after 60s without an answer, max connection age, `AppReport` |
+| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart | Node cache (`blobs/`, `index.db`), `failurePolicy: UseCached` (parsed, behaves as `Fail`), `no_store` tmpfs, application acknowledgement |
+| Server | One watch per canonical URI shared by its subscriptions, envelope checks, provider reconnect with `known_revision`, serving the held version through a provider outage | Persistent cache and its quotas, aliases and `vary_on`, freshness, negative caching, peer sync, rollouts, authorisation |
+| Providers | File provider | S3 provider |
+| Security | None: connections are plaintext and unauthenticated, and any pod may read any URI | Everything in section 9 |
+| Observability | Structured logs | Metrics and events |
+
+Two consequences of the server holding resources only in memory, and only
+while they have a subscription: a restarted server has nothing until its
+providers answer, and a resource whose last pod went away is fetched again for
+the next one.

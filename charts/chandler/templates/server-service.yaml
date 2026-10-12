@@ -1,0 +1,17 @@
+{{- $selector := dict "root" . "component" "server" -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chandler.name" . }}-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  selector:
+    {{- include "chandler.selectorLabels" $selector | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.server.port }}
+      targetPort: grpc
+      appProtocol: grpc

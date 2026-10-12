@@ -1,6 +1,10 @@
 // Package driver implements the CSI Identity and Node services of the Chandler
 // driver. It serves ephemeral inline volumes only: there is no controller, no
 // attach and no staging.
+//
+// A volume is published by subscribing each of its sources to the config
+// server, waiting until all of them are written and only then mounting, so a
+// container never starts with part of its configuration.
 package driver
 
 import (
@@ -12,14 +16,19 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/bpalermo/chandler/csi/internal/atomic"
+	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	"github.com/bpalermo/chandler/csi/internal/client"
 	"github.com/bpalermo/chandler/csi/internal/mount"
+	"github.com/bpalermo/chandler/csi/internal/volume"
 )
 
 const (
@@ -30,12 +39,33 @@ const (
 	// ephemeralKey is set by kubelet in the volume context of inline volumes.
 	ephemeralKey = "csi.storage.k8s.io/ephemeral"
 
+	// Set by kubelet in the volume context because the CSIDriver object has
+	// podInfoOnMount: true.
+	podNameKey        = "csi.storage.k8s.io/pod.name"
+	podNamespaceKey   = "csi.storage.k8s.io/pod.namespace"
+	podUIDKey         = "csi.storage.k8s.io/pod.uid"
+	serviceAccountKey = "csi.storage.k8s.io/serviceAccount.name"
+
 	volumesDir = "volumes"
-	// dataDir is the directory of a volume that is mounted into the pod.
-	dataDir = "data"
 
 	dirMode = 0o755
+
+	// DefaultPublishTimeout is how long a mount waits for every source's
+	// initial answer. It sits inside kubelet's own two-minute timeout, so
+	// the pod's event carries this driver's explanation rather than a bare
+	// deadline.
+	DefaultPublishTimeout = 90 * time.Second
 )
+
+// Subscriber is the driver's side of the stream to the config server.
+type Subscriber interface {
+	// Subscribe registers a subscription, now and on every reconnect.
+	Subscribe(client.Subscription)
+	// Unsubscribe ends a subscription.
+	Unsubscribe(id string)
+	// Err says why the server is unreachable, or nil when it is not.
+	Err() error
+}
 
 // Driver serves the CSI Identity and Node services.
 type Driver struct {
@@ -46,6 +76,13 @@ type Driver struct {
 	version  string
 	stateDir string
 	mounter  mount.Mounter
+	server   Subscriber
+	timeout  time.Duration
+
+	// mu guards published.
+	mu sync.Mutex
+	// published is the volumes that are subscribed, by volume ID.
+	published map[string]*volume.Volume
 
 	// volumes serialises operations per volume ID, as the CSI spec lets a
 	// plugin assume at most one call in flight per volume.
@@ -62,6 +99,11 @@ type Config struct {
 	StateDir string
 	// Mounter performs the mounts.
 	Mounter mount.Mounter
+	// Server delivers the configuration.
+	Server Subscriber
+	// PublishTimeout bounds the wait for a volume's sources; zero means
+	// DefaultPublishTimeout.
+	PublishTimeout time.Duration
 }
 
 // New returns a Driver, creating its state directory if needed.
@@ -73,6 +115,11 @@ func New(cfg Config) (*Driver, error) {
 		return nil, errors.New("state directory is required")
 	case cfg.Mounter == nil:
 		return nil, errors.New("mounter is required")
+	case cfg.Server == nil:
+		return nil, errors.New("config server client is required")
+	}
+	if cfg.PublishTimeout == 0 {
+		cfg.PublishTimeout = DefaultPublishTimeout
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, volumesDir), dirMode); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
@@ -80,8 +127,11 @@ func New(cfg Config) (*Driver, error) {
 	return &Driver{
 		nodeID:   cfg.NodeID,
 		version:  cfg.Version,
-		stateDir: cfg.StateDir,
-		mounter:  cfg.Mounter,
+		stateDir:  cfg.StateDir,
+		mounter:   cfg.Mounter,
+		server:    cfg.Server,
+		timeout:   cfg.PublishTimeout,
+		published: make(map[string]*volume.Volume),
 	}, nil
 }
 
@@ -112,13 +162,13 @@ func (d *Driver) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitiesRe
 	return &csi.NodeGetCapabilitiesResponse{}, nil
 }
 
-// NodePublishVolume implements csi.NodeServer: it creates the volume's
-// directory, writes its first generation and bind-mounts it read-only at the
-// target path. It is idempotent.
+// NodePublishVolume implements csi.NodeServer: it subscribes the volume's
+// sources, waits until every one of them is written and bind-mounts the
+// result read-only at the target path. It is idempotent.
 //
-// Sources are not delivered yet: the volume is mounted with an empty first
-// generation. Subscribing to the config server comes with the server.
-func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+// A failure leaves nothing behind, so kubelet's retry starts again from the
+// beginning.
+func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	volumeID, target := req.GetVolumeId(), req.GetTargetPath()
 	switch {
 	case !validVolumeID(volumeID):
@@ -134,6 +184,11 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	case !req.GetReadonly():
 		return nil, status.Error(codes.InvalidArgument, "the volume must be mounted readOnly: true")
 	}
+	attributes := req.GetVolumeContext()
+	spec, err := volume.ParseSpec(attributes)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
 
 	unlock := d.volumes.lock(volumeID)
 	defer unlock()
@@ -146,32 +201,52 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
-	data := d.dataPath(volumeID)
-	if err := os.MkdirAll(data, dirMode); err != nil {
-		return nil, status.Errorf(codes.Internal, "create volume directory: %v", err)
-	}
-	writer := atomic.NewWriter(data)
-	current, err := writer.Current()
+	// Whatever an earlier attempt left is discarded: a volume is mounted
+	// complete or not at all.
+	d.discard(volumeID)
+	v, err := volume.Create(d.volumePath(volumeID), volume.Meta{
+		VolumeID:   volumeID,
+		TargetPath: target,
+		Workload: volume.Workload{
+			Namespace:      attributes[podNamespaceKey],
+			PodName:        attributes[podNameKey],
+			PodUID:         attributes[podUIDKey],
+			ServiceAccount: attributes[serviceAccountKey],
+		},
+		Spec: spec,
+	})
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "read volume: %v", err)
+		d.discard(volumeID)
+		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
-	if current == "" {
-		if err := writer.Write(nil); err != nil {
-			return nil, status.Errorf(codes.Internal, "write volume: %v", err)
+	d.subscribe(v)
+
+	waitCtx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+	if err := v.WaitReady(waitCtx); err != nil {
+		d.discard(volumeID)
+		// When the server cannot be reached, that is the cause worth
+		// showing in the pod's event.
+		if serverErr := d.server.Err(); serverErr != nil && status.Code(err) == codes.Unavailable {
+			return nil, status.Errorf(codes.Unavailable, "%v", serverErr)
 		}
+		return nil, err
 	}
 
 	if err := os.MkdirAll(target, dirMode); err != nil {
+		d.discard(volumeID)
 		return nil, status.Errorf(codes.Internal, "create target path: %v", err)
 	}
-	if err := d.mounter.BindReadOnly(data, target); err != nil {
+	if err := d.mounter.BindReadOnly(v.DataDir(), target); err != nil {
+		d.discard(volumeID)
 		return nil, status.Errorf(codes.Internal, "mount volume: %v", err)
 	}
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
-// NodeUnpublishVolume implements csi.NodeServer: it unmounts the target path
-// and removes the volume's directory. It is idempotent.
+// NodeUnpublishVolume implements csi.NodeServer: it ends the volume's
+// subscriptions, unmounts the target path and removes the volume's directory.
+// It is idempotent.
 func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
 	volumeID, target := req.GetVolumeId(), req.GetTargetPath()
 	switch {
@@ -192,14 +267,101 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 	if err := os.Remove(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, status.Errorf(codes.Internal, "remove target path: %v", err)
 	}
-	if err := os.RemoveAll(filepath.Join(d.stateDir, volumesDir, volumeID)); err != nil {
+	if err := d.discard(volumeID); err != nil {
 		return nil, status.Errorf(codes.Internal, "remove volume directory: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 
-func (d *Driver) dataPath(volumeID string) string {
-	return filepath.Join(d.stateDir, volumesDir, volumeID, dataDir)
+// Restore resumes the volumes a previous run of the driver left mounted, so
+// they keep receiving updates across a driver restart. Each is subscribed
+// again with the versions it already has.
+//
+// A volume directory whose target is no longer mounted (the node rebooted, or
+// a publish was interrupted) is removed: kubelet publishes the volume again if
+// its pod still exists.
+func (d *Driver) Restore() error {
+	entries, err := os.ReadDir(filepath.Join(d.stateDir, volumesDir))
+	if err != nil {
+		return fmt.Errorf("read state directory: %w", err)
+	}
+	for _, entry := range entries {
+		volumeID := entry.Name()
+		if !entry.IsDir() || !validVolumeID(volumeID) {
+			continue
+		}
+		unlock := d.volumes.lock(volumeID)
+		v, err := volume.Load(d.volumePath(volumeID))
+		mounted := false
+		if err == nil {
+			mounted, err = d.mounter.IsMountPoint(v.Meta().TargetPath)
+		}
+		if err != nil || !mounted {
+			if err := d.discard(volumeID); err != nil {
+				unlock()
+				return fmt.Errorf("remove stale volume %s: %w", volumeID, err)
+			}
+		} else {
+			d.subscribe(v)
+		}
+		unlock()
+	}
+	return nil
+}
+
+// subscribe registers every source of v with the config server.
+func (d *Driver) subscribe(v *volume.Volume) {
+	meta := v.Meta()
+	d.mu.Lock()
+	d.published[meta.VolumeID] = v
+	d.mu.Unlock()
+
+	workload := chandlerv1.Workload_builder{
+		Namespace:      proto.String(meta.Workload.Namespace),
+		PodName:        proto.String(meta.Workload.PodName),
+		PodUid:         proto.String(meta.Workload.PodUID),
+		ServiceAccount: proto.String(meta.Workload.ServiceAccount),
+	}.Build()
+	for i, source := range meta.Spec.Sources {
+		d.server.Subscribe(client.Subscription{
+			ID:       v.SubscriptionID(i),
+			URI:      source.URI,
+			Workload: workload,
+			Handler:  sourceHandler{volume: v, index: i},
+		})
+	}
+}
+
+// discard ends the subscriptions of a volume, if it has any, and removes its
+// directory. The caller holds the volume's lock and has unmounted it.
+func (d *Driver) discard(volumeID string) error {
+	d.mu.Lock()
+	v := d.published[volumeID]
+	delete(d.published, volumeID)
+	d.mu.Unlock()
+	if v != nil {
+		for i := range v.Meta().Spec.Sources {
+			d.server.Unsubscribe(v.SubscriptionID(i))
+		}
+		v.Close()
+	}
+	return os.RemoveAll(d.volumePath(volumeID))
+}
+
+// sourceHandler is one source of a volume, as the client's handler.
+type sourceHandler struct {
+	volume *volume.Volume
+	index  int
+}
+
+func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
+	return h.volume.Apply(h.index, update)
+}
+func (h sourceHandler) Fail(st *rpcstatus.Status) { h.volume.Fail(h.index, st) }
+func (h sourceHandler) Applied() string           { return h.volume.Applied(h.index) }
+
+func (d *Driver) volumePath(volumeID string) string {
+	return filepath.Join(d.stateDir, volumesDir, volumeID)
 }
 
 // validVolumeID reports whether id is safe to use as a directory name. Kubelet

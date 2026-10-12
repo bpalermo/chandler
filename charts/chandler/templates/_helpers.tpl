@@ -32,3 +32,18 @@ chart's appVersion. Call with (dict "root" . "image" .Values.csi.image).
 {{ .image.repository }}:{{ .image.tag | default .root.Chart.AppVersion }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The security context of a container that only speaks gRPC: no root, no
+capabilities, no writable filesystem.
+*/}}
+{{- define "chandler.restrictedSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+runAsNonRoot: true
+capabilities:
+  drop:
+    - ALL
+seccompProfile:
+  type: RuntimeDefault
+{{- end -}}

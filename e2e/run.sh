@@ -11,8 +11,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 cluster="${KIND_CLUSTER:-chandler-e2e}"
-images=(chandler-server chandler-csi chandler-provider-s3)
-load_targets=(//server:image_load //csi:image_load //providers/s3:image_load)
+images=(chandler-server chandler-csi chandler-provider-s3 chandler-provider-file)
+load_targets=(//server:image_load //csi:image_load //providers/s3:image_load //providers/file:image_load)
 
 created=0
 kubeconfig="$(mktemp)"
@@ -42,22 +42,45 @@ done
 
 # Install the chart Bazel builds, with Bazel's pinned helm (no helm on PATH
 # needed). The release is created or upgraded in place, so a kept cluster is
-# reused; the image tag is fixed, so restart the driver afterwards to make a
-# pod from an earlier run pick up the image just loaded.
+# reused; the image tag is fixed, so restart every workload afterwards to make
+# a pod from an earlier run pick up the image just loaded.
 bazel build "$@" //charts/chandler:chandler @helm//:helm
 bin="$(bazel info "$@" bazel-bin)"
 helm="$(bazel cquery "$@" @helm//:helm --output=files 2>/dev/null)"
 helm="$(bazel info "$@" execution_root)/${helm}"
 
+# The origin of the chart's file provider: a ConfigMap the tests add keys to.
+# Recreated, so a kept cluster starts each run without the last run's keys.
+kubectl create namespace chandler-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl delete configmap chandler-e2e-config -n chandler-system --ignore-not-found
+kubectl create configmap chandler-e2e-config -n chandler-system
+
+# Each image is the one just loaded: by tag, never pulled, with the digest the
+# chart pins cleared (that digest exists in no registry until it is published).
+local_image=()
+for pair in csi=chandler-csi server=chandler-server providers.file=chandler-provider-file; do
+  local_image+=(
+    --set "${pair%%=*}.image.repository=localhost/${pair#*=}"
+    --set "${pair%%=*}.image.tag=e2e"
+    --set "${pair%%=*}.image.pullPolicy=Never"
+    --set "${pair%%=*}.image.digest="
+  )
+done
+
 "${helm}" upgrade --install chandler "${bin}/charts/chandler/chandler.tgz" \
-  --namespace chandler-system --create-namespace \
-  --set csi.image.repository=localhost/chandler-csi \
-  --set csi.image.tag=e2e \
-  --set csi.image.pullPolicy=Never \
-  --set csi.image.digest= \
+  --namespace chandler-system \
+  "${local_image[@]}" \
+  --set providers.file.enabled=true \
+  --set providers.file.source.configMap.name=chandler-e2e-config \
+  --set providers.file.pollInterval=500ms \
   --wait --timeout 150s
-kubectl rollout restart daemonset/chandler-csi -n chandler-system
-# The suite checks the rollout itself too.
-kubectl rollout status daemonset/chandler-csi -n chandler-system --timeout=150s
+workloads=(daemonset/chandler-csi deployment/chandler-server deployment/chandler-provider-file)
+for workload in "${workloads[@]}"; do
+  kubectl rollout restart "${workload}" -n chandler-system
+done
+# The suite checks the driver's rollout itself too.
+for workload in "${workloads[@]}"; do
+  kubectl rollout status "${workload}" -n chandler-system --timeout=150s
+done
 
 bazel test "$@" --config=e2e //e2e/...

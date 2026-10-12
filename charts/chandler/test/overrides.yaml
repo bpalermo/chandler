@@ -24,3 +24,46 @@ csi:
       requests:
         cpu: 10m
         memory: 16Mi
+server:
+  image:
+    repository: registry.example.com/chandler/server
+    digest: ""
+    tag: v9.9.9
+  replicas: 3
+  port: 9443
+  providers:
+    - name: s3
+      target: provider-s3.config.svc:9100
+  maxBundleBytes: 3145728
+  maxBundleFiles: 1024
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations:
+    - key: dedicated
+      operator: Exists
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  podAnnotations:
+    example.com/scrape: "true"
+providers:
+  file:
+    enabled: true
+    name: cm
+    source:
+      configMap:
+        name: app-config
+    pollInterval: 500ms
+    port: 9101
+    nodeSelector:
+      kubernetes.io/os: linux
+    tolerations:
+      - key: dedicated
+        operator: Exists
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+    podAnnotations:
+      example.com/scrape: "true"

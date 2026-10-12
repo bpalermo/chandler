@@ -18,28 +18,29 @@ f=
 set -e
 # --- end runfiles.bash initialization v3 ---
 chart="$(rlocation "${CHART_RLOCATIONPATH:?set by the BUILD target}")"
+chart_pin="$(rlocation "${CHART_PIN_RLOCATIONPATH:?set by the BUILD target}")"
 [ -r "$chart" ] || { echo "no chart at ${CHART_RLOCATIONPATH}" >&2; exit 1; }
 
 fail=0
 bad() { echo "FAIL: $*" >&2; fail=1; }
 
-values="$(tar -xzOf "$chart" chandler/values.yaml)"
 chartyaml="$(tar -xzOf "$chart" chandler/Chart.yaml)"
+name="$(printf '%s\n' "$chartyaml" | sed -nE 's/^name:[[:space:]]*(.*)$/\1/p')"
 
-# The csi.image block: from `  image:` to the next key at the same depth.
-image="$(printf '%s\n' "$values" | awk '/^csi:/ {c=1; next} c && /^  image:/ {i=1; next} i && /^  [^ ]/ {exit} i')"
-repo="$(printf '%s\n' "$image" | sed -nE 's/^    repository:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
-digest="$(printf '%s\n' "$image" | sed -nE 's/^    digest:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
-
-[ "$repo" = "${EXPECT_CSI_REPOSITORY:?}" ] || bad "csi.image.repository is '${repo}', want '${EXPECT_CSI_REPOSITORY}'"
-[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || bad "csi.image.digest is '${digest}', want a sha256 digest"
+pins=""
+for repository in ${EXPECT_REPOSITORIES:?}; do
+	if digest="$("$chart_pin" "$chart" "$name" "$repository")"; then
+		pins="${pins} ${repository}@${digest}"
+	else
+		bad "the chart does not pin ${repository} by digest"
+	fi
+done
 
 version="$(printf '%s\n' "$chartyaml" | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
-name="$(printf '%s\n' "$chartyaml" | sed -nE 's/^name:[[:space:]]*(.*)$/\1/p')"
-# Stamped: 0.0.0-dev.<commit time>.g<commit>. Unstamped: rules_helm's
+# Stamped: 0.1.0-dev.<commit time>.g<commit>. Unstamped: rules_helm's
 # placeholder in the same position.
-[[ "$version" =~ ^0\.0\.0-dev\.([0-9]+\.g[0-9a-z]+|STABLE-CHART-SNAPSHOT)$ ]] || bad "chart version is '${version}', want 0.0.0-dev.<commit time>.g<commit>"
+[[ "$version" =~ ^0\.1\.0-dev\.([0-9]+\.g[0-9a-z]+|STABLE-CHART-SNAPSHOT)$ ]] || bad "chart version is '${version}', want 0.1.0-dev.<commit time>.g<commit>"
 [ "$name" = "${EXPECT_CHART_REPOSITORY##*/}" ] || bad "chart name is '${name}', but helm push publishes it to ${EXPECT_CHART_REPOSITORY}"
 
 [ "$fail" = 0 ] || exit 1
-echo "chart ${name} ${version} pins ${repo}@${digest}"
+echo "chart ${name} ${version} pins${pins}"

@@ -10,10 +10,11 @@ go_library(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/bundle",
+        "//common/transport",
         "//common/version",
         "//server/internal/hub",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//health",
+        "@org_golang_google_grpc//credentials",
         "@org_golang_google_grpc//health/grpc_health_v1",
     ],
 )

@@ -94,6 +94,18 @@ hand-editing what Gazelle owns.
 - **The application-facing API is HTTP over a Unix socket**, not gRPC, so
   applications need no SDK.
 
+## Connections
+
+- Every connection between components is mutual TLS, built with
+  `common/transport`. A component dials with `transport.Dial` and serves with
+  `transport.Serve`; do not construct `tls.Config` or use insecure
+  credentials elsewhere. Running without TLS has to be asked for with
+  `--insecure`.
+- A peer is accepted by the identity in its certificate (a DNS name or a
+  SPIFFE ID), per service: say which identities may call a new service.
+- The gRPC health service is on its own port, without TLS, because kubelet's
+  probes cannot present a certificate. Nothing else may be served there.
+
 ## Concurrency
 
 - Only one goroutine may call `Send` on a gRPC stream. Producers push to a

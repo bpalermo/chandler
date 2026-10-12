@@ -1,6 +1,16 @@
 # Every non-default knob the chart has, so a template test renders the paths
 # the defaults leave out.
 nameOverride: custom
+tls:
+  mode: existing
+  existingSecrets:
+    csi: csi-certs
+    server: server-certs
+    providerFile: provider-file-certs
+    providerS3: provider-s3-certs
+  identities:
+    csi: spiffe://example.org/ns/chandler-system/sa/csi
+    server: spiffe://example.org/ns/chandler-system/sa/server
 imagePullSecrets:
   - name: registry-credentials
 csi:
@@ -39,8 +49,9 @@ server:
     negativeTtl: 5s
   port: 9443
   providers:
-    - name: s3
+    - name: s3x
       target: provider-s3.config.svc:9100
+      identity: spiffe://example.org/ns/config/sa/provider-s3
   maxBundleBytes: 3145728
   maxBundleFiles: 1024
   nodeSelector:

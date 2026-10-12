@@ -11,11 +11,10 @@ go_library(
         "//api/chandler/v1:chandler",
         "//common/provider",
         "//common/rollout",
+        "//common/transport",
         "//common/version",
         "//providers/file/internal/source",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//health",
-        "@org_golang_google_grpc//health/grpc_health_v1",
     ],
 )
 

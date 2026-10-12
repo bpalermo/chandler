@@ -13,7 +13,6 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
@@ -41,6 +40,8 @@ type upstream struct {
 	generation uint64
 	// watches maps the watch IDs of the current stream to their resources.
 	watches map[string]*resource
+	// identities is what the provider's certificate must carry.
+	identities []string
 	// varyOn is the subscriber attributes the provider varies content on, as
 	// it last declared them. Remembered across restarts, since it decides
 	// which resource a subscription belongs to.
@@ -74,8 +75,9 @@ func (u *upstream) project(w *chandlerv1.Workload, cluster string) map[string]st
 }
 
 // AddProvider registers a provider under name, the scheme of the URIs it
-// serves, reachable at the gRPC target. Call it before Run.
-func (h *Hub) AddProvider(name, target string) error {
+// serves, reachable at the gRPC target and carrying one of the identities.
+// Call it before Run.
+func (h *Hub) AddProvider(name, target string, identities ...string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	up := h.upstreams[name]
@@ -87,7 +89,7 @@ func (h *Hub) AddProvider(name, target string) error {
 	if up.target != "" {
 		return fmt.Errorf("provider %q is registered twice", name)
 	}
-	up.target, up.watches = target, make(map[string]*resource)
+	up.target, up.identities, up.watches = target, identities, make(map[string]*resource)
 	return nil
 }
 
@@ -161,8 +163,7 @@ func (u *upstream) unwatchLocked(r *resource) {
 // run keeps a stream to the provider open, reconnecting with jittered backoff.
 func (u *upstream) run(ctx context.Context) {
 	log := u.hub.log.With("provider", u.name, "target", u.target)
-	// Plaintext: transport security between components is not implemented yet.
-	conn, err := grpc.NewClient(u.target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(u.target, grpc.WithTransportCredentials(u.hub.dial(u.identities)))
 	if err != nil {
 		log.Error("invalid provider target", "error", err)
 		return

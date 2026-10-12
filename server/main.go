@@ -17,11 +17,12 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/transport"
 	"github.com/bpalermo/chandler/common/version"
 	"github.com/bpalermo/chandler/server/internal/hub"
 )
@@ -32,8 +33,26 @@ type providerFlags []string
 func (p *providerFlags) String() string     { return strings.Join(*p, ",") }
 func (p *providerFlags) Set(v string) error { *p = append(*p, v); return nil }
 
+// security is how the server authenticates itself and the others.
+type security struct {
+	tls          transport.Options
+	healthListen string
+	// drivers and peers are the identities allowed to subscribe and to
+	// sync; peers is also what a peer's certificate must carry.
+	drivers, peers providerFlags
+	// providers is "<name>=<identity>": what each provider's certificate
+	// must carry, when it is not the host name of its target.
+	providers providerFlags
+}
+
 func main() {
 	var providers providerFlags
+	var sec security
+	sec.tls.Register()
+	flag.StringVar(&sec.healthListen, "health-listen", ":9001", "address of the gRPC health service, served without TLS for kubelet's probes")
+	flag.Var(&sec.drivers, "driver-identity", "an identity (DNS name or SPIFFE ID) a CSI driver's certificate may carry. Repeatable; required with TLS")
+	flag.Var(&sec.peers, "peer-identity", "an identity another replica's certificate may carry. Repeatable; required with TLS when peer sync is on")
+	flag.Var(&sec.providers, "provider-identity", "<name>=<identity>: the identity a provider's certificate must carry, when it is not the host name of its target. Repeatable")
 	var (
 		listen         = flag.String("listen", ":9000", "address the server's gRPC server listens on")
 		serverID       = flag.String("server-id", os.Getenv("POD_NAME"), "identity of this replica (default $POD_NAME, else the hostname)")
@@ -68,13 +87,13 @@ func main() {
 		Log:         log,
 	}
 	peers := hub.Peers{Service: *peerService, Self: *peerSelf, Interval: *peerInterval, WarmUp: *peerWarmUp}
-	if err := run(log, *listen, cfg, peers, providers); err != nil {
+	if err := run(log, *listen, cfg, peers, providers, sec); err != nil {
 		log.Error("chandler-server failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, providers []string) error {
+func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, providers []string, sec security) error {
 	limits, serverID := cfg.Limits, cfg.ServerID
 	switch {
 	case limits.MaxBytes == 0 || limits.MaxBytes > bundle.HardMaxBytes:
@@ -91,6 +110,40 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 		serverID = hostname
 	}
 
+	src, err := sec.tls.Source()
+	if err != nil {
+		return err
+	}
+	providerIdentities := make(map[string][]string)
+	for _, p := range sec.providers {
+		name, identity, ok := strings.Cut(p, "=")
+		if !ok || name == "" || identity == "" {
+			return fmt.Errorf("--provider-identity %q is not <name>=<identity>", p)
+		}
+		providerIdentities[name] = append(providerIdentities[name], identity)
+	}
+	// With TLS, an empty list would allow nobody; say so at start.
+	var drivers, peerIdentities []string
+	if src != nil {
+		drivers, peerIdentities = sec.drivers, sec.peers
+		switch {
+		case len(drivers) == 0:
+			return errors.New("--driver-identity is required with TLS")
+		case peers.Service != "" && len(peerIdentities) == 0:
+			return errors.New("--peer-identity is required with TLS when peer sync is on")
+		}
+		if drivers == nil {
+			drivers = []string{}
+		}
+		if peerIdentities == nil {
+			peerIdentities = []string{}
+		}
+	} else {
+		log.Warn("running without TLS: connections are neither encrypted nor authenticated")
+	}
+	peers.Identities = peerIdentities
+	cfg.Dial = func(identities []string) credentials.TransportCredentials { return transport.Dial(src, identities) }
+
 	cfg.ServerID = serverID
 	h, err := hub.New(cfg)
 	if err != nil {
@@ -104,7 +157,11 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 		if name != strings.ToLower(name) {
 			return fmt.Errorf("--provider %q: the name is a URI scheme and must be lowercase", p)
 		}
-		if err := h.AddProvider(name, target); err != nil {
+		identities := providerIdentities[name]
+		if len(identities) == 0 {
+			identities = []string{transport.HostIdentity(target)}
+		}
+		if err := h.AddProvider(name, target, identities...); err != nil {
 			return err
 		}
 	}
@@ -131,17 +188,27 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 		}
 	}
 
-	server := grpc.NewServer()
+	// Drivers may subscribe, replicas may sync, and neither may do the
+	// other's part.
+	server := grpc.NewServer(transport.Serve(src, func(method string) []string {
+		if strings.HasPrefix(method, "/"+chandlerv1.PeerSync_ServiceDesc.ServiceName+"/") {
+			return peerIdentities
+		}
+		return drivers
+	})...)
 	chandlerv1.RegisterConfigDiscoveryServiceServer(server, h)
 	chandlerv1.RegisterPeerSyncServer(server, h)
 	// Not ready until the cache is warm: a rolling restart must not move on
 	// from a replica that holds nothing.
-	healthServer := health.NewServer()
+	healthServer, stopHealth, err := transport.Health(sec.healthListen)
+	if err != nil {
+		return err
+	}
+	defer stopHealth()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	// Alive is not the same as ready: a liveness probe asks for this
 	// service, so a replica that is still warming up is not restarted.
 	healthServer.SetServingStatus("live", healthpb.HealthCheckResponse_SERVING)
-	healthpb.RegisterHealthServer(server, healthServer)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

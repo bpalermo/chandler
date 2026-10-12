@@ -5,8 +5,9 @@ A pod names the configuration it wants with URIs; the driver mounts the files
 read-only and replaces them atomically when they change.
 
 > **Status: early development.** Configuration is delivered end to end from
-> the file and S3 providers, and updated in place. There is no security yet:
-> connections are plaintext and any pod can read any URI. See
+> the file and S3 providers, and updated in place. Connections use mutual TLS,
+> but there is no authorisation yet: any pod can read any URI the cluster's
+> providers can. See
 > [What works today](#what-works-today).
 
 ## How it is meant to work
@@ -67,7 +68,7 @@ in [api/chandler/v1](api/chandler/v1).
 | File provider | Serves files and directories from a volume, such as a ConfigMap |
 | S3 provider | Serves objects and prefixes from allow-listed buckets, on AWS or an S3-compatible store |
 | Helm chart | Installs the driver and the server, and optionally the file and S3 providers |
-| Security | Not built: plaintext, unauthenticated, no authorisation |
+| Security | Mutual TLS between all components, with a chart-issued private authority by default or your own certificates. Not built: SPIFFE as a certificate source, verification of the pod's identity, and authorisation of which pods may read which URIs |
 | Staged rollouts | A provider releases a new version to a growing share of pods and can hold it or take it back; the file and S3 providers have a time-based ramp |
 | Application acknowledgement | A volume with `appAck: "true"` gets a manifest and an HTTP API on a Unix socket. The application reports whether it loaded each version; a rejected one is reverted at once and reported to the provider |
 

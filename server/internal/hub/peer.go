@@ -12,7 +12,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -34,6 +33,8 @@ type Peers struct {
 	// WarmUp bounds the initial sync, after which the replica reports ready
 	// whatever it managed to copy.
 	WarmUp time.Duration
+	// Identities is what a peer's certificate must carry.
+	Identities []string
 	// Resolve looks up the peers; nil means DNS.
 	Resolve func(ctx context.Context) ([]string, error)
 }
@@ -130,7 +131,7 @@ func (h *Hub) RunPeers(ctx context.Context, peers Peers, ready func()) {
 		// the replica whose drivers subscribe to it.
 		synced := 0
 		for _, address := range addresses {
-			if err := h.syncWith(warm, address); err != nil {
+			if err := h.syncWith(warm, address, peers.Identities); err != nil {
 				h.log.Warn("warm-up from a peer failed", "peer", address, "error", err)
 				continue
 			}
@@ -155,7 +156,7 @@ func (h *Hub) RunPeers(ctx context.Context, peers Peers, ready func()) {
 		}
 		address := addresses[rand.IntN(len(addresses))]
 		step, cancel := context.WithTimeout(ctx, peers.Interval)
-		if err := h.syncWith(step, address); err != nil && ctx.Err() == nil {
+		if err := h.syncWith(step, address, peers.Identities); err != nil && ctx.Err() == nil {
 			h.log.Warn("sync with a peer failed", "peer", address, "error", err)
 		}
 		cancel()
@@ -189,9 +190,9 @@ func resolveService(ctx context.Context, service, self string) ([]string, error)
 }
 
 // syncWith copies from one peer what this replica lacks.
-func (h *Hub) syncWith(ctx context.Context, address string) error {
-	// Plaintext: transport security between components is not implemented yet.
-	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func (h *Hub) syncWith(ctx context.Context, address string, identities []string) error {
+	// A peer is dialled by pod IP and verified by identity.
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(h.dial(identities)))
 	if err != nil {
 		return err
 	}

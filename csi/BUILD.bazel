@@ -8,6 +8,7 @@ go_library(
     importpath = "github.com/bpalermo/chandler/csi",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/transport",
         "//common/version",
         "//csi/internal/cache",
         "//csi/internal/client",
@@ -15,6 +16,7 @@ go_library(
         "//csi/internal/mount",
         "@com_github_container_storage_interface_spec//lib/go/csi",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials",
     ],
 )
 

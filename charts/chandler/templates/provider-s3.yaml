@@ -63,6 +63,9 @@ spec:
           imagePullPolicy: {{ $s3.image.pullPolicy }}
           args:
             - --listen=:{{ $s3.port }}
+            - --health-listen=:{{ add (int $s3.port) 1 }}
+            {{- include "chandler.tlsArgs" $selector | nindent 12 }}
+            - --server-identity={{ include "chandler.identity" (dict "root" . "component" "server") }}
             - --name={{ $s3.name }}
             - --poll-interval={{ $s3.pollInterval }}
             {{- range $s3.rollouts }}
@@ -91,13 +94,15 @@ spec:
           ports:
             - name: grpc
               containerPort: {{ $s3.port }}
+            - name: health
+              containerPort: {{ add (int $s3.port) 1 }}
           readinessProbe:
             grpc:
-              port: {{ $s3.port }}
+              port: {{ add (int $s3.port) 1 }}
             periodSeconds: 5
           livenessProbe:
             grpc:
-              port: {{ $s3.port }}
+              port: {{ add (int $s3.port) 1 }}
             periodSeconds: 10
           securityContext:
             {{- include "chandler.restrictedSecurityContext" . | nindent 12 }}
@@ -105,9 +110,17 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with (include "chandler.tlsVolumeMount" $selector) }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
         {{- with $s3.extraContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- with (include "chandler.tlsVolume" $selector) }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -8,6 +8,7 @@ go_test(
         "images_test.go",
         "kubectl_test.go",
         "s3_test.go",
+        "tls_test.go",
     ],
     # Needs a cluster and kubectl: excluded from `bazel test //...` by the e2e
     # tag (see .bazelrc) and run unsandboxed by e2e/run.sh.

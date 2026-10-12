@@ -16,6 +16,7 @@ import (
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/csi/internal/cache"
 )
 
 func TestParseSpec(t *testing.T) {
@@ -76,7 +77,21 @@ func bundleUpdate(files ...*chandlerv1.File) *chandlerv1.ConfigUpdate {
 	return chandlerv1.ConfigUpdate_builder{Version: proto.String(bundle.Version(b)), Bundle: b}.Build()
 }
 
+func newTestCache(t *testing.T) *cache.Cache {
+	t.Helper()
+	c, err := cache.Open(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func newTestVolume(t *testing.T) (*Volume, string) {
+	t.Helper()
+	return newTestVolumeWith(t, newTestCache(t))
+}
+
+func newTestVolumeWith(t *testing.T, c Cache) (*Volume, string) {
 	t.Helper()
 	spec, err := ParseSpec(map[string]string{"sources": `
 - uri: file:///app.yaml
@@ -88,7 +103,7 @@ func newTestVolume(t *testing.T) (*Volume, string) {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "vol")
-	v, err := Create(dir, Meta{VolumeID: "vol", TargetPath: "/target", Spec: spec})
+	v, err := Create(dir, Meta{VolumeID: "vol", TargetPath: "/target", Spec: spec}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,11 +172,11 @@ func TestApplyRefusals(t *testing.T) {
 		update *chandlerv1.ConfigUpdate
 		want   codes.Code
 	}{
-		"digest mismatch":            {0, tampered, codes.DataLoss},
+		"digest mismatch":                 {0, tampered, codes.DataLoss},
 		"UseCached of a version not held": {0, unknown, codes.DataLoss},
-		"unsafe path":                {1, bundleUpdate(file("../escape", "x")), codes.InvalidArgument},
-		"two files for one object":   {0, bundleUpdate(file("a", "1"), file("b", "2")), codes.InvalidArgument},
-		"no file for one object":     {0, bundleUpdate(), codes.InvalidArgument},
+		"unsafe path":                     {1, bundleUpdate(file("../escape", "x")), codes.InvalidArgument},
+		"two files for one object":        {0, bundleUpdate(file("a", "1"), file("b", "2")), codes.InvalidArgument},
+		"no file for one object":          {0, bundleUpdate(), codes.InvalidArgument},
 	} {
 		err := v.Apply(tc.source, tc.update)
 		if grpcstatus.Code(err) != tc.want {
@@ -232,7 +247,7 @@ func TestLoadRestoresWhatWasWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loaded, err := Load(dir)
+	loaded, err := Load(dir, newTestCache(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +265,75 @@ func TestLoadRestoresWhatWasWritten(t *testing.T) {
 		t.Errorf("app.yaml = %q", got)
 	}
 
-	if _, err := Load(t.TempDir()); err == nil {
+	if _, err := Load(t.TempDir(), newTestCache(t)); err == nil {
 		t.Error("Load of a directory with no volume succeeded")
+	}
+}
+
+func useCached(version string) *chandlerv1.ConfigUpdate {
+	return chandlerv1.ConfigUpdate_builder{Version: proto.String(version), UseCached: &chandlerv1.UseCached{}}.Build()
+}
+
+// What one volume wrote, another on the same node can apply without bytes:
+// that is what makes a rollback, and a mount during an outage, possible.
+func TestNodeCache(t *testing.T) {
+	c := newTestCache(t)
+	first, _ := newTestVolumeWith(t, c)
+	v1 := bundleUpdate(file("app.yaml", "v1"))
+	v2 := bundleUpdate(file("app.yaml", "v2"))
+	for _, u := range []*chandlerv1.ConfigUpdate{v1, v2} {
+		if err := first.Apply(0, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := first.CachedVersions(0); len(got) != 2 || got[0] != v2.GetVersion() || got[1] != v1.GetVersion() {
+		t.Fatalf("cached versions = %v, want v2 then v1", got)
+	}
+
+	// A rollback to the previous version is a local swap.
+	if err := first.Apply(0, useCached(v1.GetVersion())); err != nil {
+		t.Fatalf("UseCached of the previous version: %v", err)
+	}
+	if got := first.Applied(0); got != v1.GetVersion() {
+		t.Errorf("applied = %q, want v1", got)
+	}
+
+	// Another volume starts from the cache alone.
+	second, dir := newTestVolumeWith(t, c)
+	if err := second.ApplyCached(); grpcstatus.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "file:///flags/") {
+		t.Errorf("with one source uncached: got %v, want Unavailable naming it", err)
+	}
+	if err := first.Apply(1, bundleUpdate(file("x.json", "x"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.ApplyCached(); err != nil {
+		t.Fatalf("ApplyCached: %v", err)
+	}
+	// The newest version held for the URI: v1, which the rollback made so.
+	if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "v1" {
+		t.Errorf("app.yaml from the cache = %q, want v1", got)
+	}
+	if got := mustRead(t, filepath.Join(dir, "data", "etc/flags/x.json")); got != "x" {
+		t.Errorf("etc/flags/x.json from the cache = %q", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := second.WaitReady(ctx); err != nil {
+		t.Errorf("a volume written from the cache is ready: %v", err)
+	}
+}
+
+func TestNoStoreBypassesTheCache(t *testing.T) {
+	v, dir := newTestVolume(t)
+	u := bundleUpdate(file("app.yaml", "secret"))
+	u.SetCacheControl(chandlerv1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
+	if err := v.Apply(0, u); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "secret" {
+		t.Errorf("app.yaml = %q", got)
+	}
+	if got := v.CachedVersions(0); len(got) != 0 {
+		t.Errorf("a no_store bundle was cached: %v", got)
 	}
 }

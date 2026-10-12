@@ -14,11 +14,25 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/uri"
 	"github.com/bpalermo/chandler/csi/internal/atomic"
 )
+
+// Cache is the node cache, as a volume uses it.
+type Cache interface {
+	// Put stores a verified bundle as the newest version of a URI.
+	Put(uri, version string, b *chandlerv1.Bundle) error
+	// Use marks an already held version as the newest of a URI.
+	Use(uri, version string) error
+	// Get returns a held bundle, verified against its version.
+	Get(version string) (*chandlerv1.Bundle, error)
+	// Versions returns the versions held for a URI, newest first.
+	Versions(uri string) []string
+}
 
 const (
 	// dataDir is the directory of a volume that is mounted into the pod.
@@ -59,6 +73,9 @@ type Meta struct {
 type Volume struct {
 	dir    string
 	writer *atomic.Writer
+	cache  Cache
+	// uris is the canonical URI of each source: the node cache's key.
+	uris []string
 
 	mu   sync.Mutex
 	meta Meta
@@ -74,12 +91,12 @@ type Volume struct {
 }
 
 // Create makes a new, empty volume in dir, which must not hold one.
-func Create(dir string, meta Meta) (*Volume, error) {
+func Create(dir string, meta Meta, cache Cache) (*Volume, error) {
 	if err := os.MkdirAll(filepath.Join(dir, dataDir), dirMode); err != nil {
 		return nil, fmt.Errorf("create volume directory: %w", err)
 	}
 	meta.Applied = make([]string, len(meta.Spec.Sources))
-	v := newVolume(dir, meta)
+	v := newVolume(dir, meta, cache)
 	if err := v.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -89,7 +106,7 @@ func Create(dir string, meta Meta) (*Volume, error) {
 // Load restores the volume stored in dir, as Create and later updates left
 // it. What each source contributes is read back from the current generation,
 // so the next update of one source can be composed with the others.
-func Load(dir string) (*Volume, error) {
+func Load(dir string, cache Cache) (*Volume, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, metaFile))
 	if err != nil {
 		return nil, err
@@ -101,7 +118,7 @@ func Load(dir string) (*Volume, error) {
 	if len(meta.Applied) != len(meta.Spec.Sources) {
 		return nil, fmt.Errorf("read %s: %d sources but %d applied versions", metaFile, len(meta.Spec.Sources), len(meta.Applied))
 	}
-	v := newVolume(dir, meta)
+	v := newVolume(dir, meta, cache)
 	for i, source := range meta.Spec.Sources {
 		if meta.Applied[i] == "" {
 			continue
@@ -117,11 +134,22 @@ func Load(dir string) (*Volume, error) {
 	return v, nil
 }
 
-func newVolume(dir string, meta Meta) *Volume {
+func newVolume(dir string, meta Meta, cache Cache) *Volume {
 	n := len(meta.Spec.Sources)
+	uris := make([]string, n)
+	for i, source := range meta.Spec.Sources {
+		uris[i] = source.URI
+		// The spec was validated when the volume was created; the canonical
+		// form makes two spellings of a URI share their cached versions.
+		if u, err := uri.Parse(source.URI); err == nil {
+			uris[i] = u.String()
+		}
+	}
 	return &Volume{
 		dir:      dir,
 		writer:   atomic.NewWriter(filepath.Join(dir, dataDir)),
+		cache:    cache,
+		uris:     uris,
 		meta:     meta,
 		files:    make([]map[string]atomic.File, n),
 		failures: make([]*status.Status, n),
@@ -201,18 +229,22 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 	source := v.meta.Spec.Sources[i]
 	version := update.GetVersion()
 
-	if !update.HasBundle() {
-		// UseCached: only the version already written can be reused, as
-		// there is no node cache yet.
-		if version == "" || version != v.meta.Applied[i] {
-			return grpcstatus.Errorf(codes.DataLoss, "version %s is not held on this node", version)
-		}
+	if !update.HasBundle() && version != "" && version == v.meta.Applied[i] {
+		// UseCached of what is already written: nothing to do.
 		v.answeredLocked(i, nil)
 		return nil
 	}
 
 	b := update.GetBundle()
-	if !bundle.Verify(b, version) {
+	cached := !update.HasBundle()
+	if cached {
+		// UseCached: the bytes come from the node cache, which verifies
+		// them against the version.
+		var err error
+		if b, err = v.cache.Get(version); err != nil {
+			return grpcstatus.Errorf(codes.DataLoss, "%v", err)
+		}
+	} else if !bundle.Verify(b, version) {
 		return grpcstatus.Errorf(codes.DataLoss, "the bundle does not match its version %s", version)
 	}
 	if err := bundle.Validate(b, limits); err != nil {
@@ -234,6 +266,20 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 		contribution[source.Path] = atomic.File{Mode: bundle.Mode(f), Content: f.GetContent()}
 	}
 
+	// Stage: the bundle goes into the node cache before it is written, so a
+	// version in a volume is always one the node can apply again. Content
+	// marked no_store never touches the cache.
+	var err error
+	switch {
+	case cached:
+		err = v.cache.Use(v.uris[i], version)
+	case !update.GetCacheControl().GetNoStore():
+		err = v.cache.Put(v.uris[i], version, b)
+	}
+	if err != nil {
+		return grpcstatus.Errorf(writeErrorCode(err), "%v", err)
+	}
+
 	// A generation is the whole volume: this source's new files and what
 	// every other source already contributes.
 	generation := make(map[string]atomic.File)
@@ -246,11 +292,7 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 		}
 	}
 	if err := v.writer.Write(generation); err != nil {
-		code := codes.Internal
-		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) {
-			code = codes.ResourceExhausted
-		}
-		return grpcstatus.Errorf(code, "%v", err)
+		return grpcstatus.Errorf(writeErrorCode(err), "%v", err)
 	}
 
 	v.files[i] = contribution
@@ -268,6 +310,61 @@ func (v *Volume) Close() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.closed = true
+}
+
+// writeErrorCode tells a full disk, which the server retries knowing why,
+// from any other I/O error.
+func writeErrorCode(err error) codes.Code {
+	if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) {
+		return codes.ResourceExhausted
+	}
+	return codes.Internal
+}
+
+// CachedVersions returns the versions of source i the node cache holds,
+// newest first. The server can name any of them without sending bytes.
+func (v *Volume) CachedVersions(i int) []string {
+	return v.cache.Versions(v.uris[i])
+}
+
+// URIs returns the canonical URI of every source.
+func (v *Volume) URIs() []string { return append([]string(nil), v.uris...) }
+
+// ApplyCached writes, for every source that has nothing written yet, the
+// newest version the node cache holds. It is how a volume is mounted while
+// the server cannot be reached. It fails, naming the source, if the cache has
+// nothing for one of them.
+func (v *Volume) ApplyCached() error {
+	for i, source := range v.meta.Spec.Sources {
+		if v.Applied(i) != "" {
+			continue
+		}
+		versions := v.cache.Versions(v.uris[i])
+		if len(versions) == 0 {
+			return grpcstatus.Errorf(codes.Unavailable, "source %q (%s): nothing is cached on this node", source.Name, source.URI)
+		}
+		update := chandlerv1.ConfigUpdate_builder{
+			Version:   proto.String(versions[0]),
+			UseCached: &chandlerv1.UseCached{},
+		}.Build()
+		if err := v.Apply(i, update); err != nil {
+			return grpcstatus.Errorf(codes.Unavailable, "source %q (%s): %v", source.Name, source.URI, err)
+		}
+	}
+	return nil
+}
+
+// Failure returns the server's reason for having no version of a source that
+// has nothing written, or nil when no source is in that state.
+func (v *Volume) Failure() *status.Status {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for i := range v.meta.Spec.Sources {
+		if v.meta.Applied[i] == "" && v.failures[i] != nil {
+			return v.failures[i]
+		}
+	}
+	return nil
 }
 
 // Fail records that the server cannot produce a version of source i for now.

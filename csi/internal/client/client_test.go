@@ -105,6 +105,8 @@ func (h *handler) Apply(u *chandlerv1.ConfigUpdate) error {
 
 func (h *handler) Fail(st *status.Status) { h.failed <- st }
 
+func (h *handler) Cached() []string { return []string{"v0", h.Applied()} }
+
 func (h *handler) Applied() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -158,7 +160,8 @@ func TestSubscribeAckNackAndResync(t *testing.T) {
 
 	sub := f.next(t).GetSubscribe()
 	if sub.GetSubscriptionId() != "vol/0" || sub.GetUri() != "file:///app.yaml" ||
-		sub.GetWorkload().GetPodName() != "web-0" || sub.HasAppliedVersion() {
+		sub.GetWorkload().GetPodName() != "web-0" || sub.HasAppliedVersion() ||
+		len(sub.GetCachedVersions()) != 1 || sub.GetCachedVersions()[0] != "v0" {
 		t.Fatalf("subscribe = %v", sub)
 	}
 
@@ -206,8 +209,10 @@ func TestSubscribeAckNackAndResync(t *testing.T) {
 		// about to; either way the resubscribe below proves the connection.
 		t.Log("still reconnecting:", c.Err())
 	}
-	if sub := f.next(t).GetSubscribe(); sub.GetSubscriptionId() != "vol/0" || sub.GetAppliedVersion() != "v1" {
-		t.Errorf("resubscribe = %v, want vol/0 with applied version v1", sub)
+	// The applied version is not repeated among the cached ones.
+	if sub := f.next(t).GetSubscribe(); sub.GetSubscriptionId() != "vol/0" || sub.GetAppliedVersion() != "v1" ||
+		len(sub.GetCachedVersions()) != 1 || sub.GetCachedVersions()[0] != "v0" {
+		t.Errorf("resubscribe = %v, want vol/0 with applied version v1 and v0 cached", sub)
 	}
 
 	c.Unsubscribe("vol/0")

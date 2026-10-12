@@ -11,13 +11,16 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
 
 	"github.com/bpalermo/chandler/common/version"
+	"github.com/bpalermo/chandler/csi/internal/cache"
 	"github.com/bpalermo/chandler/csi/internal/client"
 	"github.com/bpalermo/chandler/csi/internal/driver"
 	"github.com/bpalermo/chandler/csi/internal/mount"
@@ -63,12 +66,17 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string) erro
 		Version: version.Version,
 		Log:     log,
 	})
+	nodeCache, err := cache.Open(filepath.Join(stateDir, "cache"), cache.DefaultGrace)
+	if err != nil {
+		return err
+	}
 	d, err := driver.New(driver.Config{
 		NodeID:   nodeID,
 		Version:  version.Version,
 		StateDir: stateDir,
 		Mounter:  mount.System{},
 		Server:   configServer,
+		Cache:    nodeCache,
 	})
 	if err != nil {
 		return err
@@ -79,6 +87,24 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string) erro
 		return err
 	}
 	go configServer.Run(ctx)
+	go func() {
+		// What live volumes use is never collected; the rest goes after
+		// the grace period.
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			inUse := d.InUse()
+			nodeCache.Touch(inUse...)
+			if err := nodeCache.Collect(inUse); err != nil {
+				log.Warn("node cache collection failed", "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	// A socket left by a previous run would make Listen fail.
 	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {

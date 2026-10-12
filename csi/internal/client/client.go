@@ -40,6 +40,9 @@ type Handler interface {
 	Fail(st *status.Status)
 	// Applied returns the version currently written, "" for none.
 	Applied() string
+	// Cached returns the versions the node cache holds, newest first. The
+	// server may name one of them instead of sending its bytes.
+	Cached() []string
 }
 
 // Subscription is one source of one pod volume.
@@ -125,8 +128,14 @@ func subscribeRequest(s Subscription) *chandlerv1.ConfigRequest {
 		Uri:            proto.String(s.URI),
 		Workload:       s.Workload,
 	}
-	if applied := s.Handler.Applied(); applied != "" {
+	applied := s.Handler.Applied()
+	if applied != "" {
 		subscribe.AppliedVersion = proto.String(applied)
+	}
+	for _, version := range s.Handler.Cached() {
+		if version != applied {
+			subscribe.CachedVersions = append(subscribe.CachedVersions, version)
+		}
 	}
 	return chandlerv1.ConfigRequest_builder{Subscribe: subscribe.Build()}.Build()
 }

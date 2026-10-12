@@ -26,6 +26,7 @@ go_test(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/bundle",
+        "//csi/internal/cache",
         "//csi/internal/client",
         "@com_github_container_storage_interface_spec//lib/go/csi",
         "@org_golang_google_genproto_googleapis_rpc//status",

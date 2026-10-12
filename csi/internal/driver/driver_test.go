@@ -19,6 +19,7 @@ import (
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/csi/internal/cache"
 	"github.com/bpalermo/chandler/csi/internal/client"
 )
 
@@ -52,9 +53,12 @@ type fakeServer struct {
 	mu      sync.Mutex
 	content map[string]string // URI -> content of its one file
 	missing map[string]bool   // URIs answered with NOT_FOUND
-	subs    map[string]client.Subscription
-	applied map[string]string // subscription ID -> applied version it subscribed with
-	down    error
+	// unavailable answers every URI without content with UNAVAILABLE, as a
+	// server whose provider is down does.
+	unavailable bool
+	subs        map[string]client.Subscription
+	applied     map[string]string // subscription ID -> applied version it subscribed with
+	down        error
 }
 
 func newFakeServer() *fakeServer {
@@ -84,6 +88,7 @@ func (f *fakeServer) Subscribe(s client.Subscription) {
 	f.applied[s.ID] = s.Handler.Applied()
 	content, ok := f.content[s.URI]
 	missing := f.missing[s.URI]
+	unavailable := f.unavailable
 	f.mu.Unlock()
 	switch {
 	case ok:
@@ -92,6 +97,8 @@ func (f *fakeServer) Subscribe(s client.Subscription) {
 		}
 	case missing:
 		s.Handler.Fail(&rpcstatus.Status{Code: int32(codes.NotFound), Message: "no such file"})
+	case unavailable:
+		s.Handler.Fail(&rpcstatus.Status{Code: int32(codes.Unavailable), Message: "provider file is not connected"})
 	}
 }
 
@@ -110,6 +117,7 @@ func (f *fakeServer) subscribed() int {
 }
 
 type fixture struct {
+	cache  *cache.Cache
 	driver *Driver
 	mounts *fakeMounter
 	server *fakeServer
@@ -123,6 +131,11 @@ func newFixture(t *testing.T) fixture {
 		server: newFakeServer(),
 		state:  t.TempDir(),
 	}
+	nodeCache, err := cache.Open(filepath.Join(f.state, "cache"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.cache = nodeCache
 	f.server.content["file:///app.yaml"] = "a: 1\n"
 	f.server.content["file:///flags.json"] = "{}"
 	f.driver = f.restart(t)
@@ -139,7 +152,9 @@ func (f fixture) restart(t *testing.T) *Driver {
 		StateDir:       f.state,
 		Mounter:        f.mounts,
 		Server:         f.server,
-		PublishTimeout: 200 * time.Millisecond,
+		Cache:          f.cache,
+		PublishTimeout: 2 * time.Second,
+		CachedAfter:    10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -441,13 +456,80 @@ func TestRestoreResumesMountedVolumes(t *testing.T) {
 	}
 }
 
+// With failurePolicy UseCached a pod starts from what the node holds when the
+// server cannot supply a source; with the default policy it waits.
+func TestPublishFromTheNodeCache(t *testing.T) {
+	outages := map[string]func(*fakeServer){
+		"unreachable server": func(s *fakeServer) {
+			s.content = map[string]string{}
+			s.down = errors.New("config server is unreachable: connection refused")
+		},
+		"provider down": func(s *fakeServer) {
+			s.content = map[string]string{}
+			s.unavailable = true
+		},
+		"no answer in time": func(s *fakeServer) { s.content = map[string]string{} },
+	}
+	for name, outage := range outages {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := context.Background()
+			// A first pod fills the cache, then goes away.
+			warm := filepath.Join(t.TempDir(), "warm")
+			if _, err := f.driver.NodePublishVolume(ctx, publishRequest("csi-warm", warm, twoSources)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.driver.NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{VolumeId: "csi-warm", TargetPath: warm}); err != nil {
+				t.Fatal(err)
+			}
+			outage(f.server)
+
+			strict := publishRequest("csi-strict", filepath.Join(t.TempDir(), "strict"), twoSources)
+			if _, err := f.driver.NodePublishVolume(ctx, strict); status.Code(err) != codes.Unavailable {
+				t.Errorf("failurePolicy Fail: got %v, want Unavailable", err)
+			}
+
+			target := filepath.Join(t.TempDir(), "cached")
+			lenient := publishRequest("csi-cached", target, twoSources)
+			lenient.VolumeContext["failurePolicy"] = "UseCached"
+			if _, err := f.driver.NodePublishVolume(ctx, lenient); err != nil {
+				t.Fatalf("failurePolicy UseCached: %v", err)
+			}
+			data := f.mounts.mounts[target]
+			if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 1\n" {
+				t.Errorf("app.yaml from the cache = %q", got)
+			}
+
+			// It stays subscribed, so it converges when the server answers.
+			sub, ok := f.server.subs["csi-cached/0"]
+			if !ok {
+				t.Fatal("the volume mounted from the cache is not subscribed")
+			}
+			if err := sub.Handler.Apply(update("csi-cached/0", "a: 2\n")); err != nil {
+				t.Fatal(err)
+			}
+			if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 2\n" {
+				t.Errorf("app.yaml after the server returned = %q", got)
+			}
+
+			// Nothing cached for a URI: UseCached cannot help.
+			cold := publishRequest("csi-cold", filepath.Join(t.TempDir(), "cold"), "- uri: file:///never-seen.yaml\n  path: x\n")
+			cold.VolumeContext["failurePolicy"] = "UseCached"
+			if _, err := f.driver.NodePublishVolume(ctx, cold); status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "nothing is cached") {
+				t.Errorf("with nothing cached: got %v, want Unavailable saying so", err)
+			}
+		})
+	}
+}
+
 func TestNewValidatesConfig(t *testing.T) {
-	m, s := &fakeMounter{}, newFakeServer()
+	m, s, c := &fakeMounter{}, newFakeServer(), newFixture(t).cache
 	for name, cfg := range map[string]Config{
-		"no node ID":   {StateDir: t.TempDir(), Mounter: m, Server: s},
-		"no state dir": {NodeID: "n", Mounter: m, Server: s},
-		"no mounter":   {NodeID: "n", StateDir: t.TempDir(), Server: s},
-		"no server":    {NodeID: "n", StateDir: t.TempDir(), Mounter: m},
+		"no node ID":   {StateDir: t.TempDir(), Mounter: m, Server: s, Cache: c},
+		"no state dir": {NodeID: "n", Mounter: m, Server: s, Cache: c},
+		"no mounter":   {NodeID: "n", StateDir: t.TempDir(), Server: s, Cache: c},
+		"no server":    {NodeID: "n", StateDir: t.TempDir(), Mounter: m, Cache: c},
+		"no cache":     {NodeID: "n", StateDir: t.TempDir(), Mounter: m, Server: s},
 	} {
 		if _, err := New(cfg); err == nil {
 			t.Errorf("%s: New succeeded", name)

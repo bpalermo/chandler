@@ -63,6 +63,9 @@ allow=(
 	':(exclude)bazel/registry.bzl'
 	':(exclude)scripts/registry.sh'
 	':(exclude)scripts/check-registry-config.sh'
+	# People copy install commands from the README, so it has to spell the
+	# registry out. Moving registries is bazel/registry.bzl plus this file.
+	':(exclude)README.md'
 )
 pattern="$(esc "${host}/${namespace}")(?![[:alnum:]_.-])"
 for probe in "registry: ${host}/${namespace}" "image=${csi}@sha256:0"; do

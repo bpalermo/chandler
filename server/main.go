@@ -42,6 +42,10 @@ func main() {
 		cacheDir       = flag.String("cache-dir", "", "directory the cache is kept in; empty keeps it in memory only")
 		cacheGrace     = flag.Duration("cache-grace", 24*time.Hour, "how long a cache entry no pod uses is kept")
 		negativeTTL    = flag.Duration("negative-ttl", 30*time.Second, "how long a not-found or permission-denied answer from a provider is remembered")
+		peerService    = flag.String("peer-service", "", "host:port of the headless Service listing the ready replicas; empty disables peer sync")
+		peerSelf       = flag.String("peer-self", "", "this replica's own address in that Service (default $POD_IP and the peer service's port)")
+		peerInterval   = flag.Duration("peer-sync-interval", 30*time.Second, "how often the cache is synced with one peer")
+		peerWarmUp     = flag.Duration("peer-warm-up", time.Minute, "longest the replica stays unready while copying a peer's cache at start")
 		showVersion    = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Var(&providers, "provider", "a provider as <name>=<gRPC target>; <name> is the scheme of the URIs it serves. Repeatable")
@@ -63,13 +67,14 @@ func main() {
 		NegativeTTL: *negativeTTL,
 		Log:         log,
 	}
-	if err := run(log, *listen, cfg, providers); err != nil {
+	peers := hub.Peers{Service: *peerService, Self: *peerSelf, Interval: *peerInterval, WarmUp: *peerWarmUp}
+	if err := run(log, *listen, cfg, peers, providers); err != nil {
 		log.Error("chandler-server failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, listen string, cfg hub.Config, providers []string) error {
+func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, providers []string) error {
 	limits, serverID := cfg.Limits, cfg.ServerID
 	switch {
 	case limits.MaxBytes == 0 || limits.MaxBytes > bundle.HardMaxBytes:
@@ -111,13 +116,40 @@ func run(log *slog.Logger, listen string, cfg hub.Config, providers []string) er
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
+	if peers.Service != "" {
+		switch {
+		case peers.Interval <= 0 || peers.WarmUp <= 0:
+			return errors.New("--peer-sync-interval and --peer-warm-up must be positive")
+		case peers.Self == "":
+			_, port, err := net.SplitHostPort(peers.Service)
+			if err != nil {
+				return fmt.Errorf("--peer-service: %w", err)
+			}
+			if ip := os.Getenv("POD_IP"); ip != "" {
+				peers.Self = net.JoinHostPort(ip, port)
+			}
+		}
+	}
+
 	server := grpc.NewServer()
 	chandlerv1.RegisterConfigDiscoveryServiceServer(server, h)
-	healthpb.RegisterHealthServer(server, health.NewServer())
+	chandlerv1.RegisterPeerSyncServer(server, h)
+	// Not ready until the cache is warm: a rolling restart must not move on
+	// from a replica that holds nothing.
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	// Alive is not the same as ready: a liveness probe asks for this
+	// service, so a replica that is still warming up is not restarted.
+	healthServer.SetServingStatus("live", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(server, healthServer)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	go h.Run(ctx)
+	go h.RunPeers(ctx, peers, func() {
+		log.Info("ready")
+		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	})
 	go func() {
 		<-ctx.Done()
 		log.Info("stopping")

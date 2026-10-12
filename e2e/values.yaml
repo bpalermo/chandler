@@ -13,6 +13,10 @@ server:
   image:
     <<: *local
     repository: localhost/chandler-server
+  # Two replicas on the one node, syncing often so the tests do not wait.
+  replicas: 2
+  peerSync:
+    interval: 2s
 providers:
   # Serves the ConfigMap run.sh creates and the tests add keys to.
   file:

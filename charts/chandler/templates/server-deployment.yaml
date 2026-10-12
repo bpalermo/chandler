@@ -9,6 +9,14 @@ metadata:
     app.kubernetes.io/component: server
 spec:
   replicas: {{ .Values.server.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # A replica is replaced only once its successor is ready, which means
+      # warm: it has copied the cache. The cache therefore survives a rollout
+      # even while a provider is down.
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       {{- include "chandler.selectorLabels" $selector | nindent 6 }}
@@ -41,6 +49,9 @@ spec:
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           args:
             - --listen=:{{ .Values.server.port }}
+            - --peer-service={{ include "chandler.name" . }}-server-peers.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
+            - --peer-sync-interval={{ .Values.server.peerSync.interval }}
+            - --peer-warm-up={{ .Values.server.peerSync.warmUp }}
             - --cache-dir=/var/cache/chandler
             - --cache-grace={{ .Values.server.cache.grace }}
             - --negative-ttl={{ .Values.server.cache.negativeTtl }}
@@ -60,16 +71,23 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           ports:
             - name: grpc
               containerPort: {{ .Values.server.port }}
+          # Ready once the cache is warm.
           readinessProbe:
             grpc:
               port: {{ .Values.server.port }}
-            periodSeconds: 5
+            periodSeconds: 2
           livenessProbe:
             grpc:
               port: {{ .Values.server.port }}
+              # Alive, as opposed to ready: see the readiness probe above.
+              service: live
             periodSeconds: 10
           securityContext:
             {{- include "chandler.restrictedSecurityContext" . | nindent 12 }}
@@ -83,6 +101,20 @@ spec:
       securityContext:
         # The image's user; makes the emptyDir writable by it.
         fsGroup: 65532
+      # Replicas hold each other's cache, so they should not share a fate.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "chandler.selectorLabels" $selector | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "chandler.selectorLabels" $selector | nindent 14 }}
       volumes:
         - name: cache
           emptyDir:

@@ -434,7 +434,7 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 		e.cacheControl, e.lastRefreshed, e.lastReferenced, e.orphaned = cc, now, now, false
 
 		h.bindLocked(r, e)
-		h.aliases[r.id] = alias{Provider: u.name, CacheKey: key.cacheKey, URI: r.uri}
+		h.aliases[r.id] = alias{Provider: u.name, CacheKey: key.cacheKey, URI: r.uri, Attributes: r.attributes}
 		delete(h.negative, r.id)
 		r.failure, r.answered, r.live = nil, true, true
 		ack()

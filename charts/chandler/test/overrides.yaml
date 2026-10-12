@@ -30,6 +30,9 @@ server:
     digest: ""
     tag: v9.9.9
   replicas: 3
+  peerSync:
+    interval: 5s
+    warmUp: 20s
   cache:
     sizeLimit: 512Mi
     grace: 1h

@@ -26,9 +26,17 @@ server:
     digest: "{@//server:image_push.digest}"
     pullPolicy: IfNotPresent
 
-  # Replicas are independent: each watches the providers itself and serves the
-  # drivers connected to it.
-  replicas: 1
+  # Each replica watches the providers itself and serves the drivers connected
+  # to it. Replicas copy each other's cache, which is how it survives a pod
+  # being replaced without a persistent volume: run at least two.
+  replicas: 2
+
+  peerSync:
+    # How often a replica syncs its cache with one other.
+    interval: 30s
+    # The longest a starting replica stays unready while it copies the cache
+    # of the ready ones.
+    warmUp: 60s
 
   # The gRPC port drivers connect to.
   port: 9000

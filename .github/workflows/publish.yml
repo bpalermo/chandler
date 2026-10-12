@@ -108,9 +108,16 @@ jobs:
       #
       # --config=ci refuses lockfile drift. The workspace is stamped by
       # default (.bazelrc), so the chart's version is this commit.
+      #
+      # --output_groups=+digest: the steps below read each index's digest
+      # file, which is not a default output. When the action that writes it is
+      # a disk-cache hit, Bazel leaves a non-requested output in the cache and
+      # the file is absent from bazel-out; asking for the group puts it there.
+      # (The first publish ran on an empty cache, so everything was built
+      # locally and the file happened to exist.)
       - name: Build the images, the chart and the tools
         run: |
-          bazel build --config=ci \
+          bazel build --config=ci --output_groups=+digest \
             //server:image_push //server:image_index \
             //csi:image_push //csi:image_index \
             //providers/s3:image_push //providers/s3:image_index \

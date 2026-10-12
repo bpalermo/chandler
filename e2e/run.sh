@@ -40,7 +40,23 @@ for image in "${images[@]}"; do
   kind load docker-image --name "${cluster}" "localhost/${image}:e2e"
 done
 
-# The suite expects the driver to be deployed; it checks the rollout itself.
-kubectl apply -f e2e/manifests/
+# Install the chart Bazel builds, with Bazel's pinned helm (no helm on PATH
+# needed). The release is created or upgraded in place, so a kept cluster is
+# reused; the image tag is fixed, so restart the driver afterwards to make a
+# pod from an earlier run pick up the image just loaded.
+bazel build "$@" //charts/chandler:chandler @helm//:helm
+bin="$(bazel info "$@" bazel-bin)"
+helm="$(bazel cquery "$@" @helm//:helm --output=files 2>/dev/null)"
+helm="$(bazel info "$@" execution_root)/${helm}"
+
+"${helm}" upgrade --install chandler "${bin}/charts/chandler/chandler.tgz" \
+  --namespace chandler-system --create-namespace \
+  --set csi.image.repository=localhost/chandler-csi \
+  --set csi.image.tag=e2e \
+  --set csi.image.pullPolicy=Never \
+  --wait --timeout 150s
+kubectl rollout restart daemonset/chandler-csi -n chandler-system
+# The suite checks the rollout itself too.
+kubectl rollout status daemonset/chandler-csi -n chandler-system --timeout=150s
 
 bazel test "$@" --config=e2e //e2e/...

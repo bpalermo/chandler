@@ -107,6 +107,7 @@ func (h *handler) Fail(st *status.Status) { h.failed <- st }
 
 func (h *handler) Cached() []string { return []string{"v0", h.Applied()} }
 func (h *handler) Loaded() string   { return "" }
+func (h *handler) Token() string    { return "pod-token" }
 
 func (h *handler) Applied() string {
 	h.mu.Lock()
@@ -161,7 +162,8 @@ func TestSubscribeAckNackAndResync(t *testing.T) {
 
 	sub := f.next(t).GetSubscribe()
 	if sub.GetSubscriptionId() != "vol/0" || sub.GetUri() != "file:///app.yaml" ||
-		sub.GetWorkload().GetPodName() != "web-0" || sub.HasAppliedVersion() ||
+		sub.GetWorkload().GetPodName() != "web-0" || sub.GetWorkload().GetServiceAccountToken() != "pod-token" ||
+		sub.HasAppliedVersion() ||
 		len(sub.GetCachedVersions()) != 1 || sub.GetCachedVersions()[0] != "v0" {
 		t.Fatalf("subscribe = %v", sub)
 	}

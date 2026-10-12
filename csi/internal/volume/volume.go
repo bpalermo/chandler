@@ -108,6 +108,40 @@ type Volume struct {
 	changed chan struct{}
 	// closed is set when the volume is being removed.
 	closed bool
+	// token is the pod's service account token, as kubelet last supplied
+	// it. It is kept in memory only.
+	token string
+}
+
+// SetToken records the pod's service account token and reports whether it
+// changed.
+func (v *Volume) SetToken(token string) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	changed := token != v.token
+	v.token = token
+	return changed
+}
+
+// Token returns the pod's service account token, "" when kubelet has not
+// supplied one since the driver started.
+func (v *Volume) Token() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.token
+}
+
+// Refused reports whether the server last refused any of the volume's
+// sources, as it does a subscription whose token it cannot verify.
+func (v *Volume) Refused() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for _, failure := range v.failures {
+		if failure != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Create makes a new, empty volume in dir, which must not hold one.

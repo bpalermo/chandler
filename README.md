@@ -68,7 +68,7 @@ in [api/chandler/v1](api/chandler/v1).
 | File provider | Serves files and directories from a volume, such as a ConfigMap |
 | S3 provider | Serves objects and prefixes from allow-listed buckets, on AWS or an S3-compatible store |
 | Helm chart | Installs the driver and the server, and optionally the file and S3 providers |
-| Security | Mutual TLS between all components, with a chart-issued private authority by default or your own certificates. Not built: SPIFFE as a certificate source, verification of the pod's identity, and authorisation of which pods may read which URIs |
+| Security | Mutual TLS between all components, with a chart-issued private authority by default or your own certificates. The server verifies which pod a volume belongs to from its service account token. Not built: SPIFFE as a certificate source, and authorisation of which pods may read which URIs |
 | Staged rollouts | A provider releases a new version to a growing share of pods and can hold it or take it back; the file and S3 providers have a time-based ramp |
 | Application acknowledgement | A volume with `appAck: "true"` gets a manifest and an HTTP API on a Unix socket. The application reports whether it loaded each version; a rejected one is reverted at once and reported to the provider |
 

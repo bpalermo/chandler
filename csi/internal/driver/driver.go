@@ -9,6 +9,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -46,6 +47,13 @@ const (
 	podNamespaceKey   = "csi.storage.k8s.io/pod.namespace"
 	podUIDKey         = "csi.storage.k8s.io/pod.uid"
 	serviceAccountKey = "csi.storage.k8s.io/serviceAccount.name"
+	// Set because the CSIDriver object has tokenRequests: a JSON object from
+	// audience to {"token": ..., "expirationTimestamp": ...}.
+	tokensKey = "csi.storage.k8s.io/serviceAccount.tokens"
+
+	// DefaultTokenAudience is the audience of the token kubelet is asked
+	// for, and the server expects.
+	DefaultTokenAudience = "chandler"
 
 	volumesDir = "volumes"
 
@@ -87,6 +95,7 @@ type Driver struct {
 	mounter     mount.Mounter
 	server      Subscriber
 	cache       volume.Cache
+	audience    string
 	timeout     time.Duration
 	cachedAfter time.Duration
 
@@ -120,6 +129,9 @@ type Config struct {
 	// PublishTimeout bounds the wait for a volume's sources; zero means
 	// DefaultPublishTimeout.
 	PublishTimeout time.Duration
+	// TokenAudience is the audience of the pod token to pass to the server;
+	// empty means DefaultTokenAudience.
+	TokenAudience string
 	// CachedAfter is how long a volume with failurePolicy UseCached waits
 	// for an unreachable server before it is mounted from the node cache;
 	// zero means DefaultCachedAfter.
@@ -146,6 +158,9 @@ func New(cfg Config) (*Driver, error) {
 	if cfg.CachedAfter == 0 {
 		cfg.CachedAfter = DefaultCachedAfter
 	}
+	if cfg.TokenAudience == "" {
+		cfg.TokenAudience = DefaultTokenAudience
+	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, volumesDir), dirMode); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
@@ -156,6 +171,7 @@ func New(cfg Config) (*Driver, error) {
 		mounter:     cfg.Mounter,
 		server:      cfg.Server,
 		cache:       cfg.Cache,
+		audience:    cfg.TokenAudience,
 		timeout:     cfg.PublishTimeout,
 		cachedAfter: cfg.CachedAfter,
 		published:   make(map[string]*volume.Volume),
@@ -218,8 +234,24 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
+	token := d.token(attributes)
+
 	unlock := d.volumes.lock(volumeID)
 	defer unlock()
+
+	// kubelet publishes a mounted volume again and again, to hand over a
+	// fresh token before the old one expires. That path must cost nothing.
+	d.mu.Lock()
+	known := d.published[volumeID]
+	d.mu.Unlock()
+	if known != nil && known.Meta().TargetPath == target {
+		// A subscription the server refused, as it does one made without a
+		// token after a driver restart, is made again with the new token.
+		if known.SetToken(token) && known.Refused() {
+			d.subscribe(known)
+		}
+		return &csi.NodePublishVolumeResponse{}, nil
+	}
 
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {
@@ -247,6 +279,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		d.discard(volumeID)
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
+	v.SetToken(token)
 	d.subscribe(v)
 
 	if err := d.waitReady(ctx, v, spec.FailurePolicy); err != nil {
@@ -391,6 +424,18 @@ func (d *Driver) InUse() []string {
 	return uris
 }
 
+// token returns the pod's service account token for the server's audience
+// from a volume context, "" when kubelet supplied none.
+func (d *Driver) token(attributes map[string]string) string {
+	var tokens map[string]struct {
+		Token string `json:"token"`
+	}
+	if json.Unmarshal([]byte(attributes[tokensKey]), &tokens) != nil {
+		return ""
+	}
+	return tokens[d.audience].Token
+}
+
 // subscribe registers every source of v with the config server.
 func (d *Driver) subscribe(v *volume.Volume) {
 	meta := v.Meta()
@@ -484,6 +529,7 @@ func (h sourceHandler) Fail(st *rpcstatus.Status) { h.volume.Fail(h.index, st) }
 func (h sourceHandler) Applied() string           { return h.volume.Applied(h.index) }
 func (h sourceHandler) Cached() []string          { return h.volume.CachedVersions(h.index) }
 func (h sourceHandler) Loaded() string            { return h.volume.Loaded(h.index) }
+func (h sourceHandler) Token() string             { return h.volume.Token() }
 
 func (d *Driver) volumePath(volumeID string) string {
 	return filepath.Join(d.stateDir, volumesDir, volumeID)

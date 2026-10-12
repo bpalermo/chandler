@@ -418,3 +418,42 @@ func waitFor(t *testing.T, condition func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// With verification on, who the pod is comes from its token: a driver cannot
+// speak for a pod it holds no token of, nor claim another namespace.
+func TestSubscriptionIdentityComesFromTheToken(t *testing.T) {
+	p := newFakeProvider()
+	p.varyOn = []string{"namespace"}
+	h := startWith(t, Config{Verify: func(token string) (Identity, error) {
+		if token != "good" {
+			return Identity{}, fmt.Errorf("invalid service account token: %q", token)
+		}
+		return Identity{Namespace: "shop", ServiceAccount: "web", PodName: "web-0", PodUID: "uid-1"}, nil
+	}}, p)
+	n := h.connect(t)
+	subscribe := func(id, token, claimedNamespace string) {
+		t.Helper()
+		n.send(t, chandlerv1.ConfigRequest_builder{
+			Subscribe: chandlerv1.Subscribe_builder{
+				SubscriptionId: proto.String(id),
+				Uri:            proto.String("file:///app.yaml"),
+				Workload: chandlerv1.Workload_builder{
+					Namespace:           proto.String(claimedNamespace),
+					ServiceAccountToken: proto.String(token),
+				}.Build(),
+			}.Build(),
+		}.Build())
+	}
+
+	subscribe("none/0", "", "shop")
+	n.expectError(t, "none/0", codes.Unauthenticated)
+	subscribe("bad/0", "forged", "shop")
+	n.expectError(t, "bad/0", codes.Unauthenticated)
+
+	// The driver claims another namespace; the token's is what counts.
+	subscribe("ok/0", "good", "kube-system")
+	watch := h.provider.expectWatch(t, "file:///app.yaml")
+	if got := watch.GetAttributes()["namespace"]; got != "shop" {
+		t.Errorf("the provider was asked on behalf of namespace %q, want the token's", got)
+	}
+}

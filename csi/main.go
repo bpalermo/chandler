@@ -35,6 +35,7 @@ func main() {
 		stateDir       = flag.String("state-dir", "/var/lib/chandler", "directory on the host where volumes are kept")
 		server         = flag.String("server", "", "gRPC target of the config server, e.g. dns:///chandler-server.chandler-system.svc:9000")
 		serverIdentity = flag.String("server-identity", "", "the identity (DNS name or SPIFFE ID) the config server's certificate must carry (default: the host name in --server)")
+		tokenAudience  = flag.String("token-audience", driver.DefaultTokenAudience, "the audience of the pod token kubelet supplies for the config server; matches the CSIDriver object's tokenRequests")
 		showVersion    = flag.Bool("version", false, "print the version and exit")
 	)
 	var tls transport.Options
@@ -59,13 +60,13 @@ func main() {
 	if identity == "" {
 		identity = transport.HostIdentity(*server)
 	}
-	if err := run(log, *endpoint, *nodeID, *stateDir, *server, transport.Dial(src, []string{identity})); err != nil {
+	if err := run(log, *endpoint, *nodeID, *stateDir, *server, transport.Dial(src, []string{identity}), *tokenAudience); err != nil {
 		log.Error("chandler-csi failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, creds credentials.TransportCredentials) error {
+func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, creds credentials.TransportCredentials, tokenAudience string) error {
 	socket, ok := strings.CutPrefix(endpoint, "unix://")
 	if !ok || socket == "" {
 		return fmt.Errorf("endpoint %q is not a unix:// socket", endpoint)
@@ -89,12 +90,13 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, cred
 		return err
 	}
 	d, err := driver.New(driver.Config{
-		NodeID:   nodeID,
-		Version:  version.Version,
-		StateDir: stateDir,
-		Mounter:  mount.System{},
-		Server:   configServer,
-		Cache:    nodeCache,
+		NodeID:        nodeID,
+		Version:       version.Version,
+		StateDir:      stateDir,
+		Mounter:       mount.System{},
+		Server:        configServer,
+		Cache:         nodeCache,
+		TokenAudience: tokenAudience,
 	})
 	if err != nil {
 		return err
@@ -147,15 +149,17 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, cred
 	return server.Serve(listener)
 }
 
-// logCalls logs every CSI call that changes something or fails; kubelet's
-// periodic probes would otherwise drown the log.
+// logCalls logs the CSI calls that fail, and the unpublishing of volumes;
+// kubelet's periodic probes and republishes would otherwise drown the log.
 func logCalls(log *slog.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		resp, err := handler(ctx, req)
 		switch {
 		case err != nil:
 			log.Error("CSI call failed", "method", info.FullMethod, "error", err)
-		case strings.Contains(info.FullMethod, "Publish"):
+		case strings.HasSuffix(info.FullMethod, "/NodeUnpublishVolume"):
+			// Publish is not logged: kubelet repeats it for every mounted
+			// volume to refresh the pod's token.
 			log.Info("CSI call", "method", info.FullMethod)
 		}
 		return resp, err

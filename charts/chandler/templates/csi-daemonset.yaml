@@ -47,6 +47,7 @@ spec:
             - --state-dir={{ .Values.csi.stateDir }}
             - --server={{ include "chandler.name" . }}-server.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
             - --server-identity={{ include "chandler.identity" $server }}
+            - --token-audience={{ .Values.server.podIdentity.audience }}
             {{- include "chandler.tlsArgs" $selector | nindent 12 }}
           env:
             - name: NODE_NAME

@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/queue",
+        "//common/transport",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",

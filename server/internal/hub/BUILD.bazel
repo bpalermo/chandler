@@ -19,6 +19,7 @@ go_library(
         "//common/queue",
         "//common/rollout",
         "//common/telemetry",
+        "//common/transport",
         "//common/uri",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel_metric//:metric",

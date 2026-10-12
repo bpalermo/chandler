@@ -46,6 +46,8 @@ type security struct {
 	// must carry, when it is not the host name of its target.
 	providers providerFlags
 	// How the pod behind a subscription is identified.
+	// maxConnectionAge is after how long a driver is made to reconnect.
+	maxConnectionAge         time.Duration
 	tokenAudience, tokenKeys string
 	trustDriver              bool
 }
@@ -60,6 +62,7 @@ func main() {
 	flag.StringVar(&sec.tokenAudience, "pod-token-audience", "chandler", "the audience the pods' service account tokens must have been issued for")
 	flag.StringVar(&sec.tokenKeys, "pod-token-keys", identity.InClusterJWKS, "where the cluster's token signing keys are: a URL, read with this pod's service account, or a file")
 	flag.BoolVar(&sec.trustDriver, "trust-driver-identity", false, "do not verify the pods' tokens: believe the namespace, service account and pod a driver reports")
+	flag.DurationVar(&sec.maxConnectionAge, "max-connection-age", 30*time.Minute, "how long a driver's connection lives before it is closed so that the driver reconnects, possibly to another replica; 0 never closes one")
 	flag.Var(&sec.providers, "provider-identity", "<name>=<identity>: the identity a provider's certificate must carry, when it is not the host name of its target. Repeatable")
 	var (
 		listen         = flag.String("listen", ":9000", "address the server's gRPC server listens on")
@@ -218,12 +221,13 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 
 	// Drivers may subscribe, replicas may sync, and neither may do the
 	// other's part.
-	server := grpc.NewServer(transport.Serve(src, func(method string) []string {
+	options := transport.Serve(src, func(method string) []string {
 		if strings.HasPrefix(method, "/"+chandlerv1.PeerSync_ServiceDesc.ServiceName+"/") {
 			return peerIdentities
 		}
 		return drivers
-	})...)
+	})
+	server := grpc.NewServer(append(options, transport.ServerKeepalive(sec.maxConnectionAge)...)...)
 	chandlerv1.RegisterConfigDiscoveryServiceServer(server, h)
 	chandlerv1.RegisterPeerSyncServer(server, h)
 	// Not ready until the cache is warm: a rolling restart must not move on

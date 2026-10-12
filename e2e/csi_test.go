@@ -641,3 +641,54 @@ func TestStagedRollout(t *testing.T) {
 		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
 	}
 }
+
+// The server closes every driver connection after a while, so that drivers
+// spread over the replicas. A pod must not notice: it keeps its files, and
+// updates keep arriving through whichever replica the driver lands on.
+func TestUpdatesSurviveReconnects(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	ns := newNamespace(ctx, t)
+	key := ns + ".app.yaml"
+
+	connections := func() (int, error) {
+		logs, err := kubectl(ctx, "logs", "-n", driverNamespace, "-l", "app.kubernetes.io/component=server", "--tail=-1")
+		return strings.Count(logs, `"msg":"driver connected"`), err
+	}
+
+	publish(ctx, t, key, "v0")
+	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)))
+	if _, err := waitForPodPhase(ctx, ns, "consumer", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := connections()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// e2e/values.yaml cuts connections every half minute. Keep publishing
+	// until the driver has been cut and has reconnected three times, and
+	// require every version to arrive.
+	for i := 1; ; i++ {
+		want := fmt.Sprintf("v%d", i)
+		publish(ctx, t, key, want)
+		expectFile(ctx, t, ns, "consumer", "app.yaml", want)
+		now, err := connections()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if now >= before+3 {
+			t.Logf("%d versions delivered across %d reconnects", i, now-before)
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the driver reconnected only %d times; connections are not being cut", now-before)
+		case <-time.After(5 * time.Second):
+		}
+	}
+	if restarts := mustKubectl(ctx, t, "get", "pod", "consumer", "-n", ns,
+		"-o", "jsonpath={.status.containerStatuses[0].restartCount}"); restarts != "0" {
+		t.Errorf("the container restarted %s times", restarts)
+	}
+}

@@ -57,6 +57,7 @@ server:
     grace: 1h
     negativeTtl: 5s
   port: 9443
+  maxConnectionAge: 5m
   providers:
     - name: s3x
       target: provider-s3.config.svc:9100

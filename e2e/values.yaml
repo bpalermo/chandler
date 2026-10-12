@@ -21,6 +21,9 @@ server:
     repository: localhost/chandler-server
   # Two replicas on the one node, syncing often so the tests do not wait.
   replicas: 2
+  # Connections are cut every half minute, so the whole suite runs with
+  # drivers reconnecting, as they do every half hour in production.
+  maxConnectionAge: 30s
   peerSync:
     interval: 2s
 providers:

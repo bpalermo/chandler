@@ -147,7 +147,8 @@ func run(log *slog.Logger, listen, name string, pollInterval time.Duration, endp
 	}
 	// Only config servers may watch: a provider holds the origin's
 	// credentials and serves whatever it is asked for.
-	server := grpc.NewServer(transport.Serve(src, func(string) []string { return servers })...)
+	options := transport.Serve(src, func(string) []string { return servers })
+	server := grpc.NewServer(append(options, transport.ServerKeepalive(0)...)...)
 	chandlerv1.RegisterConfigProviderServer(server, &provider.Server{
 		Name:         name,
 		Origin:       origin.Origin{Client: client, Buckets: buckets, Rollouts: rollouts},

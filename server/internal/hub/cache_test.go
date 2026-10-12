@@ -457,3 +457,34 @@ func TestSubscriptionIdentityComesFromTheToken(t *testing.T) {
 		t.Errorf("the provider was asked on behalf of namespace %q, want the token's", got)
 	}
 }
+
+// An update the driver neither ACKs nor NACKs is sent once more: the update
+// or its answer may have been lost. Once, not for ever.
+func TestUnansweredUpdateIsResentOnce(t *testing.T) {
+	h := startWith(t, Config{ResendAfter: 150 * time.Millisecond}, newFakeProvider())
+	n := h.connect(t)
+	v1, v2 := oneFile("v1"), oneFile("v2")
+
+	n.subscribe(t, "a/0", "file:///app.yaml", "")
+	watch := h.provider.expectWatch(t, "file:///app.yaml")
+	h.provider.emit(watch.GetWatchId(), "n1", "r1", v1)
+	first := n.expectUpdate(t, "a/0", v1)
+	again := n.expectUpdate(t, "a/0", v1) // the driver said nothing
+	if !again.HasBundle() || again.GetNonce() == first.GetNonce() {
+		t.Errorf("resend = %v, want the bundle under a new nonce", again)
+	}
+	select {
+	case msg := <-n.in:
+		t.Fatalf("sent a third time: %v", msg)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// An answered update is not sent again.
+	h.provider.emit(watch.GetWatchId(), "n2", "r2", v2)
+	n.send(t, ack(n.expectUpdate(t, "a/0", v2)))
+	select {
+	case msg := <-n.in:
+		t.Fatalf("an acknowledged update was sent again: %v", msg)
+	case <-time.After(500 * time.Millisecond):
+	}
+}

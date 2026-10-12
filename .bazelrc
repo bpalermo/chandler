@@ -1,0 +1,7 @@
+common --enable_platform_specific_config
+build --incompatible_strict_action_env
+test --test_output=errors
+# CI: the lockfile must already be up to date.
+common:ci --lockfile_mode=error
+
+try-import %workspace%/user.bazelrc

@@ -1,0 +1,5 @@
+/bazel-*
+user.bazelrc
+.idea/
+.vscode/
+*.swp

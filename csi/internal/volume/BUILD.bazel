@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "volume",
+    srcs = [
+        "spec.go",
+        "volume.go",
+    ],
+    importpath = "github.com/bpalermo/chandler/csi/internal/volume",
+    visibility = ["//csi:__subpackages__"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/bundle",
+        "//common/uri",
+        "//csi/internal/atomic",
+        "@in_yaml_go_yaml_v3//:yaml",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)
+
+go_test(
+    name = "volume_test",
+    srcs = ["volume_test.go"],
+    embed = [":volume"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/bundle",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

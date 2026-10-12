@@ -1,0 +1,73 @@
+{{- $selector := dict "root" . "component" "server" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chandler.name" . }}-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      {{- include "chandler.selectorLabels" $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chandler.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      {{- with .Values.server.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "chandler.image" (dict "root" . "image" .Values.server.image) }}
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          args:
+            - --listen=:{{ .Values.server.port }}
+            - --max-bundle-bytes={{ int64 .Values.server.maxBundleBytes }}
+            - --max-bundle-files={{ int64 .Values.server.maxBundleFiles }}
+            {{- if .Values.providers.file.enabled }}
+            - --provider={{ .Values.providers.file.name }}={{ include "chandler.name" . }}-provider-file.{{ .Release.Namespace }}.svc:{{ .Values.providers.file.port }}
+            {{- end }}
+            {{- range .Values.server.providers }}
+            - --provider={{ required "server.providers[].name is required" .name }}={{ required "server.providers[].target is required" .target }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.server.port }}
+          readinessProbe:
+            grpc:
+              port: {{ .Values.server.port }}
+            periodSeconds: 5
+          livenessProbe:
+            grpc:
+              port: {{ .Values.server.port }}
+            periodSeconds: 10
+          securityContext:
+            {{- include "chandler.restrictedSecurityContext" . | nindent 12 }}
+          {{- with .Values.server.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

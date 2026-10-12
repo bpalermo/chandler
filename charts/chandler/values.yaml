@@ -4,20 +4,93 @@ nameOverride: ""
 # Pull secrets added to every pod of the chart.
 imagePullSecrets: []
 
+# Every image of the chart is set the same way:
+#
+#   repository  Substituted at package time from the component's image_push
+#               target, which takes it from bazel/registry.bzl: the registry
+#               is spelled out in one place.
+#   tag         Defaults to the chart's appVersion. Ignored when digest is set.
+#   digest      Substituted at package time with the digest of the image index
+#               the push target publishes, so a published chart can only
+#               reference the images built from the same commit. Takes
+#               precedence over tag. A chart you build yourself pins the image
+#               YOUR build produces, which exists nowhere until it is pushed:
+#               install it with `--set <component>.image.digest=` (empty) to
+#               use `tag` instead, as e2e/run.sh does.
+
+# The config server. CSI drivers subscribe to it, and it watches the providers.
+server:
+  image:
+    repository: "{@//server:image_push.repository}"
+    tag: ""
+    digest: "{@//server:image_push.digest}"
+    pullPolicy: IfNotPresent
+
+  # Replicas are independent: each watches the providers itself and serves the
+  # drivers connected to it.
+  replicas: 1
+
+  # The gRPC port drivers connect to.
+  port: 9000
+
+  # Providers that run outside this chart, each as
+  #   - name: s3          # the scheme of the URIs it serves; lowercase
+  #     target: host:port # gRPC target of its ConfigProvider service
+  # The file provider below registers itself when enabled.
+  providers: []
+
+  # Limits on what a provider may emit for one URI. A bundle travels in one
+  # gRPC message, so maxBundleBytes cannot exceed 3145728.
+  maxBundleBytes: 1048576
+  maxBundleFiles: 256
+
+  nodeSelector: {}
+  tolerations: []
+  resources: {}
+  podAnnotations: {}
+
+providers:
+  # The file provider serves the files of one pod volume: a ConfigMap, or any
+  # other volume something keeps up to date. <name>:///app.yaml is the file
+  # app.yaml at the root of the volume; <name>:///flags/ is a directory.
+  #
+  # It has no way to validate what it serves. Whoever writes the volume is
+  # responsible for its content.
+  file:
+    enabled: false
+
+    image:
+      repository: "{@//providers/file:image_push.repository}"
+      tag: ""
+      digest: "{@//providers/file:image_push.digest}"
+      pullPolicy: IfNotPresent
+
+    # The scheme pods use for this provider's URIs.
+    name: file
+
+    # The volume to serve, as a Kubernetes volume source. Required when the
+    # provider is enabled. For example:
+    #   source:
+    #     configMap:
+    #       name: app-config
+    source: {}
+
+    # How often watched files are re-read. A change to a mounted ConfigMap
+    # also has to reach the pod first, which kubelet does about once a minute.
+    pollInterval: 2s
+
+    port: 9100
+
+    nodeSelector: {}
+    tolerations: []
+    resources: {}
+    podAnnotations: {}
+
 # The CSI node driver, one pod per node.
 csi:
   image:
-    # Substituted at package time from //csi:image_push, which takes it from
-    # bazel/registry.bzl: the registry is spelled out in one place.
     repository: "{@//csi:image_push.repository}"
-    # Defaults to the chart's appVersion. Ignored when digest is set.
     tag: ""
-    # Substituted at package time with the digest of the image index
-    # //csi:image_push publishes, so a published chart can only reference the
-    # image built from the same commit. Takes precedence over tag. A chart you
-    # build yourself pins the image YOUR build produces, which exists nowhere
-    # until it is pushed: install it with `--set csi.image.digest=` (empty) to
-    # use `tag` instead, as e2e/run.sh does.
     digest: "{@//csi:image_push.digest}"
     pullPolicy: IfNotPresent
 

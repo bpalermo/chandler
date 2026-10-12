@@ -280,10 +280,12 @@ message Feedback {
 //
 // status.code is one of:
 //
-//   NOT_FOUND          the resource does not exist at the origin
-//   PERMISSION_DENIED  the provider's credentials may not read it
-//   INVALID_ARGUMENT   the URI is malformed or has unknown parameters
-//   UNAVAILABLE        the origin cannot be reached
+//   NOT_FOUND           the resource does not exist at the origin
+//   PERMISSION_DENIED   the provider's credentials may not read it
+//   INVALID_ARGUMENT    the URI is malformed or has unknown parameters
+//   RESOURCE_EXHAUSTED  the resource is larger than the limits the server
+//                       gave in WatcherHello, so no Bundle can be built
+//   UNAVAILABLE         the origin cannot be reached
 message WatchError {
   // The watch the error is for.
   string watch_id = 1;

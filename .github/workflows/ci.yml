@@ -59,6 +59,7 @@ jobs:
             //server:image_push //server:image_index \
             //csi:image_push //csi:image_index \
             //providers/s3:image_push //providers/s3:image_index \
+            //providers/file:image_push //providers/file:image_index \
             //charts/chandler:chandler //charts/chandler:chandler.push_registry \
             //bazel/cosign //bazel/cosign:verify_image
 

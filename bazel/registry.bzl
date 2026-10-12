@@ -2,9 +2,9 @@
 
 Every published coordinate is derived from the constants below -- the
 `image_push` of each `go_image` (//server:image_push, //csi:image_push,
-//providers/s3:image_push), the chart push (//charts/chandler:chandler.push_registry),
-the chart's default CSI repository (charts/chandler/values.yaml, which takes it
-from //csi:image_push), and -- through scripts/registry.sh, which parses THIS
+//providers/s3:image_push, //providers/file:image_push), the chart push (//charts/chandler:chandler.push_registry),
+the chart's default image repositories (charts/chandler/values.yaml, which
+takes each from its image_push), and -- through scripts/registry.sh, which parses THIS
 file -- every workflow step and verifier. Nothing else may spell the registry
 out: scripts/check-registry-config.sh fails CI on a literal anywhere outside
 its allow-list.
@@ -14,6 +14,7 @@ The coordinates:
     <IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/server
     <IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/csi
     <IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/provider-s3
+    <IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/provider-file
     oci://<IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/chandler        (the chart)
 
 Repositories are not prefixed with the project name: the namespace already is
@@ -40,7 +41,7 @@ def image_repository(component):
     """Repository path (no host) of a component's image.
 
     Args:
-      component: "server", "csi" or "provider-s3".
+      component: "server", "csi", "provider-s3" or "provider-file".
 
     Returns:
       e.g. "shipchandler/csi".
@@ -51,7 +52,7 @@ def image_reference(component):
     """Host-qualified image repository of a component.
 
     Args:
-      component: "server", "csi" or "provider-s3".
+      component: "server", "csi", "provider-s3" or "provider-file".
 
     Returns:
       e.g. "quay.io/shipchandler/csi".

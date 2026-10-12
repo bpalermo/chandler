@@ -4,15 +4,17 @@ Guidance for agents working in this repository.
 
 ## What this is
 
-Chandler delivers configuration files to pods through a CSI driver. Three
-binaries: the CSI node driver (`csi`), the config server (`server`) and the S3
-reference provider (`providers/s3`). [docs/design.md](docs/design.md) is the
+Chandler delivers configuration files to pods through a CSI driver. Four
+binaries: the CSI node driver (`csi`), the config server (`server`), the file
+provider (`providers/file`) and the S3 reference provider (`providers/s3`). [docs/design.md](docs/design.md) is the
 design and the protos in `api/chandler/v1` are the contracts; read both before
 changing behaviour, and update them in the same pull request when behaviour
 changes.
 
-The project is early. The driver mounts an empty volume; the server and the
-provider are placeholders. The design describes the target, not the code.
+The project is early. Configuration is delivered end to end from the file
+provider; the S3 provider is a placeholder. The design describes the target,
+and its last section, "Implementation status", says what is built. Keep that
+section true in the same pull request that changes it.
 
 ## Build and test
 
@@ -79,6 +81,13 @@ hand-editing what Gazelle owns.
 - **The application-facing API is HTTP over a Unix socket**, not gRPC, so
   applications need no SDK.
 
+## Concurrency
+
+- Only one goroutine may call `Send` on a gRPC stream. Producers push to a
+  `common/queue` and one goroutine drains it.
+- Nothing blocks while holding a lock: queue the message, do not send it.
+- Run the tests with `--@rules_go//go/config:race` after touching any of this.
+
 ## Tests
 
 - Unit tests sit next to the code and run under `bazel test //...`.
@@ -87,7 +96,10 @@ hand-editing what Gazelle owns.
   `chandler-e2e`, loads the images, installs the chart built from the checkout
   and runs the suite. Set `E2E_KEEP_CLUSTER=1` to keep the cluster.
 - Every change that adds user-visible behaviour extends the end-to-end suite.
-- The S3 provider is validated against a LocalStack sidecar, not a real bucket.
+- The end-to-end suite gets its configuration from the file provider, serving
+  a ConfigMap, so it needs nothing outside the cluster. Provider-specific
+  behaviour is tested against that provider's own origin: for S3, a LocalStack
+  sidecar, not a real bucket.
 - Pin test images by digest.
 
 ## Images, chart and publishing
@@ -100,9 +112,17 @@ hand-editing what Gazelle owns.
 - The publish workflow reads files from `bazel-out`. An output that is not a
   target's default output is absent there on a cache hit, so request its
   output group in the build step (see `--output_groups=+digest`).
-- Image repositories are `server`, `csi` and `provider-s3`; the chart is
+- Image repositories are `server`, `csi`, `provider-file` and `provider-s3`;
+  the chart is
   `chandler`.
 - Images are built with the `go_image` macro in `bazel/image/defs.bzl`.
+- A new image has to be added in each place that lists them: the quay.io
+  repository (created by hand), `scripts/registry.sh` and the comments in
+  `bazel/registry.bzl`, the build lists in `ci.yml` and `publish.yml` (push,
+  record, sign, verify), `e2e/run.sh` and `e2e/images_test.go`. If the chart
+  deploys it, also `values.yaml`, the chart's `images` and
+  `PINNED_COMPONENTS`, `scripts/check-registry-config.sh` and the pin guard in
+  `publish.yml`.
 - The chart's version and image pin are stamped at package time. Do not write a
   version or a digest into `Chart.yaml` or `values.yaml` by hand.
   `//charts/chandler:pin_test` checks the result.

@@ -48,15 +48,18 @@ echo "setting: ${host}/${namespace}"
 
 esc() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|/]/\\&/g'; }
 
-# --- 2. the chart's CSI default is derived -----------------------------------
+# --- 2. the chart's image defaults are derived --------------------------------
 values=charts/chandler/values.yaml
-n_repo="$(grep -cE '^[[:space:]]*repository:[[:space:]]*"\{@//csi:image_push\.repository\}"[[:space:]]*$' "$values" || true)"
-n_digest="$(grep -cE '^[[:space:]]*digest:[[:space:]]*"\{@//csi:image_push\.digest\}"[[:space:]]*$' "$values" || true)"
-if [ "$n_repo" != 1 ] || [ "$n_digest" != 1 ]; then
-	bad "${values} must default csi.image.repository to \"{@//csi:image_push.repository}\" and csi.image.digest to \"{@//csi:image_push.digest}\" (found ${n_repo} and ${n_digest}) -- the chart's CSI default would not come from bazel/registry.bzl and the pushed digest"
-else
-	echo "ok: ${values} derives the CSI image from //csi:image_push (${csi})"
-fi
+for target in //csi:image_push //server:image_push //providers/file:image_push; do
+	t="$(esc "$target")"
+	n_repo="$(grep -cE "^[[:space:]]*repository:[[:space:]]*\"\{@${t}\.repository\}\"[[:space:]]*\$" "$values" || true)"
+	n_digest="$(grep -cE "^[[:space:]]*digest:[[:space:]]*\"\{@${t}\.digest\}\"[[:space:]]*\$" "$values" || true)"
+	if [ "$n_repo" != 1 ] || [ "$n_digest" != 1 ]; then
+		bad "${values} must default one image's repository to \"{@${target}.repository}\" and its digest to \"{@${target}.digest}\" (found ${n_repo} and ${n_digest}) -- that default would not come from bazel/registry.bzl and the pushed digest"
+	else
+		echo "ok: ${values} derives an image from ${target}"
+	fi
+done
 
 # --- 3. no literal outside the allow-list ------------------------------------
 allow=(

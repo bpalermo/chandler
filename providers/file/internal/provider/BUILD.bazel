@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "provider",
+    srcs = ["provider.go"],
+    importpath = "github.com/bpalermo/chandler/providers/file/internal/provider",
+    visibility = ["//providers/file:__subpackages__"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/bundle",
+        "//common/uri",
+        "//providers/file/internal/source",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "provider_test",
+    srcs = ["provider_test.go"],
+    embed = [":provider"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/bundle",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

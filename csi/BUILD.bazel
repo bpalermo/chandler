@@ -9,6 +9,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//common/version",
+        "//csi/internal/client",
         "//csi/internal/driver",
         "//csi/internal/mount",
         "@com_github_container_storage_interface_spec//lib/go/csi",

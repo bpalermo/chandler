@@ -4,9 +4,11 @@ Chandler delivers configuration files to Kubernetes pods through a CSI driver.
 A pod names the configuration it wants with URIs; the driver mounts the files
 read-only and replaces them atomically when they change.
 
-> **Status: early development.** The CSI driver mounts a volume, but nothing
-> delivers configuration into it yet. The config server and the S3 provider are
-> placeholders. See [What works today](#what-works-today).
+> **Status: early development.** Configuration is delivered end to end from
+> the file provider, and updated in place. There is no security yet:
+> connections are plaintext and any pod can read any URI. Caching, staged
+> rollouts and the S3 provider are not built. See
+> [What works today](#what-works-today).
 
 ## How it is meant to work
 
@@ -25,8 +27,9 @@ flowchart LR
   growing percentage of pods, and pushes them to the drivers. The protocol
   acknowledges every update, in the style of Envoy xDS.
 - **Providers.** Plugins behind one streaming gRPC interface. Each provider
-  owns how configuration is published and validated; the S3 provider in this
-  repository is a reference implementation.
+  owns how configuration is published and validated. This repository has a
+  file provider, which serves a directory such as a mounted ConfigMap, and
+  will have an S3 provider as a reference implementation.
 
 Configuration content is opaque to the server and the driver. They deliver
 bytes; they never parse them.
@@ -41,11 +44,14 @@ volumes:
       readOnly: true
       volumeAttributes:
         sources: |
-          - uri: s3://acme-config/payments/app.yaml
+          - uri: file:///payments/app.yaml
             path: app.yaml
-          - uri: s3://acme-config/shared/flags/
+          - uri: file:///shared/flags/
             path: flags
 ```
+
+The scheme names the provider. A URI ending in `/` is a directory; any other
+is one file, placed at `path`.
 
 The full design, including caching, staged rollouts and application
 acknowledgement, is in [docs/design.md](docs/design.md). The wire contracts are
@@ -56,11 +62,16 @@ in [api/chandler/v1](api/chandler/v1).
 | Part | State |
 |---|---|
 | Protocol definitions | Written, for all three protocols |
-| CSI driver | Registers with the kubelet and mounts an empty read-only volume; `sources` is not read yet |
-| Config server | Placeholder binary |
+| CSI driver | Mounts a volume once every source is delivered, replaces files atomically on change, and resumes after a restart |
+| Config server | Shares one provider watch between subscriptions and pushes each new revision; holds content in memory only |
+| File provider | Serves files and directories from a volume, such as a ConfigMap |
 | S3 provider | Placeholder binary |
-| Helm chart | Installs the CSI driver only |
-| Staged rollouts, caching, application acknowledgement | Designed, not built |
+| Helm chart | Installs the driver and the server, and optionally the file provider |
+| Security | Not built: plaintext, unauthenticated, no authorisation |
+| Caching, staged rollouts, application acknowledgement | Designed, not built |
+
+The design document ends with a
+[detailed status table](docs/design.md#13-implementation-status).
 
 ## Install
 
@@ -70,10 +81,10 @@ signed with cosign.
 | Artifact | Location |
 |---|---|
 | Chart | `oci://quay.io/shipchandler/chandler` |
-| Images | `quay.io/shipchandler/csi`, `server`, `provider-s3` |
+| Images | `quay.io/shipchandler/csi`, `server`, `provider-file`, `provider-s3` |
 
 Every chart is currently a snapshot, versioned
-`0.0.0-dev.<commit time>.g<commit>`. Snapshots are pre-releases, so pass
+`0.1.0-dev.<commit time>.g<commit>`. Snapshots are pre-releases, so pass
 `--devel` to take the newest one, or `--version` to pin one:
 
 ```bash
@@ -81,8 +92,28 @@ helm install chandler oci://quay.io/shipchandler/chandler \
   --namespace chandler-system --create-namespace --devel
 ```
 
-Each chart pins the CSI image by digest, so a chart always runs the image built
+That installs the driver and the server with no provider, so no URI resolves
+yet.
+
+Each chart pins its images by digest, so a chart always runs the images built
 from the same commit.
+
+To serve a ConfigMap, enable the file provider and point it at one in the
+release's namespace:
+
+```bash
+kubectl create namespace chandler-system
+kubectl create configmap app-config -n chandler-system --from-literal=app.yaml='replicas: 1'
+
+helm install chandler oci://quay.io/shipchandler/chandler \
+  --namespace chandler-system --devel \
+  --set providers.file.enabled=true \
+  --set providers.file.source.configMap.name=app-config
+```
+
+A pod then mounts `file:///app.yaml` as shown above. A change to the ConfigMap
+reaches the pod's files after kubelet refreshes the provider's mount, about a
+minute.
 
 To verify a signature:
 
@@ -111,6 +142,7 @@ It builds the images and the chart from the checkout and installs them.
 | `api/chandler/v1` | Protocol definitions |
 | `csi` | CSI node driver |
 | `server` | Config server |
+| `providers/file` | File provider |
 | `providers/s3` | S3 reference provider |
 | `common` | Code shared between the binaries |
 | `charts/chandler` | Helm chart |

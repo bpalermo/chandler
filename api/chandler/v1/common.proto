@@ -48,8 +48,17 @@ message File {
 // version no matter which provider or revision produced them.
 message Bundle {
   // The files of the bundle, in any order. Paths must be unique within the
-  // Bundle. A URI that names a single object yields exactly one File; a URI
-  // that names a directory yields one File per object under it.
+  // Bundle.
+  //
+  // A URI that names a directory (it ends in "/") yields one File per object
+  // under it, each with its path relative to the directory. The driver puts
+  // them below the path the pod gave the source.
+  //
+  // Any other URI names a single object and yields exactly one File. Its path
+  // is the object's base name and is informational: the pod names the file
+  // itself, so the driver writes the content at the source's path whatever the
+  // object is called at the origin. A bundle with no file, or more than one,
+  // is refused for such a URI.
   //
   // The total size and the number of files are limited by the server (see
   // ServerHello.max_bundle_bytes and WatcherHello.max_bundle_files).

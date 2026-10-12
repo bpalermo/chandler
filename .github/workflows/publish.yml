@@ -133,7 +133,15 @@ jobs:
             echo "::error::could not find the chart package (${chart}) or the CSI index digest (${digest_file})" >&2
             exit 1
           fi
-          want_version="0.0.0-${GITHUB_SHA}"
+          # The same script that stamped the build says what it stamped; the
+          # commit in it must be the one this run is publishing.
+          snapshot="$(bazel/workspace_status.sh | sed -n 's/^STABLE_CHART_SNAPSHOT //p')"
+          if [[ "${snapshot}" != *".g${GITHUB_SHA:0:12}" ]]; then
+            echo "::error::the workspace status reports snapshot '${snapshot}', which is not commit ${GITHUB_SHA}" >&2
+            exit 1
+          fi
+          want_version="0.0.0-dev.${snapshot}"
+          echo "CHART_VERSION=${want_version}" >> "${GITHUB_ENV}"
           got_version="$(tar -xzOf "${chart}" chandler/Chart.yaml | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
           if [ "${got_version}" != "${want_version}" ]; then
             echo "::error::the chart is version '${got_version}', want '${want_version}' (an unstamped build?)" >&2
@@ -304,7 +312,7 @@ jobs:
             echo "::error::the chart push printed no digest" >&2
             exit 1
           fi
-          want="${CHART_REPOSITORY}:0.0.0-${GITHUB_SHA}"
+          want="${CHART_REPOSITORY}:${CHART_VERSION}"
           if [ "${pushed}" != "${want}" ]; then
             echo "::error::the chart went to '${pushed}', want ${want}" >&2
             exit 1

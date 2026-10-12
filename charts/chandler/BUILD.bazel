@@ -56,8 +56,8 @@ helm_lint_test(
 
 # The chart packs the pin the way the publish workflow relies on: the CSI
 # repository is exactly bazel/registry.bzl's, the digest is a sha256 and the
-# version is the 0.0.0 pre-release line (stamped with the commit, or with
-# rules_helm's placeholder in a --nostamp build).
+# version is a 0.0.0 snapshot (stamped with the commit time and commit, or
+# with rules_helm's placeholder in a --nostamp build).
 sh_test(
     name = "pin_test",
     size = "small",

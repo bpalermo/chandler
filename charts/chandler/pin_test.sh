@@ -36,7 +36,9 @@ digest="$(printf '%s\n' "$image" | sed -nE 's/^    digest:[[:space:]]*"?([^"]*)"
 
 version="$(printf '%s\n' "$chartyaml" | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
 name="$(printf '%s\n' "$chartyaml" | sed -nE 's/^name:[[:space:]]*(.*)$/\1/p')"
-[[ "$version" =~ ^0\.0\.0-[A-Za-z0-9-]+$ ]] || bad "chart version is '${version}', want 0.0.0-<commit>"
+# Stamped: 0.0.0-dev.<commit time>.g<commit>. Unstamped: rules_helm's
+# placeholder in the same position.
+[[ "$version" =~ ^0\.0\.0-dev\.([0-9]+\.g[0-9a-z]+|STABLE-CHART-SNAPSHOT)$ ]] || bad "chart version is '${version}', want 0.0.0-dev.<commit time>.g<commit>"
 [ "$name" = "${EXPECT_CHART_REPOSITORY##*/}" ] || bad "chart name is '${name}', but helm push publishes it to ${EXPECT_CHART_REPOSITORY}"
 
 [ "$fail" = 0 ] || exit 1

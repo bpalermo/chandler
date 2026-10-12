@@ -8,11 +8,15 @@ description: |
   This chart installs the CSI node driver. The config server and the providers
   are added to it as they are implemented.
 type: application
-# Stamped at package time from the workspace status (bazel/workspace_status.sh):
-# the commit that built the chart. The project does not deliver configuration
-# yet, so this is 0.0.0 until it moves to 0.1.0, at which point the prefix
-# below changes and nothing else.
-version: "0.0.0-{STABLE_GIT_COMMIT}"
+# Stamped at package time from the workspace status (bazel/workspace_status.sh).
+# Every chart built from main is a snapshot, versioned as a pre-release of the
+# version it leads up to: <next>-dev.<commit time, UTC>.g<commit>. The time
+# makes snapshots order by age; the commit says what was built. A tagged
+# release will carry the plain version, with the commit in metadata only.
+#
+# The project does not deliver configuration yet, so this is 0.0.0 until it
+# moves to 0.1.0, at which point the prefix below changes and nothing else.
+version: "0.0.0-dev.{STABLE_CHART_SNAPSHOT}"
 appVersion: "{STABLE_GIT_VERSION}"
 keywords:
   - configuration

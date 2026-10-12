@@ -56,6 +56,35 @@ jobs:
             exit 1
           fi
 
+  # End to end in a kind cluster: the images are built from this commit, loaded
+  # into the node and exercised as pods (e2e/run.sh). A CSI driver can only be
+  # validated against a real kubelet, so this is where the system as deployed
+  # is tested; everything else is unit tests. After `build`, so a change that
+  # does not compile never gets as far as creating a cluster.
+  e2e:
+    name: e2e (kind)
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-e2e
+          repository-cache: true
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+
+      # e2e/run.sh uses a cluster of this name if one exists.
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: chandler-e2e
+
+      - name: e2e/run.sh
+        run: e2e/run.sh --config=ci
+
   # The single check the main ruleset requires, and the only reason this job
   # exists.
   #
@@ -69,7 +98,7 @@ jobs:
   # nothing, and a required check that never reports blocks the pull request.
   ci:
     name: ci
-    needs: [build]
+    needs: [build, e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:

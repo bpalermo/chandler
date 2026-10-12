@@ -1,6 +1,16 @@
 common --enable_platform_specific_config
 build --incompatible_strict_action_env
 test --test_output=errors
+# The end-to-end suite needs a kind cluster, so it is tagged e2e and excluded
+# from `bazel test //...`; `--config=e2e` selects it instead, forwards the
+# kubeconfig and never caches a result. Run it through e2e/run.sh.
+test --test_tag_filters=-e2e
+test:e2e --test_tag_filters=e2e
+test:e2e --nocache_test_results
+test:e2e --test_env=KUBECONFIG
+test:e2e --test_env=PATH
+test:e2e --test_timeout=600
+
 # CI: the lockfile must already be up to date.
 common:ci --lockfile_mode=error
 

@@ -1,5 +1,5 @@
-{{- if not (has .Values.tls.mode (list "generated" "existing" "disabled")) }}
-{{- fail (printf "tls.mode must be generated, existing or disabled, not %q" .Values.tls.mode) }}
+{{- if not (has .Values.tls.mode (list "generated" "existing" "spiffe" "disabled")) }}
+{{- fail (printf "tls.mode must be generated, existing, spiffe or disabled, not %q" .Values.tls.mode) }}
 {{- end }}
 {{- if eq .Values.tls.mode "generated" }}
 {{- /*

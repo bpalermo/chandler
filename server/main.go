@@ -118,7 +118,7 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 		serverID = hostname
 	}
 
-	src, err := sec.tls.Source()
+	src, err := sec.tls.Source(context.Background())
 	if err != nil {
 		return err
 	}

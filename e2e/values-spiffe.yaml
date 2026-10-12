@@ -1,0 +1,14 @@
+# On top of values.yaml when E2E_TLS=spiffe: identities from the SPIRE agent
+# e2e/spire.sh deploys, instead of the chart's own certificates.
+tls:
+  mode: spiffe
+  spiffe:
+    volume:
+      hostPath:
+        path: /run/spire/agent-sockets
+        type: Directory
+  identities:
+    csi: spiffe://chandler.test/chandler/csi
+    server: spiffe://chandler.test/chandler/server
+    providerFile: spiffe://chandler.test/chandler/provider-file
+    providerS3: spiffe://chandler.test/chandler/provider-s3

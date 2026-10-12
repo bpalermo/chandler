@@ -23,6 +23,7 @@ bazel test //...            # builds and runs the unit tests
 bazel run //:gazelle        # after adding, removing or renaming any .go file
 bazel mod tidy              # after changing go.mod or a bazel_dep
 e2e/run.sh                  # end-to-end in kind (needs kind, kubectl, helm, docker)
+E2E_TLS=spiffe e2e/run.sh   # the same on SPIRE-issued identities, transport tests only
 ```
 
 Bazel is the only build. The Go packages for the protos exist only as Bazel
@@ -101,6 +102,9 @@ hand-editing what Gazelle owns.
   `transport.Serve`; do not construct `tls.Config` or use insecure
   credentials elsewhere. Running without TLS has to be asked for with
   `--insecure`.
+- Certificates come from a `transport.Source`: files, or a SPIFFE Workload
+  API. Both are tested end to end, in separate CI jobs; a change to
+  `common/transport` or to the chart's TLS settings has to pass both.
 - A peer is accepted by the identity in its certificate (a DNS name or a
   SPIFFE ID), per service: say which identities may call a new service.
 - The gRPC health service is on its own port, without TLS, because kubelet's

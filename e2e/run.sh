@@ -59,9 +59,20 @@ kubectl create configmap chandler-e2e-config -n chandler-system
 # receives, which is what the telemetry test reads.
 kubectl apply -n chandler-system -f e2e/otel-collector.yaml
 
+# E2E_TLS=spiffe runs the components on identities from a SPIRE agent instead
+# of the chart's own certificates, and only the tests that tell whether that
+# works: everything else does not depend on where a certificate comes from.
+values=(--values e2e/values.yaml)
+tests=()
+if [[ "${E2E_TLS:-generated}" == spiffe ]]; then
+  e2e/spire.sh
+  values+=(--values e2e/values-spiffe.yaml)
+  tests=(--test_filter='TestDriverRegistersWithKubelet|TestConfigIsDeliveredAndUpdated|TestS3Provider|TestServerCacheSurvivesARollingRestart|TestServerRefusesClientsWithoutACertificate')
+fi
+
 "${helm}" upgrade --install chandler "${bin}/charts/chandler/chandler.tgz" \
   --namespace chandler-system \
-  --values e2e/values.yaml \
+  "${values[@]}" \
   --wait --timeout 300s
 workloads=(daemonset/chandler-csi deployment/chandler-server deployment/chandler-provider-file deployment/chandler-provider-s3)
 for workload in "${workloads[@]}"; do
@@ -72,4 +83,4 @@ for workload in "${workloads[@]}"; do
   kubectl rollout status "${workload}" -n chandler-system --timeout=300s
 done
 
-bazel test "$@" --config=e2e //e2e/...
+bazel test "$@" --config=e2e "${tests[@]}" //e2e/...

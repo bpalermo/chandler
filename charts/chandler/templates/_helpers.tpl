@@ -58,6 +58,8 @@ provider-file and provider-s3.
 {{- $override := index .root.Values.tls.identities $key -}}
 {{- if $override -}}
 {{ $override }}
+{{- else if eq .root.Values.tls.mode "spiffe" -}}
+{{ fail (printf "tls.identities.%s is required with tls.mode spiffe: the component's SPIFFE ID" $key) }}
 {{- else -}}
 {{ include "chandler.name" .root }}-{{ .component }}.{{ .root.Release.Namespace }}.svc
 {{- end -}}
@@ -77,6 +79,8 @@ provider-file and provider-s3.
 {{- define "chandler.tlsArgs" -}}
 {{- if eq .root.Values.tls.mode "disabled" -}}
 - --insecure
+{{- else if eq .root.Values.tls.mode "spiffe" -}}
+- --spiffe-socket=unix:///spiffe-workload-api/{{ .root.Values.tls.spiffe.socket }}
 {{- else -}}
 - --tls-cert=/etc/chandler/tls/tls.crt
 - --tls-key=/etc/chandler/tls/tls.key
@@ -86,7 +90,11 @@ provider-file and provider-s3.
 
 {{/* The volume mount and volume of a component's certificate. */}}
 {{- define "chandler.tlsVolumeMount" -}}
-{{- if ne .root.Values.tls.mode "disabled" -}}
+{{- if eq .root.Values.tls.mode "spiffe" -}}
+- name: tls
+  mountPath: /spiffe-workload-api
+  readOnly: true
+{{- else if ne .root.Values.tls.mode "disabled" -}}
 - name: tls
   mountPath: /etc/chandler/tls
   readOnly: true
@@ -94,7 +102,10 @@ provider-file and provider-s3.
 {{- end -}}
 
 {{- define "chandler.tlsVolume" -}}
-{{- if ne .root.Values.tls.mode "disabled" -}}
+{{- if eq .root.Values.tls.mode "spiffe" -}}
+- name: tls
+  {{- required "tls.spiffe.volume is required with tls.mode spiffe: the volume holding the Workload API socket" .root.Values.tls.spiffe.volume | toYaml | nindent 2 }}
+{{- else if ne .root.Values.tls.mode "disabled" -}}
 - name: tls
   secret:
     secretName: {{ include "chandler.tlsSecret" . }}

@@ -16,8 +16,29 @@ tls:
   # existing   You provide the Secrets, each with tls.crt, tls.key and ca.crt,
   #            for example from cert-manager. Files are re-read when they
   #            change, so rotation needs no restart.
+  # spiffe     Each component gets its identity from a SPIFFE Workload API,
+  #            such as a SPIRE agent. Nothing to issue or rotate here; set
+  #            the volume below and the SPIFFE ID of every component under
+  #            identities.
   # disabled   No TLS: nothing is encrypted and nobody is authenticated.
   mode: generated
+
+  # With mode "spiffe": where the Workload API socket is.
+  spiffe:
+    # The volume holding the socket, as a Kubernetes volume source. With a
+    # SPIRE agent that shares its socket on the node:
+    #   volume:
+    #     hostPath:
+    #       path: /run/spire/agent-sockets
+    #       type: Directory
+    # or with the SPIFFE CSI driver:
+    #   volume:
+    #     csi:
+    #       driver: csi.spiffe.io
+    #       readOnly: true
+    volume: {}
+    # The socket's file name in that volume.
+    socket: spire-agent.sock
 
   # With mode "existing": the Secret of each component the chart deploys.
   existingSecrets:

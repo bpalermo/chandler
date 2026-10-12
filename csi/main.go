@@ -49,7 +49,7 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	src, err := tls.Source()
+	src, err := tls.Source(context.Background())
 	if err != nil {
 		log.Error("chandler-csi failed", "error", err)
 		os.Exit(1)

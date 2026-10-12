@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "bundle",
+    srcs = ["bundle.go"],
+    importpath = "github.com/bpalermo/chandler/common/bundle",
+    visibility = ["//visibility:public"],
+    deps = ["//api/chandler/v1:chandler"],
+)
+
+go_test(
+    name = "bundle_test",
+    srcs = ["bundle_test.go"],
+    embed = [":bundle"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "uri",
+    srcs = ["uri.go"],
+    importpath = "github.com/bpalermo/chandler/common/uri",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "uri_test",
+    srcs = ["uri_test.go"],
+    embed = [":uri"],
+)

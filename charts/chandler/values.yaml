@@ -7,11 +7,18 @@ imagePullSecrets: []
 # The CSI node driver, one pod per node.
 csi:
   image:
-    repository: quay.io/shipchandler/csi
+    # Substituted at package time from //csi:image_push, which takes it from
+    # bazel/registry.bzl: the registry is spelled out in one place.
+    repository: "{@//csi:image_push.repository}"
     # Defaults to the chart's appVersion. Ignored when digest is set.
     tag: ""
-    # Pins the image by digest, e.g. "sha256:...". Takes precedence over tag.
-    digest: ""
+    # Substituted at package time with the digest of the image index
+    # //csi:image_push publishes, so a published chart can only reference the
+    # image built from the same commit. Takes precedence over tag. A chart you
+    # build yourself pins the image YOUR build produces, which exists nowhere
+    # until it is pushed: install it with `--set csi.image.digest=` (empty) to
+    # use `tag` instead, as e2e/run.sh does.
+    digest: "{@//csi:image_push.digest}"
     pullPolicy: IfNotPresent
 
   # The sidecar that registers the driver's socket with kubelet.

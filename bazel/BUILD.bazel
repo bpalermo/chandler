@@ -1,0 +1,6 @@
+# The publishing coordinates (registry.bzl) and the git state that stamps the
+# images' tags and the chart's versions (workspace_status.sh).
+exports_files([
+    "registry.bzl",
+    "workspace_status.sh",
+])

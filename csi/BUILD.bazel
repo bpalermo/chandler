@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//bazel:registry.bzl", "IMAGE_REGISTRY", "image_repository")
 load("//bazel/image:defs.bzl", "go_image")
 
 go_library(
@@ -30,6 +31,8 @@ go_image(
     binary = ":csi",
     load_tag = "localhost/chandler-csi:e2e",
     path = "/chandler-csi",
+    registry = IMAGE_REGISTRY,
+    repository = image_repository("csi"),
     # Mounts into kubelet pod directories from a privileged DaemonSet.
     user = "0",
 )

@@ -1,0 +1,8 @@
+# Read by //bazel/cosign:verify_image, which runs the verifier with the pinned
+# cosign. registry.sh parses //bazel:registry.bzl from the checkout, not from
+# runfiles, so the verifier takes its expected layout from the environment
+# there (see verify_image.sh).
+exports_files([
+    "registry-lib.sh",
+    "verify-image-signatures.sh",
+])

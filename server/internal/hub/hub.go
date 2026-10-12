@@ -273,8 +273,8 @@ func (e *entry) target(podUID string) (held, chandlerv1.Track) {
 
 // feedback is what a provider is told about one revision.
 type feedback struct {
-	revision                            string
-	assigned, written, refused, failing uint32
+	revision                                              string
+	assigned, written, refused, failing, loaded, rejected uint32
 }
 
 // live reports whether a provider watch currently vouches for the entry.
@@ -333,6 +333,10 @@ type subscription struct {
 	// refused is the version the driver said it can never write; failing is
 	// the version it is failing to write for a reason on the node.
 	refused, failing string
+	// loaded is the last version the application reported loaded; rejected
+	// is the versions it rejected, which are not sent to it again.
+	loaded   string
+	rejected map[string]bool
 }
 
 // session is one driver's stream.
@@ -367,7 +371,11 @@ func (h *Hub) subscribe(sess *session, msg *chandlerv1.Subscribe) {
 	if old, ok := sess.subs[msg.GetSubscriptionId()]; ok {
 		h.dropLocked(old)
 	}
-	sub := &subscription{id: msg.GetSubscriptionId(), sess: sess, request: msg, nodeHas: make(map[string]bool)}
+	sub := &subscription{
+		id: msg.GetSubscriptionId(), sess: sess, request: msg,
+		nodeHas: make(map[string]bool), rejected: make(map[string]bool),
+		loaded: msg.GetLoadedVersion(),
+	}
 	if v := msg.GetAppliedVersion(); v != "" {
 		sub.nodeHas[v] = true
 	}
@@ -566,6 +574,12 @@ func (h *Hub) serveLocked(sub *subscription, force bool) {
 
 	target, track := e.target(sub.request.GetWorkload().GetPodUid())
 	version := target.Version
+	if sub.rejected[version] {
+		// The application refused this version; its driver put the last
+		// loaded one back. Sending it again would only repeat that.
+		sub.answered = true
+		return
+	}
 	if sub.sent == version && !force {
 		sub.answered = true
 		return
@@ -673,6 +687,38 @@ func (h *Hub) nack(sess *session, msg *chandlerv1.Nack) {
 	h.reportLocked(sub.res.entry)
 }
 
+// appReport records what an application said about a version it was given.
+// The server only carries the verdict, to the provider.
+func (h *Hub) appReport(sess *session, msg *chandlerv1.AppReport) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sub, ok := sess.subs[msg.GetSubscriptionId()]
+	if !ok {
+		return
+	}
+	switch msg.GetState() {
+	case chandlerv1.AppReport_STATE_LOADED:
+		sub.loaded = msg.GetVersion()
+		delete(sub.rejected, msg.GetVersion())
+	case chandlerv1.AppReport_STATE_REJECTED:
+		sub.rejected[msg.GetVersion()] = true
+		if sub.loaded == msg.GetVersion() {
+			sub.loaded = ""
+		}
+		h.log.Warn("an application rejected a version", "node", sess.node, "subscription", sub.id,
+			"uri", sub.res.uri, "version", msg.GetVersion(), "reason", msg.GetMessage())
+	default:
+		return
+	}
+	// The driver has already reacted: what it says is in the volume is what
+	// the node has, so a later update to that version needs no bytes.
+	if applied := msg.GetAppliedVersion(); applied != "" {
+		sub.nodeHas[applied] = true
+		sub.sent, sub.acked = applied, applied
+	}
+	h.reportLocked(sub.res.entry)
+}
+
 // reportLocked tells the provider how the entry's newest revision is faring
 // on this replica's pods, if that changed since it was last told.
 func (h *Hub) reportLocked(e *entry) {
@@ -699,6 +745,12 @@ func (h *Hub) reportLocked(e *entry) {
 			case sub.failing:
 				now.failing++
 			}
+			if sub.loaded == newest.Version {
+				now.loaded++
+			}
+			if sub.rejected[newest.Version] {
+				now.rejected++
+			}
 		}
 	}
 	if now == e.reported && e.reportedOn == up.generation {
@@ -722,6 +774,8 @@ func (h *Hub) reportLocked(e *entry) {
 			Written:  proto.Uint32(now.written),
 			Refused:  proto.Uint32(now.refused),
 			Failing:  proto.Uint32(now.failing),
+			Loaded:   proto.Uint32(now.loaded),
+			Rejected: proto.Uint32(now.rejected),
 		}.Build(),
 	}.Build())
 }

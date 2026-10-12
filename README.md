@@ -69,7 +69,7 @@ in [api/chandler/v1](api/chandler/v1).
 | Helm chart | Installs the driver and the server, and optionally the file and S3 providers |
 | Security | Not built: plaintext, unauthenticated, no authorisation |
 | Staged rollouts | A provider releases a new version to a growing share of pods and can hold it or take it back; the file and S3 providers have a time-based ramp |
-| Application acknowledgement | Designed, not built |
+| Application acknowledgement | A volume with `appAck: "true"` gets a manifest and an HTTP API on a Unix socket. The application reports whether it loaded each version; a rejected one is reverted at once and reported to the provider |
 
 The design document ends with a
 [detailed status table](docs/design.md#13-implementation-status).

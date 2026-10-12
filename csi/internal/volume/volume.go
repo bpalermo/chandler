@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 
@@ -67,6 +68,25 @@ type Meta struct {
 	Spec       Spec     `json:"spec"`
 	// Applied is the version written for each source, "" for none.
 	Applied []string `json:"applied"`
+
+	// The rest is kept only for volumes with application acknowledgement.
+
+	// Loaded is the last version of each source the application reported
+	// loaded, "" for none: what a rejected version is reverted to.
+	Loaded []string `json:"loaded,omitempty"`
+	// Rejected is the versions of each source the application rejected. They
+	// are never written to this volume again.
+	Rejected [][]string `json:"rejected,omitempty"`
+	// Generations is the last two generations written, newest first. A
+	// report names one of them.
+	Generations []Generation `json:"generations,omitempty"`
+}
+
+// Generation is one combination of source versions that was written.
+type Generation struct {
+	ID string `json:"id"`
+	// Versions is the version of each source in the generation.
+	Versions []string `json:"versions"`
 }
 
 // Volume is one pod volume. Its methods are safe for concurrent use.
@@ -96,6 +116,8 @@ func Create(dir string, meta Meta, cache Cache) (*Volume, error) {
 		return nil, fmt.Errorf("create volume directory: %w", err)
 	}
 	meta.Applied = make([]string, len(meta.Spec.Sources))
+	meta.Loaded = make([]string, len(meta.Spec.Sources))
+	meta.Rejected = make([][]string, len(meta.Spec.Sources))
 	v := newVolume(dir, meta, cache)
 	if err := v.saveLocked(); err != nil {
 		return nil, err
@@ -117,6 +139,12 @@ func Load(dir string, cache Cache) (*Volume, error) {
 	}
 	if len(meta.Applied) != len(meta.Spec.Sources) {
 		return nil, fmt.Errorf("read %s: %d sources but %d applied versions", metaFile, len(meta.Spec.Sources), len(meta.Applied))
+	}
+	if len(meta.Loaded) != len(meta.Spec.Sources) {
+		meta.Loaded = make([]string, len(meta.Spec.Sources))
+	}
+	if len(meta.Rejected) != len(meta.Spec.Sources) {
+		meta.Rejected = make([][]string, len(meta.Spec.Sources))
 	}
 	v := newVolume(dir, meta, cache)
 	for i, source := range meta.Spec.Sources {
@@ -247,29 +275,17 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 	} else if !bundle.Verify(b, version) {
 		return grpcstatus.Errorf(codes.DataLoss, "the bundle does not match its version %s", version)
 	}
-	if err := bundle.Validate(b, limits); err != nil {
-		return grpcstatus.Errorf(codes.InvalidArgument, "%v", err)
+	if slices.Contains(v.meta.Rejected[i], version) {
+		return grpcstatus.Errorf(codes.FailedPrecondition, "the application rejected version %s", version)
 	}
-	contribution := make(map[string]atomic.File, len(b.GetFiles()))
-	if source.IsDir() {
-		for _, f := range b.GetFiles() {
-			contribution[source.Path+"/"+f.GetPath()] = atomic.File{Mode: bundle.Mode(f), Content: f.GetContent()}
-		}
-	} else {
-		// One object: the source's path names the file, whatever the object
-		// is called at the origin.
-		if n := len(b.GetFiles()); n != 1 {
-			return grpcstatus.Errorf(codes.InvalidArgument,
-				"%s names one object but the bundle has %d files", source.URI, n)
-		}
-		f := b.GetFiles()[0]
-		contribution[source.Path] = atomic.File{Mode: bundle.Mode(f), Content: f.GetContent()}
+	contribution, err := contribute(source, b)
+	if err != nil {
+		return err
 	}
 
 	// Stage: the bundle goes into the node cache before it is written, so a
 	// version in a volume is always one the node can apply again. Content
 	// marked no_store never touches the cache.
-	var err error
 	switch {
 	case cached:
 		err = v.cache.Use(v.uris[i], version)
@@ -279,7 +295,36 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 	if err != nil {
 		return grpcstatus.Errorf(writeErrorCode(err), "%v", err)
 	}
+	return v.writeLocked(i, version, contribution)
+}
 
+// contribute returns what a bundle puts into the volume for a source: its
+// files, keyed by their path in the volume.
+func contribute(source Source, b *chandlerv1.Bundle) (map[string]atomic.File, error) {
+	if err := bundle.Validate(b, limits); err != nil {
+		return nil, grpcstatus.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	contribution := make(map[string]atomic.File, len(b.GetFiles()))
+	if source.IsDir() {
+		for _, f := range b.GetFiles() {
+			contribution[source.Path+"/"+f.GetPath()] = atomic.File{Mode: bundle.Mode(f), Content: f.GetContent()}
+		}
+		return contribution, nil
+	}
+	// One object: the source's path names the file, whatever the object
+	// is called at the origin.
+	if n := len(b.GetFiles()); n != 1 {
+		return nil, grpcstatus.Errorf(codes.InvalidArgument,
+			"%s names one object but the bundle has %d files", source.URI, n)
+	}
+	f := b.GetFiles()[0]
+	contribution[source.Path] = atomic.File{Mode: bundle.Mode(f), Content: f.GetContent()}
+	return contribution, nil
+}
+
+// writeLocked swaps in a generation in which source i is at version, with the
+// given files, and every other source is as it was.
+func (v *Volume) writeLocked(i int, version string, contribution map[string]atomic.File) error {
 	// A generation is the whole volume: this source's new files and what
 	// every other source already contributes.
 	generation := make(map[string]atomic.File)
@@ -291,12 +336,32 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 			generation[p] = f
 		}
 	}
-	if err := v.writer.Write(generation); err != nil {
+	versions := append([]string(nil), v.meta.Applied...)
+	versions[i] = version
+
+	var reserved map[string]atomic.File
+	next := Generation{ID: generationID(versions), Versions: versions}
+	if v.meta.Spec.AppAck {
+		// The manifest travels in the generation it describes, so the
+		// application never reads one that is about other files.
+		raw, err := json.Marshal(v.manifest(next))
+		if err != nil {
+			return grpcstatus.Errorf(codes.Internal, "%v", err)
+		}
+		reserved = map[string]atomic.File{ManifestName: {Mode: 0o444, Content: raw}}
+	}
+	if err := v.writer.WriteWith(generation, reserved); err != nil {
 		return grpcstatus.Errorf(writeErrorCode(err), "%v", err)
 	}
 
 	v.files[i] = contribution
 	v.meta.Applied[i] = version
+	if v.meta.Spec.AppAck && (len(v.meta.Generations) == 0 || v.meta.Generations[0].ID != next.ID) {
+		v.meta.Generations = append([]Generation{next}, v.meta.Generations...)
+		if len(v.meta.Generations) > 2 {
+			v.meta.Generations = v.meta.Generations[:2]
+		}
+	}
 	v.answeredLocked(i, nil)
 	// The files are swapped in whether or not this succeeds; a stale record
 	// only costs a resend after a driver restart.

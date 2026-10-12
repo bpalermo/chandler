@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	"github.com/bpalermo/chandler/csi/internal/appack"
 	"github.com/bpalermo/chandler/csi/internal/client"
 	"github.com/bpalermo/chandler/csi/internal/mount"
 	"github.com/bpalermo/chandler/csi/internal/volume"
@@ -69,6 +70,8 @@ type Subscriber interface {
 	Subscribe(client.Subscription)
 	// Unsubscribe ends a subscription.
 	Unsubscribe(id string)
+	// Report relays what an application said about a version.
+	Report(*chandlerv1.AppReport)
 	// Err says why the server is unreachable, or nil when it is not.
 	Err() error
 }
@@ -91,6 +94,9 @@ type Driver struct {
 	mu sync.Mutex
 	// published is the volumes that are subscribed, by volume ID.
 	published map[string]*volume.Volume
+	// apis is the application acknowledgement API of the volumes that have
+	// one, by volume ID.
+	apis map[string]*appack.Server
 
 	// volumes serialises operations per volume ID, as the CSI spec lets a
 	// plugin assume at most one call in flight per volume.
@@ -153,6 +159,7 @@ func New(cfg Config) (*Driver, error) {
 		timeout:     cfg.PublishTimeout,
 		cachedAfter: cfg.CachedAfter,
 		published:   make(map[string]*volume.Volume),
+		apis:        make(map[string]*appack.Server),
 	}, nil
 }
 
@@ -252,6 +259,12 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		return nil, err
 	}
 
+	// The socket is there before the mount, so the application finds it
+	// from its first instruction.
+	if err := d.serveAppAck(v); err != nil {
+		d.discard(volumeID)
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
 	if err := os.MkdirAll(target, dirMode); err != nil {
 		d.discard(volumeID)
 		return nil, status.Errorf(codes.Internal, "create target path: %v", err)
@@ -322,6 +335,11 @@ func (d *Driver) Restore() error {
 			}
 		} else {
 			d.subscribe(v)
+			// The socket's listener died with the last driver.
+			if err := d.serveAppAck(v); err != nil {
+				unlock()
+				return fmt.Errorf("volume %s: %w", volumeID, err)
+			}
 		}
 		unlock()
 	}
@@ -391,9 +409,45 @@ func (d *Driver) subscribe(v *volume.Volume) {
 			ID:       v.SubscriptionID(i),
 			URI:      source.URI,
 			Workload: workload,
+			AppAck:   v.AppAck(),
 			Handler:  sourceHandler{volume: v, index: i},
 		})
 	}
+}
+
+// serveAppAck starts the application acknowledgement API of a volume that
+// asked for one, forwarding every verdict to the config server.
+func (d *Driver) serveAppAck(v *volume.Volume) error {
+	if !v.AppAck() {
+		return nil
+	}
+	api, err := appack.Serve(v.DataDir(), v, func(outcomes []volume.Outcome) {
+		for _, o := range outcomes {
+			state := chandlerv1.AppReport_STATE_LOADED
+			if o.State == volume.StateRejected {
+				state = chandlerv1.AppReport_STATE_REJECTED
+			}
+			report := chandlerv1.AppReport_builder{
+				SubscriptionId: proto.String(v.SubscriptionID(o.Source)),
+				Version:        proto.String(o.Version),
+				State:          state.Enum(),
+			}
+			if o.Message != "" {
+				report.Message = proto.String(o.Message)
+			}
+			if o.Applied != "" {
+				report.AppliedVersion = proto.String(o.Applied)
+			}
+			d.server.Report(report.Build())
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("serve the application acknowledgement socket: %w", err)
+	}
+	d.mu.Lock()
+	d.apis[v.Meta().VolumeID] = api
+	d.mu.Unlock()
+	return nil
 }
 
 // discard ends the subscriptions of a volume, if it has any, and removes its
@@ -402,7 +456,12 @@ func (d *Driver) discard(volumeID string) error {
 	d.mu.Lock()
 	v := d.published[volumeID]
 	delete(d.published, volumeID)
+	api := d.apis[volumeID]
+	delete(d.apis, volumeID)
 	d.mu.Unlock()
+	if api != nil {
+		api.Close()
+	}
 	if v != nil {
 		for i := range v.Meta().Spec.Sources {
 			d.server.Unsubscribe(v.SubscriptionID(i))
@@ -424,6 +483,7 @@ func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
 func (h sourceHandler) Fail(st *rpcstatus.Status) { h.volume.Fail(h.index, st) }
 func (h sourceHandler) Applied() string           { return h.volume.Applied(h.index) }
 func (h sourceHandler) Cached() []string          { return h.volume.CachedVersions(h.index) }
+func (h sourceHandler) Loaded() string            { return h.volume.Loaded(h.index) }
 
 func (d *Driver) volumePath(volumeID string) string {
 	return filepath.Join(d.stateDir, volumesDir, volumeID)

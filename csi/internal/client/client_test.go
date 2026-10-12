@@ -106,6 +106,7 @@ func (h *handler) Apply(u *chandlerv1.ConfigUpdate) error {
 func (h *handler) Fail(st *status.Status) { h.failed <- st }
 
 func (h *handler) Cached() []string { return []string{"v0", h.Applied()} }
+func (h *handler) Loaded() string   { return "" }
 
 func (h *handler) Applied() string {
 	h.mu.Lock()

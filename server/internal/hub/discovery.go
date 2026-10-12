@@ -77,7 +77,7 @@ func (h *Hub) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_StreamConfi
 		case req.HasNack():
 			h.nack(sess, req.GetNack())
 		case req.HasAppReport():
-			// Application acknowledgement is not implemented yet.
+			h.appReport(sess, req.GetAppReport())
 		case req.HasHello():
 			return grpcstatus.Error(codes.InvalidArgument, "NodeHello sent twice")
 		}

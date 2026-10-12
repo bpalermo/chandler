@@ -2,8 +2,12 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +61,7 @@ type fakeServer struct {
 	// server whose provider is down does.
 	unavailable bool
 	subs        map[string]client.Subscription
+	reports     []*chandlerv1.AppReport
 	applied     map[string]string // subscription ID -> applied version it subscribed with
 	down        error
 }
@@ -109,6 +114,12 @@ func (f *fakeServer) Unsubscribe(id string) {
 }
 
 func (f *fakeServer) Err() error { return f.down }
+
+func (f *fakeServer) Report(r *chandlerv1.AppReport) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reports = append(f.reports, r)
+}
 
 func (f *fakeServer) subscribed() int {
 	f.mu.Lock()
@@ -533,6 +544,154 @@ func TestNewValidatesConfig(t *testing.T) {
 	} {
 		if _, err := New(cfg); err == nil {
 			t.Errorf("%s: New succeeded", name)
+		}
+	}
+}
+
+// call sends one request to a volume's acknowledgement socket.
+func call(t *testing.T, socket, method, path, body string) (int, string) {
+	t.Helper()
+	// As an application does it: by a short path, from inside the volume.
+	dir, err := os.MkdirTemp("", "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	link := filepath.Join(dir, "vol")
+	if err := os.Symlink(filepath.Dir(socket), link); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(link, filepath.Base(socket)))
+		},
+	}}
+	req, err := http.NewRequest(method, "http://chandler"+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(raw)
+}
+
+// A volume with appAck gets a socket the application reports on; a rejection
+// puts the last loaded version back at once and reaches the server.
+func TestApplicationAcknowledgement(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	target := filepath.Join(t.TempDir(), "mount")
+	req := publishRequest("csi-ack", target, "- uri: file:///app.yaml\n  path: app.yaml\n")
+	req.VolumeContext["appAck"] = "true"
+	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	data := f.mounts.mounts[target]
+	socket := filepath.Join(data, "..chandler.sock")
+
+	// The manifest file and the API agree on the generation.
+	var manifest, config struct {
+		Generation string
+		Sources    []struct{ Name, Version, State string }
+	}
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(data, "..chandler.json"))), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	code, body := call(t, socket, http.MethodGet, "/v1/config", "")
+	if err := json.Unmarshal([]byte(body), &config); err != nil || code != http.StatusOK {
+		t.Fatalf("GET /v1/config = %d %s (%v)", code, body, err)
+	}
+	if config.Generation == "" || config.Generation != manifest.Generation || config.Sources[0].State != "pending" {
+		t.Fatalf("config = %+v, manifest = %+v; want the same generation, pending", config, manifest)
+	}
+	first := config.Sources[0].Version
+
+	if code, body := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+config.Generation+`","state":"loaded"}`); code != http.StatusNoContent {
+		t.Fatalf("reporting loaded = %d %s", code, body)
+	}
+
+	// A new version arrives and the application refuses it.
+	sub := f.server.subs["csi-ack/0"]
+	if !sub.AppAck || sub.Handler.Loaded() != first {
+		t.Errorf("subscription AppAck=%v loaded=%q, want true and the first version", sub.AppAck, sub.Handler.Loaded())
+	}
+	second := update("csi-ack/0", "a: broken\n")
+	if err := sub.Handler.Apply(second); err != nil {
+		t.Fatal(err)
+	}
+	_, body = call(t, socket, http.MethodGet, "/v1/config", "")
+	if err := json.Unmarshal([]byte(body), &config); err != nil {
+		t.Fatal(err)
+	}
+	report := `{"generation":"` + config.Generation + `","sources":[{"name":"app.yaml","state":"rejected","message":"cannot parse"}]}`
+	if code, body := call(t, socket, http.MethodPost, "/v1/reports", report); code != http.StatusNoContent {
+		t.Fatalf("reporting rejected = %d %s", code, body)
+	}
+	if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 1\n" {
+		t.Errorf("after the rejection the file reads %q, want the last loaded version", got)
+	}
+	// The server is told, with what is in the volume now.
+	f.server.mu.Lock()
+	reports := f.server.reports
+	f.server.mu.Unlock()
+	if len(reports) != 2 {
+		t.Fatalf("%d reports reached the server, want 2", len(reports))
+	}
+	if r := reports[1]; r.GetState() != chandlerv1.AppReport_STATE_REJECTED || r.GetVersion() != second.GetVersion() ||
+		r.GetAppliedVersion() != first || r.GetMessage() != "cannot parse" || r.GetSubscriptionId() != "csi-ack/0" {
+		t.Errorf("rejection report = %v", r)
+	}
+	// The rejected version is never written to this volume again.
+	if err := sub.Handler.Apply(second); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("applying the rejected version again = %v, want FailedPrecondition", err)
+	}
+
+	// Errors an application can act on.
+	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"g-0000","state":"loaded"}`); code != http.StatusConflict {
+		t.Errorf("a stale generation = %d, want 409", code)
+	}
+	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+config.Generation+`","sources":[{"name":"nope","state":"loaded"}]}`); code != http.StatusNotFound {
+		t.Errorf("an unknown source = %d, want 404", code)
+	}
+	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+config.Generation+`","state":"fine"}`); code != http.StatusBadRequest {
+		t.Errorf("an unknown state = %d, want 400", code)
+	}
+	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `not json`); code != http.StatusBadRequest {
+		t.Errorf("a malformed body = %d, want 400", code)
+	}
+
+	// A restarted driver serves the socket again and remembers the verdicts.
+	restarted := f.restart(t)
+	if err := restarted.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	code, body = call(t, socket, http.MethodGet, "/v1/config", "")
+	if err := json.Unmarshal([]byte(body), &config); err != nil || code != http.StatusOK || config.Sources[0].State != "loaded" {
+		t.Errorf("after a restart GET /v1/config = %d %s; want the source loaded", code, body)
+	}
+
+	if _, err := restarted.NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{VolumeId: "csi-ack", TargetPath: target}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socket); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the socket outlived the volume: %v", err)
+	}
+}
+
+// A volume that did not ask gets neither the manifest nor the socket.
+func TestNoAcknowledgementUnlessAsked(t *testing.T) {
+	f := newFixture(t)
+	target := filepath.Join(t.TempDir(), "mount")
+	if _, err := f.driver.NodePublishVolume(context.Background(), publishRequest("csi-plain", target, twoSources)); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"..chandler.json", "..chandler.sock"} {
+		if _, err := os.Lstat(filepath.Join(f.mounts.mounts[target], name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s exists in a volume without appAck: %v", name, err)
 		}
 	}
 }

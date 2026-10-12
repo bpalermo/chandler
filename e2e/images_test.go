@@ -22,7 +22,8 @@ func TestImagesRunInCluster(t *testing.T) {
 				"--image="+image(name),
 				// Never pull: the image must be the one loaded from this build.
 				"--image-pull-policy=Never",
-				"--restart=Never")
+				"--restart=Never",
+				"--", "--version")
 
 			phase, err := waitForPodPhase(ctx, ns, name, "Succeeded", "Failed")
 			if err != nil {

@@ -241,7 +241,7 @@ State lives under a hostPath so mounts and cache survive driver restarts:
 /var/lib/chandler/
   blobs/sha256/<aa>/<digest>          node cache: content-addressed, node-wide
   index.db                            alias → cache_key → versions → manifest
-  volumes/<pod-uid>/<volume>/
+  volumes/<volume-id>/                CSI volume ID; kubelet derives it from pod UID and volume name
     meta.json                         sources, applied versions (for resubscribe)
     data/                             bind-mounted read-only into the pod
       ..2026_10_12_07_51_00.123/      generation directory (current)

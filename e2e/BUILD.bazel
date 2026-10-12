@@ -14,4 +14,10 @@ go_test(
         "e2e",
         "local",
     ],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/bundle",
+        "//common/rollout",
+        "@org_golang_google_protobuf//proto",
+    ],
 )

@@ -19,6 +19,7 @@ import (
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/queue"
+	"github.com/bpalermo/chandler/common/rollout"
 )
 
 const (
@@ -35,6 +36,9 @@ type upstream struct {
 
 	// out queues requests for the current stream; nil while disconnected.
 	out *queue.Queue[*chandlerv1.ProviderRequest]
+	// generation counts the streams, so that what was told on an earlier one
+	// is told again.
+	generation uint64
 	// watches maps the watch IDs of the current stream to their resources.
 	watches map[string]*resource
 	// varyOn is the subscriber attributes the provider varies content on, as
@@ -136,7 +140,7 @@ func (u *upstream) watchLocked(r *resource) {
 		Attributes: r.attributes,
 	}
 	if r.entry != nil {
-		watch.KnownRevision = proto.String(r.entry.current().Revision)
+		watch.KnownRevision = proto.String(r.entry.newest().Revision)
 	}
 	u.out.Push(chandlerv1.ProviderRequest_builder{Watch: watch.Build()}.Build())
 }
@@ -231,6 +235,7 @@ func (u *upstream) stream(ctx context.Context, client chandlerv1.ConfigProviderC
 	out := queue.New[*chandlerv1.ProviderRequest]()
 	h.mu.Lock()
 	u.out = out
+	u.generation++
 	u.defaultCacheControl = first.GetHello().GetDefaultCacheControl()
 	if !slices.Equal(varyOn, u.varyOn) {
 		// Which resource a subscription belongs to has changed: sort every
@@ -312,6 +317,39 @@ func (h *Hub) regroupLocked(u *upstream) {
 	for _, sub := range subs {
 		sub.res = nil
 		h.attachLocked(sub)
+	}
+}
+
+// shareOf returns the share of subscribers an update releases its revision
+// to, in basis points.
+func shareOf(update *chandlerv1.ResourceUpdate) uint32 {
+	if !update.HasRollout() {
+		return rollout.Everyone
+	}
+	return min(update.GetRollout().GetBasisPoints(), rollout.Everyone)
+}
+
+// releaseLocked makes v the stable version, ending any rollout.
+func (e *entry) releaseLocked(v held) {
+	versions := []held{v}
+	for _, old := range e.versions {
+		if old.Version != v.Version && len(versions) < VersionsPerKey {
+			versions = append(versions, old)
+		}
+	}
+	e.versions, e.candidate, e.share = versions, nil, 0
+}
+
+// pruneLocked drops the content of versions the entry no longer holds.
+func (e *entry) pruneLocked() {
+	keep := make(map[string]bool)
+	for _, v := range e.all() {
+		keep[v.Version] = true
+	}
+	for version := range e.bundles {
+		if !keep[version] {
+			delete(e.bundles, version)
+		}
 	}
 }
 
@@ -405,7 +443,7 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 			cc = u.defaultCacheControl
 		}
 		e := h.entries[key]
-		if e == nil || e.current().Version != version {
+		if e == nil || e.bundles[version] == nil {
 			// no_store content is never written to disk.
 			if h.store != nil && !cc.GetNoStore() {
 				if err := h.store.Put(version, b); err != nil {
@@ -419,18 +457,26 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 			h.entries[key] = e
 		}
 		newest := held{Version: version, Revision: update.GetRevision(), Bytes: size}
-		versions := []held{newest}
-		for _, v := range e.versions {
-			if v.Version != version && len(versions) < VersionsPerKey {
-				versions = append(versions, v)
-			}
+		share := shareOf(update)
+		switch {
+		case len(e.versions) > 0 && e.current().Version == version:
+			// The content everyone already has, perhaps under a new
+			// revision: not a rollout, and the end of one in progress.
+			e.versions[0], e.candidate, e.share = newest, nil, 0
+		case len(e.versions) == 0 || share >= rollout.Everyone:
+			// Released to everyone. A resource's first version always is:
+			// there is nothing else to give the rest.
+			e.releaseLocked(newest)
+		case e.candidate != nil && e.candidate.Version == version:
+			// More of the same rollout. The share never shrinks: a pod that
+			// has the version keeps it.
+			e.candidate, e.share = &newest, max(e.share, share)
+		default:
+			// A new rollout, replacing any that was in progress.
+			e.candidate, e.share = &newest, share
 		}
-		for _, v := range e.versions {
-			if !slices.ContainsFunc(versions, func(k held) bool { return k.Version == v.Version }) {
-				delete(e.bundles, v.Version)
-			}
-		}
-		e.versions, e.bundles[version] = versions, b
+		e.bundles[version] = b
+		e.pruneLocked()
 		e.cacheControl, e.lastRefreshed, e.lastReferenced, e.orphaned = cc, now, now, false
 
 		h.bindLocked(r, e)
@@ -439,7 +485,8 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 		r.failure, r.answered, r.live = nil, true, true
 		ack()
 		h.saveLocked()
-		log.Info("accepted a revision", "version", version, "cache_key", key.cacheKey)
+		log.Info("accepted a revision", "version", version, "cache_key", key.cacheKey,
+			"stable", e.current().Version, "basis_points", e.share)
 		// Every resource that resolves to the key gets the version.
 		for other := range e.refs {
 			h.serveAllLocked(other)
@@ -449,12 +496,34 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 		if r.entry == nil {
 			return
 		}
-		r.entry.lastRefreshed, r.entry.orphaned = now, false
+		e := r.entry
+		e.lastRefreshed, e.orphaned = now, false
 		if cc := update.GetCacheControl(); cc != nil {
-			r.entry.cacheControl = cc
+			e.cacheControl = cc
+		}
+		switch share := shareOf(update); {
+		case e.candidate != nil && e.candidate.Revision == update.GetRevision():
+			if share >= rollout.Everyone {
+				log.Info("rollout finished", "version", e.candidate.Version)
+				e.releaseLocked(*e.candidate)
+				e.pruneLocked()
+			} else if share > e.share {
+				log.Info("rollout advanced", "version", e.candidate.Version, "basis_points", share)
+				e.share = share
+			}
+		case e.candidate != nil && e.current().Revision == update.GetRevision():
+			// The provider's newest revision is the stable one again: the
+			// candidate was taken back.
+			log.Info("rollout taken back", "version", e.candidate.Version)
+			e.candidate, e.share = nil, 0
+			e.pruneLocked()
 		}
 		r.failure, r.answered, r.live = nil, true, true
-		h.serveAllLocked(r)
+		h.saveLocked()
+		// Placement may have changed for every resource of the key.
+		for other := range e.refs {
+			h.serveAllLocked(other)
+		}
 	case update.HasDeleted():
 		ack()
 		if r.entry == nil {

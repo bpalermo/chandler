@@ -13,8 +13,12 @@
 // after a grace period. Entries and their bundles are written to the cache
 // directory, so a restarted container starts with what it had.
 //
-// There is no staged rollout yet: every subscription gets the newest version
-// of its entry.
+// A provider may release a new version to a share of the subscribers first.
+// The entry then holds a stable version, which everyone had, and a candidate
+// with its share; which of the two a pod gets is a pure function of the
+// candidate's version, the pod's UID and the share (common/rollout). The
+// provider owns the rollout: it raises the share, holds it, or takes the
+// version back. The server only places pods and reports how they fare.
 package hub
 
 import (
@@ -35,14 +39,16 @@ import (
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/cas"
 	"github.com/bpalermo/chandler/common/queue"
+	"github.com/bpalermo/chandler/common/rollout"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
 const (
 	maxCacheKeyBytes = 256
 
-	// VersionsPerKey is how many versions an entry holds: the current one
-	// and the one before it.
+	// VersionsPerKey is how many released versions an entry holds: the
+	// stable one and the one before it. A candidate being rolled out is a
+	// third.
 	VersionsPerKey = 2
 
 	// maxResends bounds how often one version is sent again to a subscription
@@ -207,8 +213,18 @@ type held struct {
 // entry is what is held for one cache key of one provider.
 type entry struct {
 	key entryKey
-	// versions is newest first, at most VersionsPerKey; never empty.
+	// versions is the versions released to everyone, newest first, at most
+	// VersionsPerKey; never empty. The first is the stable version.
 	versions []held
+	// candidate is the version being rolled out, or nil.
+	candidate *held
+	// share is the share of subscribers that gets the candidate, in basis
+	// points. It never shrinks for one candidate.
+	share uint32
+	// reported is the feedback last sent to the provider, and on which
+	// provider stream.
+	reported   feedback
+	reportedOn uint64
 	// bundles holds the content of the versions, by version.
 	bundles      map[string]*chandlerv1.Bundle
 	cacheControl *chandlerv1.CacheControl
@@ -224,6 +240,42 @@ type entry struct {
 }
 
 func (e *entry) current() held { return e.versions[0] }
+
+// newest returns the version the provider last emitted: the candidate if one
+// is rolling out, else the stable version.
+func (e *entry) newest() held {
+	if e.candidate != nil {
+		return *e.candidate
+	}
+	return e.current()
+}
+
+// all returns every version the entry holds.
+func (e *entry) all() []held {
+	if e.candidate == nil {
+		return e.versions
+	}
+	return append([]held{*e.candidate}, e.versions...)
+}
+
+// target returns the version a pod gets, and which side of the rollout that
+// puts it on.
+func (e *entry) target(podUID string) (held, chandlerv1.Track) {
+	switch {
+	case e.candidate == nil:
+		return e.current(), chandlerv1.Track_TRACK_UNSPECIFIED
+	case podUID != "" && rollout.Placed(e.candidate.Version, podUID, e.share):
+		return *e.candidate, chandlerv1.Track_TRACK_CANDIDATE
+	default:
+		return e.current(), chandlerv1.Track_TRACK_STABLE
+	}
+}
+
+// feedback is what a provider is told about one revision.
+type feedback struct {
+	revision                            string
+	assigned, written, refused, failing uint32
+}
 
 // live reports whether a provider watch currently vouches for the entry.
 func (e *entry) live() bool {
@@ -278,6 +330,9 @@ type subscription struct {
 	// attempts counts sends of the current version beyond the first.
 	attempts int
 	retry    *time.Timer
+	// refused is the version the driver said it can never write; failing is
+	// the version it is failing to write for a reason on the node.
+	refused, failing string
 }
 
 // session is one driver's stream.
@@ -509,7 +564,8 @@ func (h *Hub) serveLocked(sub *subscription, force bool) {
 		}
 	}
 
-	version := e.current().Version
+	target, track := e.target(sub.request.GetWorkload().GetPodUid())
+	version := target.Version
 	if sub.sent == version && !force {
 		sub.answered = true
 		return
@@ -528,6 +584,10 @@ func (h *Hub) serveLocked(sub *subscription, force bool) {
 	if stale {
 		update.Stale = proto.Bool(true)
 	}
+	if e.candidate != nil {
+		update.Track = track.Enum()
+		update.Rollout = proto.String(e.candidate.Version)
+	}
 	if sub.nodeHas[version] {
 		update.UseCached = &chandlerv1.UseCached{}
 	} else {
@@ -542,6 +602,7 @@ func (h *Hub) serveAllLocked(r *resource) {
 	for sub := range r.subs {
 		h.serveLocked(sub, false)
 	}
+	h.reportLocked(r.entry)
 }
 
 // ack records that the driver wrote a version.
@@ -553,7 +614,9 @@ func (h *Hub) ack(sess *session, msg *chandlerv1.Ack) {
 		return // superseded: only the newest update counts
 	}
 	sub.acked, sub.attempts = msg.GetVersion(), 0
+	sub.refused, sub.failing = "", ""
 	sub.nodeHas[sub.acked] = true
+	h.reportLocked(sub.res.entry)
 }
 
 // nack reacts to a failed write according to its code.
@@ -585,6 +648,7 @@ func (h *Hub) nack(sess *session, msg *chandlerv1.Nack) {
 		// A node-side failure that may pass: try again later.
 		delay := min(retryBase<<min(sub.attempts, 10), retryMax)
 		sub.attempts++
+		sub.failing = version
 		log.Warn("driver could not write the bundle; will retry", "delay", delay.String())
 		if sub.retry != nil {
 			sub.retry.Stop()
@@ -595,14 +659,71 @@ func (h *Hub) nack(sess *session, msg *chandlerv1.Nack) {
 			if sess.subs[sub.id] != sub || sub.res.entry == nil {
 				return
 			}
-			if sub.res.entry.current().Version == version && sub.acked != version {
+			target, _ := sub.res.entry.target(sub.request.GetWorkload().GetPodUid())
+			if target.Version == version && sub.acked != version {
 				h.serveLocked(sub, true)
 			}
 		})
 	default:
-		// The bundle can never be written to that volume: not resent.
+		// The bundle can never be written to that volume: not resent. The
+		// provider hears of it, and may hold the rollout.
+		sub.refused = version
 		log.Error("driver refused the bundle")
 	}
+	h.reportLocked(sub.res.entry)
+}
+
+// reportLocked tells the provider how the entry's newest revision is faring
+// on this replica's pods, if that changed since it was last told.
+func (h *Hub) reportLocked(e *entry) {
+	if e == nil {
+		return
+	}
+	up := h.upstreams[e.key.provider]
+	if up == nil || !up.connected() {
+		return
+	}
+	newest := e.newest()
+	now := feedback{revision: newest.Revision}
+	for r := range e.refs {
+		for sub := range r.subs {
+			if target, _ := e.target(sub.request.GetWorkload().GetPodUid()); target.Version != newest.Version {
+				continue
+			}
+			now.assigned++
+			switch newest.Version {
+			case sub.acked:
+				now.written++
+			case sub.refused:
+				now.refused++
+			case sub.failing:
+				now.failing++
+			}
+		}
+	}
+	if now == e.reported && e.reportedOn == up.generation {
+		return
+	}
+	// Tell the provider when a revision it heard about no longer has anyone.
+	if e.reportedOn == up.generation && e.reported.revision != now.revision && e.reported.assigned > 0 {
+		up.out.Push(chandlerv1.ProviderRequest_builder{
+			Feedback: chandlerv1.Feedback_builder{
+				CacheKey: proto.String(e.key.cacheKey),
+				Revision: proto.String(e.reported.revision),
+			}.Build(),
+		}.Build())
+	}
+	e.reported, e.reportedOn = now, up.generation
+	up.out.Push(chandlerv1.ProviderRequest_builder{
+		Feedback: chandlerv1.Feedback_builder{
+			CacheKey: proto.String(e.key.cacheKey),
+			Revision: proto.String(now.revision),
+			Assigned: proto.Uint32(now.assigned),
+			Written:  proto.Uint32(now.written),
+			Refused:  proto.Uint32(now.refused),
+			Failing:  proto.Uint32(now.failing),
+		}.Build(),
+	}.Build())
 }
 
 // accept checks the envelope of a provider's update.

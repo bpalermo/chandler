@@ -49,6 +49,10 @@ spec:
             - --name={{ $file.name }}
             - --root=/config
             - --poll-interval={{ $file.pollInterval }}
+            {{- range $file.rollouts }}
+            - --rollout={{ with .match }}{{ . }}={{ end }}{{ required "a rollout rule needs a ramp" .ramp }}
+            {{- end }}
+            - --rollout-max-refused={{ $file.rolloutMaxRefused }}
           ports:
             - name: grpc
               containerPort: {{ $file.port }}

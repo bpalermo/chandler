@@ -14,8 +14,7 @@ option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
 // storage.
 //
 // It is used in three situations: warm-up before a starting replica reports
-// ready, periodic anti-entropy between running replicas, and on-demand fetch
-// of a version named by a ConfigRollout that the replica does not hold.
+// ready, and periodic anti-entropy between running replicas.
 //
 // Only server replicas may call it; callers are authenticated by their
 // certificate.
@@ -47,12 +46,8 @@ message KeyEntry {
   // The provider-issued cache key, as in ResourceUpdate.cache_key.
   string cache_key = 2;
 
-  // The newest version the peer accepted from the provider for this key. Unset
-  // when the peer holds the key only through peer sync and has never watched
-  // it itself.
-  //
-  // Which version is stable or candidate during a rollout is not carried here;
-  // that comes from the ConfigRollout object.
+  // The stable version of the key: the last one released to every subscriber.
+  // Always one of versions.
   string current_version = 3;
 
   // Every version the peer holds bytes for, at most three. Each can be fetched
@@ -81,6 +76,16 @@ message KeyEntry {
   // True when the resource was deleted at the origin and is being retained
   // from the cache.
   bool orphaned = 9;
+
+  // The version being rolled out for the key, one of versions. Unset when no
+  // rollout is in progress.
+  string candidate_version = 10;
+
+  // The share of subscribers the peer was last told gets candidate_version,
+  // in hundredths of a percent. A replica that adopts the entry never lowers
+  // the share it already has for the same candidate, so a pod keeps its
+  // version whichever replica it talks to.
+  uint32 candidate_basis_points = 11;
 }
 
 // KeyVersion is one version of a key that a peer holds bytes for.

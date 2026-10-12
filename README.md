@@ -6,8 +6,7 @@ read-only and replaces them atomically when they change.
 
 > **Status: early development.** Configuration is delivered end to end from
 > the file and S3 providers, and updated in place. There is no security yet:
-> connections are plaintext and any pod can read any URI. Staged rollouts are
-> not built. See
+> connections are plaintext and any pod can read any URI. See
 > [What works today](#what-works-today).
 
 ## How it is meant to work
@@ -23,11 +22,12 @@ flowchart LR
 - **CSI driver.** Runs on every node, subscribes to the config server for each
   volume, writes the files, and keeps the last known good version when anything
   upstream fails.
-- **Config server.** Caches what providers emit, rolls new versions out to a
-  growing percentage of pods, and pushes them to the drivers. The protocol
+- **Config server.** Caches what providers emit and pushes it to the drivers.
+  When a provider releases a new version to a share of the fleet first, the
+  server decides which pods are in the share. The protocol
   acknowledges every update, in the style of Envoy xDS.
 - **Providers.** Plugins behind one streaming gRPC interface. Each provider
-  owns how configuration is published and validated. This repository has a
+  owns how configuration is published, validated and rolled out. This repository has a
   file provider, which serves a directory such as a mounted ConfigMap, and an
   S3 provider as a reference implementation.
 
@@ -68,7 +68,8 @@ in [api/chandler/v1](api/chandler/v1).
 | S3 provider | Serves objects and prefixes from allow-listed buckets, on AWS or an S3-compatible store |
 | Helm chart | Installs the driver and the server, and optionally the file and S3 providers |
 | Security | Not built: plaintext, unauthenticated, no authorisation |
-| Staged rollouts, application acknowledgement | Designed, not built |
+| Staged rollouts | A provider releases a new version to a growing share of pods and can hold it or take it back; the file and S3 providers have a time-based ramp |
+| Application acknowledgement | Designed, not built |
 
 The design document ends with a
 [detailed status table](docs/design.md#13-implementation-status).

@@ -52,7 +52,7 @@ message ProviderRequest {
     // Reports that a ResourceUpdate was refused.
     ProviderNack nack = 5;
 
-    // Reports how the rollout of an earlier revision ended.
+    // Reports how a revision is faring on this replica's pods.
     Feedback feedback = 6;
   }
 }
@@ -179,19 +179,59 @@ message ResourceUpdate {
     // validated it; it is delivered to pods as is.
     Bundle bundle = 5;
 
-    // The resource is unchanged since Watch.known_revision. Only valid as the
-    // first answer to a Watch that carried known_revision.
+    // The server already holds this revision's content: it is the
+    // Watch.known_revision, or a revision this stream delivered before. Sent
+    // to confirm a known revision, and to change how far a revision has
+    // rolled out without sending its bytes again.
     NotModified not_modified = 6;
 
     // The resource no longer exists at the origin. The server keeps serving
-    // the last version to running pods; what new pods get depends on the
-    // rollout policy's deletion setting.
+    // the last version, to running pods and to new ones.
     Deleted deleted = 7;
   }
 
   // Caching directives for this resource. When unset,
   // ProviderHello.default_cache_control applies.
   CacheControl cache_control = 8;
+
+  // How far this revision has rolled out. When unset the revision is released
+  // to every subscriber.
+  //
+  // The provider owns the rollout. It releases a new revision to a share of
+  // the subscribers, raises the share over time by sending the revision again
+  // with a larger one, and releases it to everyone by sending it with no
+  // Rollout. To hold a rollout it stops raising the share. To take a revision
+  // back it emits the previous content again, as a new revision.
+  //
+  // The server only places pods; see Rollout.
+  Rollout rollout = 9;
+}
+
+// Rollout says what share of a resource's subscribers gets a revision that is
+// not released to everyone yet. The rest keep the last revision that was.
+//
+// The server decides which pods are in the share, so that a provider never
+// handles pod identities:
+//
+//   sha256(version | 0x00 | pod UID) as a big-endian integer, first 8 bytes,
+//   mod 10000 < basis_points
+//
+// The rule needs no state: every server replica gives the same answer for the
+// same pod, the set only grows as the share does, and because it is salted
+// with the version a different set of pods goes first each time.
+//
+// Three rules protect pods from a provider's mistakes and restarts:
+//
+//   * The share of a revision never shrinks. A smaller value than one already
+//     received for the same content is ignored.
+//   * The first revision of a resource goes to everyone, whatever the share:
+//     there is nothing else to give the rest.
+//   * A revision whose content equals what everyone already has is not a
+//     rollout: nothing changes for any pod.
+message Rollout {
+  // The share of subscribers that gets the revision, in hundredths of a
+  // percent: 100 is 1%, 10000 is everyone. Values above 10000 mean 10000.
+  uint32 basis_points = 1;
 }
 
 // NotModified is the payload of a ResourceUpdate for a resource that has not
@@ -205,7 +245,7 @@ message Deleted {}
 // ProviderAck confirms the revision was accepted for delivery and stored in
 // the server cache. The server checks only the envelope (size, file count,
 // path safety, cache-key and quota rules) and never inspects the content. It
-// says nothing about rollout; see Feedback.
+// says nothing about how the revision fares on the pods; see Feedback.
 message ProviderAck {
   // The watch the update was for.
   string watch_id = 1;
@@ -236,41 +276,51 @@ message ProviderNack {
   google.rpc.Status error_detail = 4;
 }
 
-// Feedback reports, after the fact, how the rollout of an ACKed revision
-// ended. It is informational: a provider may surface it at the origin (a
-// status object, a commit status) or ignore it. It needs no answer.
+// Feedback tells the provider how one revision is faring on the pods this
+// server replica serves. The provider decides what to do with it: slow or hold
+// a rollout, surface it at the origin, or ignore it. It needs no answer.
+//
+// The numbers are a snapshot of the present, not counters: a later Feedback
+// for the same revision replaces the earlier one. Each server replica reports
+// only its own subscriptions, so a provider that wants the whole picture adds
+// up the latest Feedback of every replica connected to it. A replica sends one
+// when the numbers change, and stops when no subscription is assigned the
+// revision any more.
 message Feedback {
-  // Outcome is the terminal state of a rollout.
-  enum Outcome {
-    // Not set. Never sent.
-    OUTCOME_UNSPECIFIED = 0;
-
-    // The revision reached every subscriber and is now the stable version.
-    OUTCOME_COMPLETED = 1;
-
-    // An operator aborted the rollout; subscribers that had received the
-    // revision were returned to the previous version. The server will not roll
-    // this content out again unless an operator clears the abort.
-    OUTCOME_ABORTED = 2;
-
-    // A newer revision arrived before this one finished rolling out and
-    // replaced it.
-    OUTCOME_SUPERSEDED = 3;
-  }
+  reserved 3, 4;
+  reserved outcome, detail;
 
   // The cache key of the resource the revision belongs to.
   string cache_key = 1;
 
-  // The revision the outcome is about; equals the ResourceUpdate.revision it
+  // The revision the numbers are about; equals the ResourceUpdate.revision it
   // was delivered under.
   string revision = 2;
 
-  // How the rollout ended.
-  Outcome outcome = 3;
+  // Subscriptions on this replica that are assigned the revision: all of them
+  // for a revision released to everyone, the selected share for one that is
+  // still rolling out.
+  uint32 assigned = 5;
 
-  // Human-readable explanation, such as the reason an operator gave for an
-  // abort. May be unset.
-  string detail = 4;
+  // Of those, how many have written it (the driver ACKed).
+  uint32 written = 6;
+
+  // Of those, how many can never write it: the driver NACKed with
+  // FAILED_PRECONDITION or INVALID_ARGUMENT. This is the delivery signal that
+  // a bundle is wrong for the volumes it is going to.
+  uint32 refused = 7;
+
+  // Of those, how many are failing to write it for a reason on the node, such
+  // as a full disk. The server keeps retrying these.
+  uint32 failing = 8;
+
+  // Of those, how many applications reported it loaded. Only pods whose
+  // volume opted in to application acknowledgement report.
+  uint32 loaded = 9;
+
+  // Of those, how many applications rejected it. Only the application can
+  // judge the content, so this is the one signal about the content itself.
+  uint32 rejected = 10;
 }
 
 // WatchError reports that the provider cannot serve a watch. It needs no

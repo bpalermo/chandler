@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
@@ -48,14 +49,26 @@ type Reader struct {
 // Entries whose name starts with ".." are that writer's bookkeeping and are
 // neither readable nor listed.
 func (r Reader) Read(p string) (*chandlerv1.Bundle, error) {
+	b, _, err := r.ReadStat(p)
+	return b, err
+}
+
+// ReadStat is Read, and also returns the newest modification time among the
+// files read: when the resource last changed.
+func (r Reader) ReadStat(p string) (*chandlerv1.Bundle, time.Time, error) {
+	b, modified, err := r.read(p)
+	return b, modified, err
+}
+
+func (r Reader) read(p string) (*chandlerv1.Bundle, time.Time, error) {
 	if !strings.HasPrefix(p, "/") {
-		return nil, fmt.Errorf("%w: %q is not absolute", ErrInvalid, p)
+		return nil, time.Time{}, fmt.Errorf("%w: %q is not absolute", ErrInvalid, p)
 	}
 	isDir := strings.HasSuffix(p, "/")
 	// Checked before cleaning, so that ".." is refused rather than resolved.
 	for _, segment := range strings.Split(p, "/") {
 		if strings.HasPrefix(segment, "..") || strings.ContainsRune(segment, 0) {
-			return nil, fmt.Errorf("%w: %q has a reserved segment", ErrInvalid, p)
+			return nil, time.Time{}, fmt.Errorf("%w: %q has a reserved segment", ErrInvalid, p)
 		}
 	}
 	clean := path.Clean(p)
@@ -64,15 +77,15 @@ func (r Reader) Read(p string) (*chandlerv1.Bundle, error) {
 	info, err := os.Stat(local)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, p)
+		return nil, time.Time{}, fmt.Errorf("%w: %s", ErrNotFound, p)
 	case err != nil:
-		return nil, err
+		return nil, time.Time{}, err
 	case isDir && !info.IsDir():
-		return nil, fmt.Errorf("%w: %s is not a directory", ErrNotFound, p)
+		return nil, time.Time{}, fmt.Errorf("%w: %s is not a directory", ErrNotFound, p)
 	case !isDir && info.IsDir():
-		return nil, fmt.Errorf("%w: %s is a directory; name it with a trailing slash", ErrNotFound, p)
+		return nil, time.Time{}, fmt.Errorf("%w: %s is a directory; name it with a trailing slash", ErrNotFound, p)
 	case !isDir && !info.Mode().IsRegular():
-		return nil, fmt.Errorf("%w: %s is not a regular file", ErrNotFound, p)
+		return nil, time.Time{}, fmt.Errorf("%w: %s is not a regular file", ErrNotFound, p)
 	}
 
 	w := &walk{limits: r.Limits}
@@ -82,16 +95,18 @@ func (r Reader) Read(p string) (*chandlerv1.Bundle, error) {
 		err = w.file(local, path.Base(clean), info)
 	}
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	sort.Slice(w.files, func(i, j int) bool { return w.files[i].GetPath() < w.files[j].GetPath() })
-	return chandlerv1.Bundle_builder{Files: w.files}.Build(), nil
+	return chandlerv1.Bundle_builder{Files: w.files}.Build(), w.modified, nil
 }
 
 type walk struct {
 	limits bundle.Limits
 	files  []*chandlerv1.File
 	bytes  uint64
+	// modified is the newest modification time among the files read.
+	modified time.Time
 }
 
 func (w *walk) dir(local, rel string, depth int) error {
@@ -149,6 +164,9 @@ func (w *walk) file(local, rel string, info fs.FileInfo) error {
 		return fmt.Errorf("%w: more than %d bytes", bundle.ErrTooLarge, w.limits.MaxBytes)
 	}
 	w.bytes += uint64(len(content))
+	if info.ModTime().After(w.modified) {
+		w.modified = info.ModTime()
+	}
 	w.files = append(w.files, chandlerv1.File_builder{
 		Path:    proto.String(rel),
 		Mode:    proto.Uint32(uint32(info.Mode().Perm())),

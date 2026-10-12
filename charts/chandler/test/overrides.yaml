@@ -62,6 +62,11 @@ providers:
       configMap:
         name: app-config
     pollInterval: 500ms
+    rollouts:
+      - match: "/payments/*"
+        ramp: "1%:5m,10%:10m"
+      - ramp: "50%:1m"
+    rolloutMaxRefused: 3
     port: 9101
     nodeSelector:
       kubernetes.io/os: linux
@@ -84,6 +89,10 @@ providers:
     endpointUrl: http://localhost:4566
     pathStyle: true
     pollInterval: 5s
+    rollouts:
+      - match: "acme-config/payments/*"
+        ramp: "1%:5m"
+    rolloutMaxRefused: -1
     port: 9102
     serviceAccount:
       name: s3-reader

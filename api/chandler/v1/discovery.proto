@@ -193,8 +193,8 @@ message Unsubscribe {
 
 // ConfigUpdate tells the driver which version a subscription must converge to.
 // It is sent once in answer to a Subscribe and again whenever the target
-// changes: a new version from the provider, placement in a rollout, or an
-// aborted rollout returning the pod to the stable version.
+// changes: a new version from the provider, placement in a rollout, or a
+// rollout that was taken back returning the pod to the stable version.
 //
 // The driver must answer with an Ack or a Nack carrying the same nonce.
 message ConfigUpdate {
@@ -241,8 +241,8 @@ message ConfigUpdate {
   // rollout is in progress for the resource.
   Track track = 9;
 
-  // Name of the ConfigRollout object that caused this update. Unset when the
-  // update is not part of a rollout.
+  // The version being rolled out for the resource, whichever side this
+  // subscription is on. Unset when no rollout is in progress.
   string rollout = 10;
 }
 

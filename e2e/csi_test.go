@@ -7,6 +7,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+
+	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/rollout"
 )
 
 const (
@@ -551,5 +557,87 @@ func TestServerCacheSurvivesARollingRestart(t *testing.T) {
 	}
 	if got := mustKubectl(ctx, t, "exec", "after", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
 		t.Errorf("after the rolling restart the pod reads %q, want v1", got)
+	}
+}
+
+// A staged rollout: a new version reaches the share of pods the provider
+// names, exactly the pods the placement rule selects, and the rest only when
+// the provider releases it.
+func TestStagedRollout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	ns := newNamespace(ctx, t)
+	// e2e/values.yaml gives keys of this form a ramp of half the pods.
+	key := ns + ".staged.yaml"
+	sources := fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)
+
+	// The version of what is about to be published, as every component
+	// computes it: one file, named after the key, as kubelet writes a
+	// ConfigMap's files.
+	next := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
+		chandlerv1.File_builder{Path: proto.String(key), Mode: proto.Uint32(0o644), Content: []byte("v2")}.Build(),
+	}}.Build()
+	version := bundle.Version(next)
+
+	publish(ctx, t, key, "v1")
+	selected := map[string]bool{}
+	var podNames []string
+	start := func(name string) {
+		t.Helper()
+		mustApply(ctx, t, ns, consumerPod(name, true, sources))
+		if _, err := waitForPodPhase(ctx, ns, name, "Running"); err != nil {
+			t.Fatal(err)
+		}
+		uid := mustKubectl(ctx, t, "get", "pod", name, "-n", ns, "-o", "jsonpath={.metadata.uid}")
+		selected[name] = rollout.Placed(version, uid, 5000)
+		podNames = append(podNames, name)
+	}
+	sides := func() (in, out int) {
+		for _, s := range selected {
+			if s {
+				in++
+			} else {
+				out++
+			}
+		}
+		return in, out
+	}
+	// Enough pods that both sides of the rollout are represented.
+	for i := 0; i < 12; i++ {
+		start(fmt.Sprintf("pod-%d", i))
+		if in, out := sides(); i >= 3 && in > 0 && out > 0 {
+			break
+		}
+	}
+	in, out := sides()
+	if in == 0 || out == 0 {
+		t.Fatalf("12 pods all fell on one side of a 50%% rollout (%d in, %d out)", in, out)
+	}
+	t.Logf("%d pods are selected for the new version, %d are not", in, out)
+	// The first version of a resource is not rolled out: everyone has it.
+	for _, pod := range podNames {
+		expectFile(ctx, t, ns, pod, "app.yaml", "v1")
+	}
+
+	publish(ctx, t, key, "v2")
+	for _, pod := range podNames {
+		if selected[pod] {
+			expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+		}
+	}
+	// The selected pods have it; the rest must still be on v1, for as long
+	// as the provider holds the share.
+	for _, pod := range podNames {
+		if selected[pod] {
+			continue
+		}
+		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+			t.Errorf("%s is outside the share but reads %q during the hold", pod, got)
+		}
+	}
+
+	// The hold ends and the provider releases the version to everyone.
+	for _, pod := range podNames {
+		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
 	}
 }

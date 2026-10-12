@@ -27,6 +27,7 @@ import (
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/rollout"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
@@ -74,6 +75,17 @@ type State struct {
 	Bundle *chandlerv1.Bundle
 	// CacheControl is the resource's caching directives, or nil.
 	CacheControl *chandlerv1.CacheControl
+
+	// Since is when the revision appeared at the origin; the ramp is
+	// measured from it. The zero time releases the revision to everyone at
+	// once.
+	Since time.Time
+	// Ramp is how this resource is rolled out, when the origin says so for
+	// the resource itself; nil uses the provider's.
+	Ramp *rollout.Ramp
+	// Hold caps the share of subscribers that gets the revision, in basis
+	// points, when the origin says to hold the rollout; nil does not.
+	Hold *uint32
 }
 
 // Server serves ConfigProvider for an Origin.
@@ -87,7 +99,113 @@ type Server struct {
 	// PollInterval is how often a watched resource is fetched again. Each
 	// wait is spread by a tenth either way, so watches do not fall in step.
 	PollInterval time.Duration
-	Log          *slog.Logger
+	// Ramp is how a new revision is released over time, for resources whose
+	// origin does not say. The zero Ramp releases to everyone at once.
+	Ramp rollout.Ramp
+	// MaxRefused is how many subscriptions may refuse or reject a revision
+	// before its rollout is held at the share it has reached. Negative never
+	// holds.
+	MaxRefused int
+	Log        *slog.Logger
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
+
+	mu sync.Mutex
+	// feedback is the latest report of each connected server replica, by
+	// revision.
+	feedback map[revisionKey]map[string]*chandlerv1.Feedback
+	// held is the share each revision was held at when too many
+	// subscriptions refused it.
+	held map[revisionKey]uint32
+}
+
+// revisionKey names one revision of one resource.
+type revisionKey struct{ cacheKey, revision string }
+
+func (s *Server) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// record keeps a server replica's latest report on a revision.
+func (s *Server) record(serverID string, f *chandlerv1.Feedback) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := revisionKey{f.GetCacheKey(), f.GetRevision()}
+	if s.feedback == nil {
+		s.feedback = make(map[revisionKey]map[string]*chandlerv1.Feedback)
+	}
+	if f.GetAssigned() == 0 {
+		delete(s.feedback[key], serverID)
+		if len(s.feedback[key]) == 0 {
+			delete(s.feedback, key)
+		}
+		return
+	}
+	if s.feedback[key] == nil {
+		s.feedback[key] = make(map[string]*chandlerv1.Feedback)
+	}
+	s.feedback[key][serverID] = f
+}
+
+// forget drops everything a server replica reported, when it disconnects.
+func (s *Server) forget(serverID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, reports := range s.feedback {
+		delete(reports, serverID)
+		if len(reports) == 0 {
+			delete(s.feedback, key)
+		}
+	}
+}
+
+// share returns the share of subscribers a revision gets now, in basis
+// points: where its ramp has reached, unless the origin holds it lower or too
+// many subscriptions have refused it. last is the share last sent on this
+// watch for the revision, 0 for none.
+func (s *Server) share(key revisionKey, state State, last uint32) uint32 {
+	ramp := s.Ramp
+	if state.Ramp != nil {
+		ramp = *state.Ramp
+	}
+	share := uint32(rollout.Everyone)
+	if !state.Since.IsZero() {
+		share = ramp.At(s.now().Sub(state.Since))
+	}
+	if state.Hold != nil {
+		share = min(share, *state.Hold)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	refused := 0
+	for _, f := range s.feedback[key] {
+		refused += int(f.GetRefused() + f.GetRejected())
+	}
+	if s.MaxRefused >= 0 && refused > s.MaxRefused {
+		// Hold where it is: the pods that have it keep it, no more get it.
+		at, ok := s.held[key]
+		if !ok {
+			at = last
+			if at == 0 {
+				at = min(share, ramp.At(0))
+			}
+			if s.held == nil {
+				s.held = make(map[revisionKey]uint32)
+			}
+			s.held[key] = at
+			s.Log.Warn("holding a rollout: subscriptions refused the revision",
+				"cache_key", key.cacheKey, "revision", key.revision, "refused", refused, "basis_points", at)
+		}
+		share = min(share, at)
+	} else {
+		delete(s.held, key)
+	}
+	// A share never shrinks: a pod that has the revision keeps it.
+	return max(share, last)
 }
 
 // StreamConfigs implements chandlerv1.ConfigProviderServer.
@@ -110,6 +228,7 @@ func (s *Server) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConfigsSer
 	log := s.Log.With("server", hello.GetServerId())
 	log.Info("server connected")
 	defer log.Info("server disconnected")
+	defer s.forget(hello.GetServerId())
 
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
@@ -184,7 +303,9 @@ func (s *Server) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConfigsSer
 				"watch", nack.GetWatchId(), "revision", nack.GetRevision(),
 				"code", codes.Code(nack.GetErrorDetail().GetCode()).String(),
 				"reason", nack.GetErrorDetail().GetMessage())
-		case req.HasAck(), req.HasFeedback():
+		case req.HasFeedback():
+			s.record(hello.GetServerId(), req.GetFeedback())
+		case req.HasAck():
 			// Nothing to do: a polled origin has nobody to tell.
 		}
 	}
@@ -249,6 +370,9 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 	// holds none. reported is the last error code sent, so a persisting
 	// failure is reported once.
 	revision, reported := known, codes.OK
+	// share is the share of subscribers last sent for revision, in basis
+	// points; 0 when none was sent on this watch.
+	share := uint32(0)
 	first := true
 	for {
 		state, err := resource.Fetch(ctx, revision, s.limits)
@@ -256,17 +380,26 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 		case ctx.Err() != nil:
 			return
 		case err == nil:
+			if state.Revision != revision {
+				share = 0
+			}
+			now := s.server.share(revisionKey{key, state.Revision}, state, share)
+			u := update(key, state.Revision)
+			u.CacheControl = state.CacheControl
+			if now < rollout.Everyone {
+				u.Rollout = chandlerv1.Rollout_builder{BasisPoints: proto.Uint32(now)}.Build()
+			}
 			switch {
 			case state.Bundle != nil:
-				u := update(key, state.Revision)
-				u.Bundle, u.CacheControl = state.Bundle, state.CacheControl
+				u.Bundle = state.Bundle
 				emit(u)
-			case first && known != "":
-				u := update(key, state.Revision)
-				u.NotModified, u.CacheControl = &chandlerv1.NotModified{}, state.CacheControl
+			case (first && known != "") || now != share:
+				// Confirming a known revision, or moving its rollout on:
+				// no bytes either way.
+				u.NotModified = &chandlerv1.NotModified{}
 				emit(u)
 			}
-			revision, reported = state.Revision, codes.OK
+			revision, share, reported = state.Revision, now, codes.OK
 		case errors.Is(err, ErrInvalid):
 			fail(codes.InvalidArgument, err.Error())
 			return
@@ -275,7 +408,7 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 			u := update(key, revision)
 			u.Deleted = &chandlerv1.Deleted{}
 			emit(u)
-			revision, reported = "", codes.NotFound
+			revision, share, reported = "", 0, codes.NotFound
 		default:
 			code := errorCode(err)
 			if code != reported {

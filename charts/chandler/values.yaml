@@ -99,6 +99,21 @@ providers:
     # also has to reach the pod first, which kubelet does about once a minute.
     pollInterval: 2s
 
+    # How new versions are released over time. Each rule gives a ramp to the
+    # resources whose path matches a pattern ("*" matches within one path
+    # segment); a rule with no match applies to every resource; the first
+    # match wins. A ramp is a list of <share>:<hold>, after which the version
+    # goes to every pod. Without a matching rule a version goes to every pod
+    # at once.
+    #   rollouts:
+    #     - match: "/payments/*"
+    #       ramp: "1%:5m,10%:10m,50%:10m"
+    #     - ramp: "50%:1m"
+    rollouts: []
+    # Pods that may refuse a version, or whose application may reject it,
+    # before its rollout is held where it is. Negative never holds.
+    rolloutMaxRefused: 0
+
     port: 9100
 
     nodeSelector: {}
@@ -138,6 +153,23 @@ providers:
 
     # How often watched objects are checked for change.
     pollInterval: 30s
+
+    # How new versions are released over time. Each rule gives a ramp to the
+    # resources whose <bucket>/<key> matches a pattern ("*" matches within one path
+    # segment); a rule with no match applies to every resource; the first
+    # match wins. A ramp is a list of <share>:<hold>, after which the version
+    # goes to every pod. Without a matching rule a version goes to every pod
+    # at once.
+    #   rollouts:
+    #     - match: "acme-config/payments/*"
+    #       ramp: "1%:5m,10%:10m,50%:10m"
+    #     - ramp: "50%:1m"
+    rollouts: []
+    # Pods that may refuse a version, or whose application may reject it,
+    # before its rollout is held where it is. Negative never holds.
+    rolloutMaxRefused: 0
+    # A single object can also carry its own ramp in its metadata
+    # (chandler-rollout), and be held at a share (chandler-rollout-hold: "10").
 
     port: 9100
 

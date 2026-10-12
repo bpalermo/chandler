@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/provider"
+	"github.com/bpalermo/chandler/common/rollout"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
@@ -26,6 +28,8 @@ type stored struct {
 	content      string
 	cacheControl string
 	versionID    string
+	modified     time.Time
+	metadata     map[string]string
 }
 
 // fakeS3 is one bucket, "config", held in memory.
@@ -62,7 +66,10 @@ func (f *fakeS3) HeadObject(_ context.Context, in *s3.HeadObjectInput, _ ...func
 	if !ok {
 		return nil, &types.NotFound{}
 	}
-	out := &s3.HeadObjectOutput{ETag: aws.String(etag(o.content)), ContentLength: aws.Int64(int64(len(o.content)))}
+	out := &s3.HeadObjectOutput{
+		ETag: aws.String(etag(o.content)), ContentLength: aws.Int64(int64(len(o.content))),
+		LastModified: aws.Time(o.modified), Metadata: o.metadata,
+	}
 	if o.cacheControl != "" {
 		out.CacheControl = aws.String(o.cacheControl)
 	}
@@ -111,6 +118,7 @@ func (f *fakeS3) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input, _ .
 		o := f.objects[key]
 		out.Contents = append(out.Contents, types.Object{
 			Key: aws.String(key), ETag: aws.String(etag(o.content)), Size: aws.Int64(int64(len(o.content))),
+			LastModified: aws.Time(o.modified),
 		})
 	}
 	return out, nil
@@ -132,10 +140,10 @@ func resolve(t *testing.T, o Origin, raw string) provider.Resource {
 func TestResolve(t *testing.T) {
 	o := Origin{Client: &fakeS3{}, Buckets: []string{"config"}}
 	for raw, key := range map[string]string{
-		"s3://config/app.yaml":          "config/app.yaml",
-		"s3://config/team/../app.yaml":  "config/app.yaml",
-		"s3://config/flags/":            "config/flags/",
-		"s3://config/":                  "config/",
+		"s3://config/app.yaml":         "config/app.yaml",
+		"s3://config/team/../app.yaml": "config/app.yaml",
+		"s3://config/flags/":           "config/flags/",
+		"s3://config/":                 "config/",
 	} {
 		if got := resolve(t, o, raw).CacheKey(); got != key {
 			t.Errorf("cache key of %s = %q, want %q", raw, got, key)
@@ -143,10 +151,10 @@ func TestResolve(t *testing.T) {
 	}
 	// Refused, not ignored.
 	for _, raw := range []string{
-		"s3:///app.yaml",                    // no bucket
-		"s3://config",                       // no key, and not a directory
-		"s3://config/app.yaml?versionId=3",  // a second name for the object
-		"s3://secrets/app.yaml",             // not a bucket this provider serves
+		"s3:///app.yaml",                   // no bucket
+		"s3://config",                      // no key, and not a directory
+		"s3://config/app.yaml?versionId=3", // a second name for the object
+		"s3://secrets/app.yaml",            // not a bucket this provider serves
 	} {
 		u, err := uri.Parse(raw)
 		if err != nil {
@@ -323,5 +331,56 @@ func TestParseCacheControl(t *testing.T) {
 		if cc := parseCacheControl(header); cc != nil {
 			t.Errorf("parseCacheControl(%q) = %v, want nil", header, cc)
 		}
+	}
+}
+
+// What the origin knows about a rollout: when the revision appeared, which
+// ramp applies, and whether it is held.
+func TestRolloutFromTheOrigin(t *testing.T) {
+	uploaded := time.Unix(1_700_000_000, 0).UTC()
+	fake := &fakeS3{objects: map[string]stored{
+		"team/app.yaml":  {content: "v1", modified: uploaded},
+		"team/own.yaml":  {content: "v1", modified: uploaded, metadata: map[string]string{RampMetadata: "5%:1h", HoldMetadata: "2.5%"}},
+		"team/typo.yaml": {content: "v1", modified: uploaded, metadata: map[string]string{RampMetadata: "five percent"}},
+		"team/hold.yaml": {content: "v1", modified: uploaded, metadata: map[string]string{HoldMetadata: "lots"}},
+		"flags/a.json":   {content: "a", modified: uploaded.Add(-time.Hour)},
+		"flags/b.json":   {content: "b", modified: uploaded},
+		"other/x":        {content: "x", modified: uploaded},
+	}}
+	rule, err := rollout.ParseRule("config/team/*=10%:5m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := Origin{Client: fake, Rollouts: []rollout.Rule{rule}}
+	ctx, limits := context.Background(), bundle.DefaultLimits()
+	fetch := func(raw string) (provider.State, error) {
+		t.Helper()
+		return resolve(t, o, raw).Fetch(ctx, "", limits)
+	}
+
+	// The provider's rule, measured from the upload.
+	state, err := fetch("s3://config/team/app.yaml")
+	if err != nil || !state.Since.Equal(uploaded) || state.Ramp.At(0) != 1000 || state.Hold != nil {
+		t.Errorf("app.yaml: %+v, %v; want the rule's ramp from the upload time", state, err)
+	}
+	// The object's own metadata wins, and can hold the rollout.
+	state, err = fetch("s3://config/team/own.yaml")
+	if err != nil || state.Ramp.At(0) != 500 || state.Hold == nil || *state.Hold != 250 {
+		t.Errorf("own.yaml: %+v, %v; want its own ramp held at 2.5%%", state, err)
+	}
+	// Bad metadata is not delivered some other way.
+	for _, raw := range []string{"s3://config/team/typo.yaml", "s3://config/team/hold.yaml"} {
+		if _, err := fetch(raw); err == nil {
+			t.Errorf("%s was delivered despite its metadata", raw)
+		}
+	}
+	// A prefix is as new as its newest object; no rule matches it here.
+	state, err = fetch("s3://config/flags/")
+	if err != nil || !state.Since.Equal(uploaded) || state.Ramp.At(0) != rollout.Everyone {
+		t.Errorf("flags/: %+v, %v; want the newest object's time and no ramp", state, err)
+	}
+	state, err = fetch("s3://config/other/x")
+	if err != nil || state.Ramp.At(0) != rollout.Everyone {
+		t.Errorf("other/x: %+v, %v; want no ramp", state, err)
 	}
 }

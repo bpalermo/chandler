@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/bundle",
+        "//common/rollout",
         "//common/uri",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//codes",
@@ -23,6 +24,7 @@ go_test(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/bundle",
+        "//common/rollout",
         "//common/uri",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",

@@ -28,6 +28,11 @@ providers:
       configMap:
         name: chandler-e2e-config
     pollInterval: 500ms
+    # Keys the rollout test uses are released to half the pods for a while;
+    # everything else goes to every pod at once.
+    rollouts:
+      - match: "/*.staged.yaml"
+        ramp: "50%:45s"
 
   # Serves a bucket of the LocalStack that runs beside it, so the S3 provider
   # is exercised against an S3 API without anything outside the cluster.

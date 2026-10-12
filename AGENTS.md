@@ -79,6 +79,10 @@ hand-editing what Gazelle owns.
 - **Publishing is the provider's concern.** How configuration gets into a
   provider is outside Chandler. The S3 provider is a reference implementation,
   not the only one.
+- **Rollouts are the provider's concern.** A provider says what share of
+  pods gets a new version; the server only places pods (`common/rollout`) and
+  reports back. The server keeps no rollout state in Kubernetes and has no
+  access to its API. There are no CRDs.
 - **The driver ACKs on write.** An ACK means the files were written, nothing
   more.
 - **Replacement is atomic and the last known good version is kept.** All

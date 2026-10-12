@@ -25,13 +25,14 @@ Goals
 - Driver ↔ server protocol with per-update ACK/NACK, in the style of Envoy xDS.
 - Providers are plugins behind one bidirectional-streaming gRPC interface.
 - Staged rollout: a new version reaches pods gradually, by percentage, rather
-  than all at once, and an operator can pause or abort the ramp.
+  than all at once. The provider owns the ramp and can hold it or take the
+  version back.
 - Provider failure, server failure and node restarts do not take config away
   from running pods and, where a cache exists, do not block new pods.
 - Updates are atomic per volume; the last known good config is always kept.
 - An application can optionally report whether it loaded or rejected a
   config, over a plain HTTP API on a Unix socket in the volume. A rejection
-  reverts that pod and can pause a rollout.
+  reverts that pod and is reported to the provider, which can hold a rollout.
 - Caching is keyed by provider-issued cache keys and is bounded by design.
 - Configuration content is opaque to the server and the driver. Neither parses
   or interprets it; a provider is responsible for the validity of what it
@@ -66,7 +67,6 @@ flowchart LR
   end
   subgraph cp["Control plane (Deployment, N replicas)"]
     server["chandler-server"] --- scache[("server cache<br/>emptyDir: CAS + key index")]
-    server --- crd["RolloutPolicy / ConfigRollout CRs<br/>leader Lease"]
     server <-- "PeerSync" --> peers["other replicas"]
   end
   driver <-- "ConfigDiscoveryService<br/>bidi stream, ACK/NACK" --> server
@@ -81,8 +81,9 @@ flowchart LR
 | `chandler-server` | Deployment, several replicas, cache on `emptyDir` | Authorise subscriptions, coalesce them into provider watches, cache and replicate the cache to peers, decide which version each pod gets (rollouts), push |
 | Providers | In-process (built-in) or separate gRPC services | Resolve a URI to a bundle, issue its cache key and revision, push changes |
 
-Each cluster runs its own set of server replicas; servers are not shared
-across clusters, so rollout state can live in that cluster's API objects.
+Each cluster runs its own set of server replicas. A provider may be shared by
+several clusters, which is why rollouts belong to the provider (section 8)
+and the server keeps no state in the Kubernetes API.
 
 There are three cache tiers, each able to serve when the one above it is gone:
 origin → server cache → node cache → the volume itself (which is never emptied).
@@ -289,8 +290,8 @@ The driver NACKs only for these reasons:
 | `DATA_LOSS` | Digest mismatch, or a `UseCached` version missing from the node cache | Resend the full bundle |
 | `RESOURCE_EXHAUSTED` | Node disk or the volume's size limit is full | Retry with backoff |
 | `INTERNAL` | I/O error while staging or swapping | Retry with backoff |
-| `FAILED_PRECONDITION` | A path collides with another source of the same volume | Do not resend; counts toward `maxNacks` |
-| `INVALID_ARGUMENT` | Unsafe path or bundle over the limits (the server should have refused it) | Do not resend; counts toward `maxNacks` |
+| `FAILED_PRECONDITION` | A path collides with another source of the same volume | Do not resend; reported to the provider as refused |
+| `INVALID_ARGUMENT` | Unsafe path or bundle over the limits (the server should have refused it) | Do not resend; reported to the provider as refused |
 
 Last known good therefore means the last version successfully written, or,
 for a volume with application acknowledgement, the last version the
@@ -389,7 +390,7 @@ curl --unix-socket /etc/payments/..chandler.sock \
   there is nothing to revert to and the files stay.
 - Either way the driver forwards an `AppReport` to the server for each source
   affected. The server does not send a rejected version to that subscription
-  again, and rollouts can react to the reports (section 8).
+  again, and the provider is told, so that it can hold a rollout (section 8).
 
 Verdicts are kept in `meta.json`, and the driver re-creates the sockets when
 it restarts. The driver binds through a directory file descriptor, so the
@@ -449,8 +450,8 @@ sequenceDiagram
   invalid is ever stored, let alone emitted. That path is entirely the
   provider's; it is not part of Chandler and does not appear in these
   protocols.
-- `Feedback` is the late, informational outcome of the rollout (completed,
-  aborted, superseded), since an ACK cannot know that yet.
+- `Feedback` tells the provider how a revision fares on the pods, which an
+  ACK cannot know yet; see section 8.
 - On reconnect the server re-watches everything with `known_revision`; the
   provider answers `NotModified` for what has not changed.
 
@@ -544,8 +545,6 @@ Replicas find each other through a headless Service and speak `PeerSync`
 - **Anti-entropy.** Every 30s each replica lists one peer's keys and pulls
   what it lacks. All replicas converge on the union of keys, including keys
   only one replica's drivers subscribe to, so drivers can move to any replica.
-- **On demand.** A replica that needs a version named in a `ConfigRollout`
-  and cannot get it from the provider asks its peers for it.
 
 Bundles are verified against their version digest on receipt. When entries
 differ, a replica with a live provider watch for the key trusts its own
@@ -567,8 +566,8 @@ while a provider is down.
 
 `stale_if_error` defaults to unlimited: for configuration, an old version is
 almost always better than none. When the provider returns, the server
-re-watches with `known_revision` and resumes normal operation. Rollouts whose
-candidate is already cached continue during an outage.
+re-watches with `known_revision` and resumes normal operation. A rollout in
+progress stays at its share during the outage.
 
 **What is not covered.** If every replica loses its cache at the same time
 while a provider is down, the server has nothing to serve for that provider's
@@ -576,122 +575,117 @@ keys. Running pods are unaffected. New pods on nodes without a node cache wait
 for the provider; new pods on nodes with one start only if they set
 `failurePolicy: UseCached`.
 
-**Deletion at the origin** is treated as dangerous. With `onDelete: Retain`
-(default) the key is marked orphaned, keeps being served from cache and raises
-an alert. With `onDelete: Block` new subscriptions get `NOT_FOUND`. In both
-cases running pods keep their files.
+**Deletion at the origin** is treated as dangerous. The key is marked
+orphaned and keeps being served from the cache, to running pods and to new
+ones.
 
 ## 8. Staged rollouts
 
 The purpose of a rollout is that a new version does not reach every pod at the
-same moment. A new version of a key is released to a growing percentage of its
-subscribers over time. Because the content is opaque, nothing in Chandler can
-judge whether a version is good: the ramp buys time for people and their
-monitoring to notice a bad one and stop it before it is everywhere.
+same moment. A new version is released to a growing share of its subscribers
+over time. Because the content is opaque, nothing in Chandler can judge
+whether a version is good: the ramp buys time for people and their monitoring
+to notice a bad one and stop it before it is everywhere.
 
-A `RolloutPolicy` matches URIs and defines the ramp. Without a matching policy
-a new version goes to everyone at once. A key's first version is always served
-immediately.
+**The provider owns the rollout.** It already owns how configuration is
+published and validated; how it is released belongs with them. A provider is
+often shared by several clusters, and one place then decides how a change
+reaches all of them. The server needs no rollout objects, no leader and no
+access to the Kubernetes API.
 
-```yaml
-apiVersion: chandler.dev/v1alpha1
-kind: RolloutPolicy
-metadata:
-  name: payments
-spec:
-  match:
-    uris: ["s3://acme-config/payments/**"]   # most specific match wins
-  steps:                  # after the last hold the version goes to 100%
-    - {percent: 1,  hold: 5m}
-    - {percent: 10, hold: 10m}
-    - {percent: 50, hold: 10m}
-  maxNacks: 0             # undeliverable-bundle NACKs tolerated before pausing
-  appAck:                 # optional; applies to pods whose volume sets appAck
-    maxRejects: 0         # application rejections tolerated before pausing
-    loadTimeout: 2m       # written but not reported within this counts as a timeout
-    maxTimeouts: 5        # timeouts tolerated before pausing
-  onDelete: Retain
+The division of work:
+
+| Provider | Server |
+|---|---|
+| Decides the share of subscribers that gets a new revision, and when to raise it | Decides which pods are in the share |
+| Holds the rollout, or takes the revision back | Keeps the stable version for the rest |
+| Decides what to do with the feedback | Reports how the revision fares on its pods |
+
+**Protocol.** A `ResourceUpdate` may carry a `Rollout` with a share in basis
+points. The provider raises the share by sending the same revision again, as
+`NotModified` so that no bytes travel, and releases the revision by sending it
+with no `Rollout`. The stable version is the last one released to everyone;
+the server holds it, and replicas copy it from each other.
+
+```mermaid
+sequenceDiagram
+  participant P as provider
+  participant S as chandler-server
+  P->>S: ResourceUpdate(r2, bundle, rollout 1%)
+  Note over S: pods in the 1% get r2, the rest keep r1
+  S-->>P: Feedback(r2, assigned 3, written 3)
+  P->>S: ResourceUpdate(r2, NotModified, rollout 10%)
+  S-->>P: Feedback(r2, assigned 31, written 30, refused 1)
+  Note over P: holds: stops raising the share
+  P->>S: ResourceUpdate(r2, NotModified)
+  Note over S: released: r2 is the stable version
 ```
 
 **Who gets the new version.** A pod receives the candidate when
 
 ```
-hash(version, pod UID) mod 10000 < percent × 100
+sha256(version | 0x00 | pod UID), first 8 bytes, mod 10000 < basis points
 ```
 
 and the stable version otherwise. This needs no per-pod state and no
 coordination: any replica gives the same answer for the same pod. The set only
-grows as the percentage rises, so a pod never flips back and forth. Salting
-with the version means a different set of pods goes first each time. Pods that
-start mid-rollout are placed by the same rule.
+grows as the share rises, so a pod never flips back and forth. Salting with
+the version means a different set of pods goes first each time. Pods that
+start mid-rollout are placed by the same rule. The provider never sees a pod's
+identity, and a key never holds more than the stable version, the candidate
+and the previous stable version.
 
-**Rollout state.** A `ConfigRollout` object per `(cache_key, version)` records
-the stable version, the candidate version, the start time and the phase.
-Replicas watch these objects; the current percentage is a pure function of the
-policy steps and the time since start, so every replica computes the same ramp
-without exchanging anything else.
+**Three rules protect pods from a provider's mistakes and restarts.**
 
-**Leader.** Replicas have independent provider streams and versions are
-content digests with no inherent order, so two replicas can disagree about
-which version is newest (one poll may skip a version another one saw). One
-replica therefore holds a `Lease` and is the only one that turns "the provider
-emitted a version" into rollout state. The order of versions is the order the
-leader observed them. Only replicas that have finished warm-up campaign.
+- The share of a candidate never shrinks. A smaller value than one already
+  received for the same content is ignored, and replicas exchange the share
+  with the cache entry, so a pod keeps its version whichever replica it talks
+  to.
+- A resource's first version goes to everyone, whatever the share: there is
+  nothing else to give the rest.
+- A revision whose content equals the stable version is not a rollout.
 
-| Leader only | Any replica |
-|---|---|
-| Create a `ConfigRollout`, supersede an older one | Serve and place pods by the hash rule |
-| Mark a rollout completed and move the stable version | Advance the ramp (it is computed, not stored) |
-| Sum NACK, rejection and timeout counts when a threshold is above zero | Pause a rollout on an undeliverable-bundle NACK or an application rejection |
+**Holding and taking back.** To hold a rollout the provider stops raising the
+share: pods that have the candidate keep it and no more get it. To take a
+version back the provider emits the previous content again, as a new revision.
+Its version equals the stable one, so the candidate is dropped and the pods
+that had it are sent the stable version again (a `UseCached` update, since
+their node still has it). A newer version arriving mid-rollout replaces the
+candidate; the stable version stays what everyone had.
 
-A follower that has received a version the leader has not recorded yet holds
-it and serves it to nobody. A follower that lacks the candidate's bytes serves
-stable until it gets them from the provider or a peer. Pausing is open to
-every replica because a safety stop must not wait for a leader.
+**While the provider is away** the rollout stays where it is: the server keeps
+the last share it was told. A cluster cannot stop or advance a rollout on its
+own.
 
-If the leader is lost, new versions are not picked up until another replica
-takes the lease (about 15s); running ramps continue and pods keep being
-served. All writes use optimistic concurrency. A new leader reconciles on
-takeover: if a key has more than one unfinished rollout, it keeps the one
-matching its own view of the provider and supersedes the rest.
+**Feedback.** The server tells the provider, per revision, how many of its
+subscriptions are assigned it, have written it, can never write it
+(`FAILED_PRECONDITION` or `INVALID_ARGUMENT` NACKs), are failing to write it
+for a reason on the node, and, for pods with application acknowledgement,
+loaded or rejected it. The numbers are a snapshot per replica; the provider
+adds up its replicas. What it does with them is its own decision. Node
+problems such as a full disk are reported apart, because they say nothing
+about the version.
 
-```mermaid
-stateDiagram-v2
-  [*] --> Progressing: new version ACKed, policy matched
-  Progressing --> Paused: operator pauses, or NACKs exceed maxNacks
-  Paused --> Progressing: operator resumes
-  Paused --> Aborted: operator aborts
-  Progressing --> Aborted: operator aborts
-  Progressing --> Completed: last hold elapsed
-  Progressing --> Superseded: newer version arrived
-  Completed --> [*]
-  Aborted --> [*]
-  Superseded --> [*]
-```
+**The reference ramp.** `common/provider` gives every provider built on it a
+time-based ramp, so the file and S3 providers have rollouts without keeping
+any state:
 
-- **Paused**: the percentage is frozen. Pods that already took the candidate
-  keep it. An operator pauses when the new config misbehaves. The system
-  pauses on its own only when the bundle itself cannot be written
-  (`FAILED_PRECONDITION` or `INVALID_ARGUMENT` NACKs above `maxNacks`), or
-  when the policy has an `appAck` block and applications reject the version
-  or fail to report it loaded in time. Node problems such as a full disk do
-  not pause a rollout. Time spent paused does not count toward the ramp.
+- A ramp is a list of shares and holds, `1%:5m,10%:10m,50%:10m`, after which
+  the version goes to everyone. Rules give ramps to resources by a pattern on
+  their name; with no matching rule a version goes to every pod at once.
+- The ramp is measured from when the revision appeared at the origin: a file's
+  modification time, an object's `LastModified`. A restarted provider
+  therefore computes the same share, with nothing stored.
+- A rollout is held where it is while more subscriptions than
+  `--rollout-max-refused` (default 0) refuse or reject the revision.
+- An S3 object can carry its own ramp in its metadata (`chandler-rollout`) and
+  be held at a share (`chandler-rollout-hold: "10"`).
 
-  Application reports are the only signal about the content itself. A
-  rejecting pod has already been reverted by its driver; pausing keeps the
-  version from reaching more pods. A timeout only pauses: a pod is never
-  reverted for being slow to report.
-- **Completed**: the leader makes the candidate the stable version; the object
-  is removed after a retention period.
-- **Aborted**: pods on the candidate are sent the stable version again (a
-  `UseCached` update, since the node still has it). The object is kept so the
-  same version is not rolled out again if the provider re-emits it, and the
-  provider gets `Feedback(ABORTED)`.
-- **Superseded**: a newer version restarts the ramp from the first step, with
-  the stable version unchanged. Pods on the old candidate move to the new one
-  or back to stable according to the new hash.
-
-The operator pauses, resumes or aborts by editing the `ConfigRollout`.
+The reference ramp has limits a production provider would not: time spent held
+still counts toward the ramp, a hold on refusals is forgotten when the
+provider restarts until the next feedback arrives, and a file provider serving
+a ConfigMap restarts the clock of every key when any key changes, because
+kubelet rewrites them all (the share never shrinks, so this only delays).
 
 ## 9. Security
 
@@ -704,7 +698,7 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
   without a check any pod could mount any URI the server can read. A policy
   maps namespaces and service accounts to URI patterns; the default is deny.
 - The acknowledgement socket is reachable only from containers that mount the
-  volume, and a report can only affect that volume and the rollout counters
+  volume, and a report can only affect that volume and the counts reported to the provider
   of the configs it holds. Request bodies are size-limited.
 - Bundle paths are checked on both server and node; the volume is always
   mounted read-only.
@@ -719,10 +713,10 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
 | Server down, all replicas | Keep current files | `UseCached`: from node cache if present; `Fail`: wait |
 | One replica restarts during provider outage | Keep current files | Unaffected; the replica warms from a peer before it is ready |
 | All replicas lose their cache during provider outage | Keep current files | Node has a cache and `UseCached`: start; otherwise wait for the provider |
-| Rollout leader lost | Keep current files; running ramps continue | Served as usual; new versions wait for re-election (about 15s) |
+| Provider lost mid-rollout | Keep current files | Placed by the same rule, at the share last told; the rollout neither advances nor stops |
 | Driver restarts | Mounts stay; resync on start | Mount waits for driver, kubelet retries |
 | Node reboots | n/a | Node cache persists; behaves as server-down or normal |
-| Application rejects a config (volume with `appAck`) | That pod is reverted to its last loaded version at once; rollout pauses per policy | Placed by the same hash rule |
+| Application rejects a config (volume with `appAck`) | That pod is reverted to its last loaded version at once; the provider is told and may hold the rollout | Placed by the same hash rule |
 | Update cannot be written on a node | NACK, previous generation stays; retried per error code | n/a |
 | Origin object deleted | Keep current files | `Retain`: cached version; `Block`: `NOT_FOUND` |
 | Cache quota reached | Unaffected | New keys refused with `RESOURCE_EXHAUSTED`; existing keys unaffected |
@@ -731,19 +725,18 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
 
 - Server: subscriptions and watches by provider; cache keys, bytes and
   variants per URI against quota; stale and orphaned keys; ACK/NACK counts by
-  rollout; provider stream state; peer sync age and keys pulled; which replica
-  holds the lease.
+  version; rollouts in progress and their share; provider stream state; peer
+  sync age and keys pulled.
 - Driver: application reports by state, apply latency, NACKs by reason, node cache size, mounts served from
   cache, time blocked in `NodePublishVolume`.
-- Kubernetes events on the pod for NACKs and stale or cached mounts;
-  `ConfigRollout.status` carries the phase, current percentage and NACK count.
+- Kubernetes events on the pod for NACKs and stale or cached mounts.
 
 ## 12. Open questions
 
-1. **Health-based pausing.** For pods without application acknowledgement, a
-   bad config is stopped only by an operator pausing the ramp. Pausing
-   automatically on pod restarts or lost readiness, which needs no change to
-   the application, is not designed.
+1. **Health-based holding.** For pods without application acknowledgement, a
+   bad config is stopped only by someone holding the ramp at the provider.
+   Reporting pod restarts or lost readiness to the provider, which needs no
+   change to the application, is not designed.
 2. **Total cache loss.** When the server has nothing for a key, it could
    answer "use your newest cached version, marked stale" so that pods on
    nodes with a node cache start regardless of `failurePolicy`. Not adopted
@@ -757,8 +750,9 @@ What exists today, against the design above.
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect | Resend after 60s without an answer, max connection age, `AppReport` |
 | Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | Hardlinking files from the cache (they are copied), `no_store` tmpfs (such content skips the cache but is written to the volume's disk), application acknowledgement |
-| Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), `onDelete: Block`, rollouts, authorisation |
-| Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | On-demand fetch of a version named by a rollout, max connection age to rebalance driver streams, authentication of peers |
+| Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), authorisation |
+| Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, and S3 metadata overrides | `loaded` and `rejected` in the feedback, which need application acknowledgement |
+| Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | Max connection age to rebalance driver streams, authentication of peers |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
 | Security | None: connections are plaintext and unauthenticated, and any pod may read any URI | Everything in section 9 |
 | Observability | Structured logs | Metrics and events |

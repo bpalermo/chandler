@@ -30,8 +30,10 @@ type fakeProvider struct {
 	// varyOn and cacheControl are what the provider declares in its hello.
 	varyOn       []string
 	cacheControl *chandlerv1.CacheControl
-	// requests carries everything the server sends after its hello.
+	// requests carries everything the server sends after its hello, except
+	// feedback, which arrives whenever counts change and goes to feedback.
 	requests chan *chandlerv1.ProviderRequest
+	feedback chan *chandlerv1.Feedback
 	// responses is sent on the current stream.
 	responses chan *chandlerv1.ProviderResponse
 	// hangup ends the current stream.
@@ -57,6 +59,13 @@ func (p *fakeProvider) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConf
 			req, err := stream.Recv()
 			if err != nil {
 				return
+			}
+			if req.HasFeedback() {
+				select {
+				case p.feedback <- req.GetFeedback():
+				default: // nobody is looking
+				}
+				continue
 			}
 			p.requests <- req
 		}
@@ -245,6 +254,7 @@ func newFakeProvider() *fakeProvider {
 	return &fakeProvider{
 		name:      "file",
 		requests:  make(chan *chandlerv1.ProviderRequest, 64),
+		feedback:  make(chan *chandlerv1.Feedback, 256),
 		responses: make(chan *chandlerv1.ProviderResponse),
 		hangup:    make(chan struct{}),
 	}

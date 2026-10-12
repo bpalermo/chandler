@@ -12,6 +12,7 @@ go_library(
         "//api/chandler/v1:chandler",
         "//common/bundle",
         "//common/provider",
+        "//common/rollout",
         "//common/uri",
         "@org_golang_google_protobuf//proto",
     ],
@@ -27,6 +28,7 @@ go_test(
     deps = [
         "//common/bundle",
         "//common/provider",
+        "//common/rollout",
         "//common/uri",
     ],
 )

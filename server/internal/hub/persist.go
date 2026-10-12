@@ -39,6 +39,8 @@ type indexEntry struct {
 	Provider       string    `json:"provider"`
 	CacheKey       string    `json:"cacheKey"`
 	Versions       []held    `json:"versions"`
+	Candidate      *held     `json:"candidate,omitempty"`
+	Share          uint32    `json:"share,omitempty"`
 	MaxAge         *int64    `json:"maxAgeSeconds,omitempty"`
 	StaleIfError   *int64    `json:"staleIfErrorSeconds,omitempty"`
 	LastRefreshed  time.Time `json:"lastRefreshed"`
@@ -97,6 +99,13 @@ func (h *Hub) load() error {
 			h.log.Warn("dropping a cache entry whose content is gone", "provider", ie.Provider, "cache_key", ie.CacheKey)
 			continue
 		}
+		if c := ie.Candidate; c != nil {
+			// Without its content a rollout is forgotten; the provider
+			// starts it again when it answers.
+			if b, err := h.store.Get(c.Version); err == nil {
+				e.candidate, e.share, e.bundles[c.Version] = c, ie.Share, b
+			}
+		}
 		h.entries[e.key] = e
 	}
 	for id, a := range idx.Aliases {
@@ -126,6 +135,8 @@ func (h *Hub) saveLocked() {
 			Provider:       e.key.provider,
 			CacheKey:       e.key.cacheKey,
 			Versions:       e.versions,
+			Candidate:      e.candidate,
+			Share:          e.share,
 			LastRefreshed:  e.lastRefreshed,
 			LastReferenced: e.lastReferenced,
 			Orphaned:       e.orphaned,
@@ -186,9 +197,10 @@ func (h *Hub) collect() {
 			delete(h.entries, key)
 			continue
 		}
-		for _, v := range e.versions {
+		for _, v := range e.all() {
 			keep = append(keep, v.Version)
 		}
+		h.reportLocked(e)
 	}
 	for id, a := range h.aliases {
 		if h.entries[entryKey{a.Provider, a.CacheKey}] == nil {

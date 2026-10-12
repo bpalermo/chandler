@@ -10,6 +10,7 @@ go_library(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/provider",
+        "//common/rollout",
         "//common/version",
         "//providers/file/internal/source",
         "@org_golang_google_grpc//:grpc",

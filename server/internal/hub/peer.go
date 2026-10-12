@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"sort"
 	"time"
 
 	"google.golang.org/grpc"
@@ -67,7 +68,11 @@ func (h *Hub) ListKeys(_ *chandlerv1.ListKeysRequest, stream chandlerv1.PeerSync
 			LastReferenced: timestamppb.New(referenced),
 			Orphaned:       proto.Bool(e.orphaned),
 		}
-		for _, v := range e.versions {
+		if e.candidate != nil {
+			ke.CandidateVersion = proto.String(e.candidate.Version)
+			ke.CandidateBasisPoints = proto.Uint32(e.share)
+		}
+		for _, v := range e.all() {
 			ke.Versions = append(ke.Versions, chandlerv1.KeyVersion_builder{
 				Version: proto.String(v.Version), Revision: proto.String(v.Revision),
 			}.Build())
@@ -221,7 +226,8 @@ func (h *Hub) syncWith(ctx context.Context, address string) error {
 func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *chandlerv1.KeyEntry) error {
 	key := entryKey{ke.GetProvider(), ke.GetCacheKey()}
 	refreshed, referenced := ke.GetLastRefreshed().AsTime(), ke.GetLastReferenced().AsTime()
-	if len(ke.GetVersions()) == 0 {
+	stable := ke.GetCurrentVersion()
+	if stable == "" {
 		return nil
 	}
 
@@ -261,10 +267,10 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 	for _, version := range missing {
 		resp, err := client.GetBundle(ctx, chandlerv1.GetBundleRequest_builder{Version: proto.String(version)}.Build())
 		if err != nil {
-			if version == ke.GetVersions()[0].GetVersion() {
+			if version == stable {
 				return fmt.Errorf("fetch %s: %w", version, err)
 			}
-			continue // an older version the peer has since dropped
+			continue // a version the peer has since dropped
 		}
 		b := resp.GetBundle()
 		if !bundle.Verify(b, version) {
@@ -290,23 +296,46 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 	if e == nil {
 		e = &entry{key: key, bundles: make(map[string]*chandlerv1.Bundle), refs: make(map[*resource]struct{})}
 	}
+	// The stable version first, then the older ones; the candidate apart.
 	var versions []held
+	var candidate *held
 	bundles := make(map[string]*chandlerv1.Bundle)
-	for _, v := range ke.GetVersions() {
+	peerVersions := ke.GetVersions()
+	sort.SliceStable(peerVersions, func(i, j int) bool {
+		return peerVersions[i].GetVersion() == stable && peerVersions[j].GetVersion() != stable
+	})
+	for _, v := range peerVersions {
 		b := fetched[v.GetVersion()]
 		if b == nil {
 			b = e.bundles[v.GetVersion()]
 		}
-		if b == nil || len(versions) == VersionsPerKey {
+		if b == nil {
 			continue
 		}
-		versions = append(versions, held{Version: v.GetVersion(), Revision: v.GetRevision(), Bytes: bundle.Size(b)})
-		bundles[v.GetVersion()] = b
+		this := held{Version: v.GetVersion(), Revision: v.GetRevision(), Bytes: bundle.Size(b)}
+		switch {
+		case ke.HasCandidateVersion() && this.Version == ke.GetCandidateVersion():
+			candidate = &this
+		case len(versions) < VersionsPerKey:
+			versions = append(versions, this)
+		default:
+			continue
+		}
+		bundles[this.Version] = b
 	}
-	if len(versions) == 0 || versions[0].Version != ke.GetVersions()[0].GetVersion() {
+	if len(versions) == 0 || versions[0].Version != stable {
 		return nil
 	}
-	e.versions, e.bundles = versions, bundles
+	share := uint32(0)
+	if candidate != nil {
+		share = ke.GetCandidateBasisPoints()
+		// The share of one candidate never shrinks, whichever replica a
+		// pod talks to.
+		if e.candidate != nil && e.candidate.Version == candidate.Version {
+			share = max(share, e.share)
+		}
+	}
+	e.versions, e.bundles, e.candidate, e.share = versions, bundles, candidate, share
 	e.cacheControl, e.lastRefreshed, e.orphaned = ke.GetCacheControl(), refreshed, ke.GetOrphaned()
 	if referenced.After(e.lastReferenced) {
 		e.lastReferenced = referenced

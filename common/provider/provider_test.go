@@ -17,6 +17,7 @@ import (
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/rollout"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
@@ -28,10 +29,18 @@ type memory struct {
 	mu      sync.Mutex
 	content map[string]string
 	serial  map[string]int
+	// since is when each path's current content appeared; unset paths have
+	// no time, and so no rollout.
+	since map[string]time.Time
+	// hold caps the share of each path, in basis points.
+	hold map[string]uint32
 }
 
 func newMemory() *memory {
-	return &memory{content: map[string]string{}, serial: map[string]int{}}
+	return &memory{
+		content: map[string]string{}, serial: map[string]int{},
+		since: map[string]time.Time{}, hold: map[string]uint32{},
+	}
 }
 
 func (m *memory) put(path, content string) {
@@ -72,13 +81,18 @@ func (r memoryResource) Fetch(_ context.Context, known string, limits bundle.Lim
 		return State{}, fmt.Errorf("%w: %s", bundle.ErrTooLarge, r.path)
 	}
 	revision := fmt.Sprintf("r%d", r.origin.serial[r.path])
+	state := State{Revision: revision, Since: r.origin.since[r.path]}
+	if hold, ok := r.origin.hold[r.path]; ok {
+		state.Hold = &hold
+	}
 	if revision == known {
-		return State{Revision: revision}, nil
+		return state, nil
 	}
 	b := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
 		chandlerv1.File_builder{Path: proto.String("f"), Content: []byte(content)}.Build(),
 	}}.Build()
-	return State{Revision: revision, Bundle: b}, nil
+	state.Bundle = b
+	return state, nil
 }
 
 type watcher struct {
@@ -89,19 +103,23 @@ type watcher struct {
 
 // start serves origin as provider "file" and opens a stream to it with the
 // given size limit.
-func start(t *testing.T, origin Origin, maxBytes uint64) *watcher {
+func start(t *testing.T, origin Origin, maxBytes uint64, configure ...func(*Server)) *watcher {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer()
-	chandlerv1.RegisterConfigProviderServer(server, &Server{
+	provider := &Server{
 		Name:         "file",
 		Origin:       origin,
 		PollInterval: 10 * time.Millisecond,
 		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	for _, c := range configure {
+		c(provider)
+	}
+	chandlerv1.RegisterConfigProviderServer(server, provider)
 	go server.Serve(listener)
 	t.Cleanup(server.Stop)
 
@@ -280,5 +298,153 @@ func TestWatchErrors(t *testing.T) {
 	} {
 		w.watch(id, uri, "")
 		w.failure(id, codes.InvalidArgument)
+	}
+}
+
+// fakeClock is a settable time source.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func share(u *chandlerv1.ResourceUpdate) uint32 {
+	if !u.HasRollout() {
+		return rollout.Everyone
+	}
+	return u.GetRollout().GetBasisPoints()
+}
+
+// The provider owns the rollout: it releases a revision to a share of the
+// pods, raises the share as time passes without sending the bytes again, and
+// then releases it to everyone.
+func TestRampOverTime(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
+	ramp, err := rollout.ParseRamp("10%:1m,50%:1m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := newMemory()
+	origin.put("/app.yaml", "v1")
+	origin.since["/app.yaml"] = clock.Now()
+	w := start(t, origin, 0, func(s *Server) { s.Ramp, s.Now = ramp, clock.Now })
+
+	w.watch("1", "file:///app.yaml", "")
+	first := w.update("1")
+	if !first.HasBundle() || share(first) != 1000 {
+		t.Fatalf("first update = %v, want the bundle at 10%%", first)
+	}
+	w.quiet() // same share: nothing to say
+
+	clock.advance(time.Minute)
+	second := w.update("1")
+	if !second.HasNotModified() || second.GetRevision() != first.GetRevision() || share(second) != 5000 {
+		t.Fatalf("after the first hold got %v, want the same revision at 50%% and no bytes", second)
+	}
+
+	clock.advance(time.Minute)
+	if released := w.update("1"); !released.HasNotModified() || released.HasRollout() {
+		t.Fatalf("after the last hold got %v, want the revision released to everyone", released)
+	}
+	w.quiet()
+
+	// A server that reconnects mid-rollout is told where it stands.
+	origin.mu.Lock()
+	origin.content["/app.yaml"] = "v2"
+	origin.serial["/app.yaml"]++
+	origin.since["/app.yaml"] = clock.Now()
+	origin.mu.Unlock()
+	candidate := w.update("1")
+	w.watch("2", "file:///app.yaml", candidate.GetRevision())
+	if again := w.update("2"); !again.HasNotModified() || share(again) != 1000 {
+		t.Errorf("a watch that knows the revision got %v, want NotModified at 10%%", again)
+	}
+}
+
+// An origin can hold a rollout below where time would have taken it.
+func TestRampHeldByTheOrigin(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
+	ramp, _ := rollout.ParseRamp("10%:1m,50%:1m")
+	origin := newMemory()
+	origin.put("/app.yaml", "v1")
+	origin.since["/app.yaml"] = clock.Now()
+	origin.hold["/app.yaml"] = 1000
+	w := start(t, origin, 0, func(s *Server) { s.Ramp, s.Now = ramp, clock.Now })
+
+	w.watch("1", "file:///app.yaml", "")
+	if u := w.update("1"); share(u) != 1000 {
+		t.Fatalf("first update at %d, want 10%%", share(u))
+	}
+	clock.advance(10 * time.Minute)
+	w.quiet() // held at 10% however long it has been
+
+	origin.mu.Lock()
+	delete(origin.hold, "/app.yaml")
+	origin.mu.Unlock()
+	if u := w.update("1"); u.HasRollout() {
+		t.Errorf("once released got %v, want the revision for everyone", u)
+	}
+}
+
+// When pods refuse a revision, its rollout stops where it is: the pods that
+// have it keep it and no more get it, until the refusals are gone.
+func TestRampHeldWhenPodsRefuse(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
+	ramp, _ := rollout.ParseRamp("10%:1m,50%:1m")
+	origin := newMemory()
+	origin.put("/app.yaml", "v1")
+	origin.since["/app.yaml"] = clock.Now()
+	w := start(t, origin, 0, func(s *Server) { s.Ramp, s.Now = ramp, clock.Now })
+
+	w.watch("1", "file:///app.yaml", "")
+	first := w.update("1")
+	report := func(refused, rejected uint32) {
+		w.send(chandlerv1.ProviderRequest_builder{
+			Feedback: chandlerv1.Feedback_builder{
+				CacheKey: proto.String("/app.yaml"),
+				Revision: proto.String(first.GetRevision()),
+				Assigned: proto.Uint32(5),
+				Refused:  proto.Uint32(refused),
+				Rejected: proto.Uint32(rejected),
+			}.Build(),
+		}.Build())
+		time.Sleep(50 * time.Millisecond) // let the provider read it
+	}
+
+	report(1, 0)
+	clock.advance(time.Minute)
+	w.quiet() // would be 50% by now; held at 10%
+
+	// An application rejecting the content holds it just the same.
+	report(0, 1)
+	clock.advance(time.Minute)
+	w.quiet()
+
+	report(0, 0)
+	if u := w.update("1"); u.HasRollout() {
+		t.Errorf("with the refusals gone got %v, want the rollout to go on to everyone", u)
+	}
+}
+
+// A revision with no time at the origin is not rolled out.
+func TestNoRampWithoutATime(t *testing.T) {
+	ramp, _ := rollout.ParseRamp("10%:1h")
+	origin := newMemory()
+	origin.put("/app.yaml", "v1")
+	w := start(t, origin, 0, func(s *Server) { s.Ramp = ramp })
+	w.watch("1", "file:///app.yaml", "")
+	if u := w.update("1"); u.HasRollout() {
+		t.Errorf("got %v, want the revision for everyone", u)
 	}
 }

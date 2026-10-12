@@ -31,6 +31,7 @@ import (
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/provider"
+	"github.com/bpalermo/chandler/common/rollout"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
@@ -55,7 +56,22 @@ type Origin struct {
 	// Buckets is the buckets that may be named in a URI. Empty allows any
 	// bucket the credentials can read.
 	Buckets []string
+	// Rollouts gives ramps to resources by "<bucket>/<key>"; a resource no
+	// rule matches is released to everyone at once. A single object can
+	// carry its own in its metadata, see RampMetadata.
+	Rollouts []rollout.Rule
 }
+
+const (
+	// RampMetadata is the user metadata of an object that sets its ramp, as
+	// rollout.ParseRamp reads it: "1%:5m,10%:10m". It overrides the
+	// provider's rules for that object.
+	RampMetadata = "chandler-rollout"
+	// HoldMetadata is the user metadata of an object that caps the share of
+	// pods that gets it, as a percentage: "10" holds the rollout at 10%.
+	// Setting it is how a rollout is held at the origin.
+	HoldMetadata = "chandler-rollout-hold"
+)
 
 // Resolve implements provider.Origin. The authority is the bucket and the
 // path the key; a query parameter is refused rather than ignored, so that
@@ -73,10 +89,11 @@ func (o Origin) Resolve(u uri.URI) (provider.Resource, error) {
 	case len(o.Buckets) > 0 && !slices.Contains(o.Buckets, bucket):
 		return nil, fmt.Errorf("%w: this provider does not serve bucket %q", provider.ErrInvalid, bucket)
 	}
+	ramp := rollout.Match(o.Rollouts, bucket+"/"+key)
 	if u.IsDir() {
-		return prefix{client: o.Client, bucket: bucket, prefix: key}, nil
+		return prefix{client: o.Client, bucket: bucket, prefix: key, ramp: &ramp}, nil
 	}
-	return object{client: o.Client, bucket: bucket, key: key}, nil
+	return object{client: o.Client, bucket: bucket, key: key, ramp: &ramp}, nil
 }
 
 // object is a single S3 object.
@@ -84,6 +101,7 @@ type object struct {
 	client API
 	bucket string
 	key    string
+	ramp   *rollout.Ramp
 }
 
 func (o object) CacheKey() string { return o.bucket + "/" + o.key }
@@ -113,6 +131,26 @@ func (o object) fetch(ctx context.Context, known string, limits bundle.Limits) (
 	state := provider.State{
 		Revision:     revision(head.VersionId, head.ETag),
 		CacheControl: parseCacheControl(aws.ToString(head.CacheControl)),
+		Since:        aws.ToTime(head.LastModified),
+		Ramp:         o.ramp,
+	}
+	// The SDK lowercases metadata keys.
+	if text, ok := head.Metadata[RampMetadata]; ok {
+		ramp, err := rollout.ParseRamp(text)
+		if err != nil {
+			// Not delivered rather than delivered some other way: the
+			// version pods have stays until the metadata is fixed.
+			return provider.State{}, fmt.Errorf("%s: metadata %s: %w", where, RampMetadata, err)
+		}
+		state.Ramp = &ramp
+	}
+	if text, ok := head.Metadata[HoldMetadata]; ok {
+		percent, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(text), "%"), 64)
+		if err != nil || percent < 0 || percent > 100 {
+			return provider.State{}, fmt.Errorf("%s: metadata %s: %q is not a percentage", where, HoldMetadata, text)
+		}
+		hold := uint32(percent*100 + 0.5)
+		state.Hold = &hold
 	}
 	if state.Revision == "" {
 		return provider.State{}, fmt.Errorf("%s has neither a version ID nor an ETag", where)
@@ -139,6 +177,7 @@ type prefix struct {
 	bucket string
 	// prefix ends in "/", or is "" for the whole bucket.
 	prefix string
+	ramp   *rollout.Ramp
 }
 
 func (p prefix) CacheKey() string { return p.bucket + "/" + p.prefix }
@@ -164,11 +203,14 @@ type listed struct {
 	etag *string
 }
 
+// A prefix is rolled out from the time its newest object was written.
+
 func (p prefix) fetch(ctx context.Context, known string, limits bundle.Limits) (provider.State, error) {
 	where := fmt.Sprintf("s3://%s/%s", p.bucket, p.prefix)
 
 	var objects []listed
 	var total uint64
+	var since time.Time
 	var token *string
 	for {
 		page, err := p.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
@@ -192,6 +234,9 @@ func (p prefix) fetch(ctx context.Context, known string, limits bundle.Limits) (
 				return provider.State{}, fmt.Errorf("%w: %s is more than %d bytes", bundle.ErrTooLarge, where, limits.MaxBytes)
 			}
 			objects = append(objects, listed{key: key, etag: entry.ETag})
+			if modified := aws.ToTime(entry.LastModified); modified.After(since) {
+				since = modified
+			}
 		}
 		if !aws.ToBool(page.IsTruncated) || page.NextContinuationToken == nil {
 			break
@@ -207,7 +252,7 @@ func (p prefix) fetch(ctx context.Context, known string, limits bundle.Limits) (
 	for _, o := range objects {
 		fmt.Fprintf(hash, "%s\x00%s\n", o.key, aws.ToString(o.etag))
 	}
-	state := provider.State{Revision: "sha256:" + hex.EncodeToString(hash.Sum(nil))}
+	state := provider.State{Revision: "sha256:" + hex.EncodeToString(hash.Sum(nil)), Since: since, Ramp: p.ramp}
 	if state.Revision == known {
 		return state, nil
 	}

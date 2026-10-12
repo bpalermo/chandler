@@ -65,6 +65,10 @@ spec:
             - --listen=:{{ $s3.port }}
             - --name={{ $s3.name }}
             - --poll-interval={{ $s3.pollInterval }}
+            {{- range $s3.rollouts }}
+            - --rollout={{ with .match }}{{ . }}={{ end }}{{ required "a rollout rule needs a ramp" .ramp }}
+            {{- end }}
+            - --rollout-max-refused={{ $s3.rolloutMaxRefused }}
             {{- with $s3.endpointUrl }}
             - --endpoint-url={{ . }}
             {{- end }}

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/provider"
+	"github.com/bpalermo/chandler/common/rollout"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
@@ -20,6 +22,9 @@ const stableReads = 3
 type Origin struct {
 	// Root is the directory URIs are resolved against.
 	Root string
+	// Rollouts gives ramps to resources by their path; a resource no rule
+	// matches is released to everyone at once.
+	Rollouts []rollout.Rule
 }
 
 // Resolve implements provider.Origin. The provider understands nothing but a
@@ -34,20 +39,23 @@ func (o Origin) Resolve(u uri.URI) (provider.Resource, error) {
 	case u.Path() == "":
 		return nil, fmt.Errorf("%w: %s names no path", provider.ErrInvalid, u)
 	}
-	return resource{root: o.Root, path: u.Path()}, nil
+	ramp := rollout.Match(o.Rollouts, u.Path())
+	return resource{root: o.Root, path: u.Path(), ramp: &ramp}, nil
 }
 
 type resource struct {
 	root string
 	path string
+	ramp *rollout.Ramp
 }
 
 func (r resource) CacheKey() string { return r.path }
 
 // Fetch implements provider.Resource. The revision is the bundle's content
-// address: a directory has no cheaper change marker than its content.
+// address: a directory has no cheaper change marker than its content. The
+// rollout is measured from the newest modification time among its files.
 func (r resource) Fetch(_ context.Context, known string, limits bundle.Limits) (provider.State, error) {
-	b, err := r.readStable(Reader{Root: r.root, Limits: limits})
+	b, modified, err := r.readStable(Reader{Root: r.root, Limits: limits})
 	switch {
 	case errors.Is(err, ErrInvalid):
 		return provider.State{}, fmt.Errorf("%w: %v", provider.ErrInvalid, err)
@@ -56,25 +64,25 @@ func (r resource) Fetch(_ context.Context, known string, limits bundle.Limits) (
 	case err != nil:
 		return provider.State{}, err
 	}
-	revision := bundle.Version(b)
-	if revision == known {
-		return provider.State{Revision: revision}, nil
+	state := provider.State{Revision: bundle.Version(b), Since: modified, Ramp: r.ramp}
+	if state.Revision != known {
+		state.Bundle = b
 	}
-	return provider.State{Revision: revision, Bundle: b}, nil
+	return state, nil
 }
 
 // readStable reads the resource until two consecutive reads agree, so that a
 // directory being rewritten is not emitted half old and half new. A directory
 // swapped atomically (a ConfigMap mount) agrees on the second read.
-func (r resource) readStable(reader Reader) (*chandlerv1.Bundle, error) {
-	b, err := reader.Read(r.path)
+func (r resource) readStable(reader Reader) (*chandlerv1.Bundle, time.Time, error) {
+	b, modified, err := reader.ReadStat(r.path)
 	for i := 0; err == nil && i < stableReads; i++ {
 		var again *chandlerv1.Bundle
-		again, err = reader.Read(r.path)
+		again, modified, err = reader.ReadStat(r.path)
 		if err != nil || bundle.Version(again) == bundle.Version(b) {
 			break
 		}
 		b = again
 	}
-	return b, err
+	return b, modified, err
 }

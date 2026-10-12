@@ -3,10 +3,14 @@ package source
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/provider"
+	"github.com/bpalermo/chandler/common/rollout"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
@@ -67,5 +71,46 @@ func TestOriginFetch(t *testing.T) {
 	}
 	if _, err := r.Fetch(ctx, "", bundle.Limits{MaxBytes: 1, MaxFiles: 1}); !errors.Is(err, bundle.ErrTooLarge) {
 		t.Errorf("Fetch over the limit = %v, want ErrTooLarge", err)
+	}
+}
+
+// The rollout of a file is measured from when it was last written, under the
+// ramp of the first rule its path matches.
+func TestOriginRollout(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "staged/app.yaml", "v1")
+	write(t, root, "plain.yaml", "v1")
+	written := time.Unix(1_700_000_000, 0)
+	for _, name := range []string{"staged/app.yaml", "plain.yaml"} {
+		if err := os.Chtimes(filepath.Join(root, name), written, written); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rule, err := rollout.ParseRule("/staged/*=10%:5m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := Origin{Root: root, Rollouts: []rollout.Rule{rule}}
+	fetch := func(raw string) provider.State {
+		t.Helper()
+		u, err := uri.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := o.Resolve(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := r.Fetch(context.Background(), "", bundle.DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	if state := fetch("file:///staged/app.yaml"); !state.Since.Equal(written) || state.Ramp.At(0) != 1000 {
+		t.Errorf("staged: since %v ramp starting at %d; want %v and 10%%", state.Since, state.Ramp.At(0), written)
+	}
+	if state := fetch("file:///plain.yaml"); state.Ramp.At(0) != rollout.Everyone {
+		t.Errorf("plain: ramp starting at %d; want everyone", state.Ramp.At(0))
 	}
 }

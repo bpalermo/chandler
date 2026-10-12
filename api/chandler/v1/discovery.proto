@@ -22,7 +22,8 @@ option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
 //
 // Configuration content is opaque to both ends. An Ack means "written", a Nack
 // means "could not be written"; neither says anything about whether the
-// configuration is valid.
+// configuration is valid. Only an AppReport, which relays the application's own
+// verdict, speaks about the content.
 service ConfigDiscoveryService {
   // Opens the node's stream.
   //
@@ -57,6 +58,9 @@ message ConfigRequest {
 
     // Reports that a ConfigUpdate could not be written to the volume.
     Nack nack = 5;
+
+    // Relays the application's own verdict on a version it was given.
+    AppReport app_report = 6;
   }
 }
 
@@ -166,6 +170,18 @@ message Subscribe {
   // most four. When the server's answer is one of them it sends UseCached
   // instead of the Bundle, the equivalent of an HTTP 304.
   repeated string cached_versions = 5;
+
+  // True when the pod's volume opted in to application acknowledgement, so the
+  // server can expect an AppReport for every version written to this
+  // subscription. Rollout thresholds on application reports only count
+  // subscriptions that set it. Defaults to false.
+  bool app_ack = 6;
+
+  // The last version of this source the application reported as loaded. Unset
+  // when app_ack is false or the application has not reported yet. After a
+  // reconnect it tells the server what the application is actually running,
+  // which may be older than applied_version.
+  string loaded_version = 7;
 }
 
 // Unsubscribe ends a subscription. The server stops sending updates for it and
@@ -282,6 +298,52 @@ message Nack {
   // Why the write failed. Required. The code is one of those listed above and
   // decides the server's reaction; the message is for humans.
   google.rpc.Status error_detail = 5;
+}
+
+// AppReport relays what the application said about a version, for a
+// subscription that set Subscribe.app_ack. The application reports to the
+// driver over the HTTP API on the Unix socket in its volume; the driver
+// forwards one AppReport per source affected. It needs no answer.
+//
+// This is a later, separate stage from Ack. Ack means the driver wrote the
+// version; AppReport says whether the application could use it. It is the only
+// signal in the protocol about the content itself, and the judgement is the
+// application's: the driver and the server only carry it.
+message AppReport {
+  // State is the application's verdict on a version.
+  enum State {
+    // Not set. Never sent.
+    STATE_UNSPECIFIED = 0;
+
+    // The application loaded the version and is running with it. The version
+    // is now the subscription's last known good.
+    STATE_LOADED = 1;
+
+    // The application refused the version. The driver has already put the
+    // previous loaded version back in the volume, if there was one. The server
+    // must not send this version to this subscription again.
+    STATE_REJECTED = 2;
+  }
+
+  // The subscription the report is about.
+  string subscription_id = 1;
+
+  // The version the application judged. It was earlier acknowledged with an
+  // Ack on this subscription.
+  string version = 2;
+
+  // The application's verdict. Required.
+  State state = 3;
+
+  // The application's own explanation, typically the reason for a rejection.
+  // Shown to operators; never interpreted. May be unset.
+  string message = 4;
+
+  // The version in the volume once the driver has reacted to the report:
+  // equal to version after STATE_LOADED, and the version the driver reverted
+  // to after STATE_REJECTED. Unset when a rejected version was the first one
+  // and there was nothing to revert to.
+  string applied_version = 5;
 }
 
 // SubscriptionError reports that the server cannot currently produce a version

@@ -26,6 +26,9 @@ Goals
 - Provider failure, server failure and node restarts do not take config away
   from running pods and, where a cache exists, do not block new pods.
 - Updates are atomic per volume; the last known good config is always kept.
+- An application can optionally report whether it loaded or rejected a
+  config, over a plain HTTP API on a Unix socket in the volume. A rejection
+  reverts that pod and can pause a rollout.
 - Caching is keyed by provider-issued cache keys and is bounded by design.
 - Configuration content is opaque to the server and the driver. Neither parses
   or interprets it; a provider is responsible for the validity of what it
@@ -218,6 +221,10 @@ Rules
   target version, as `UseCached` when the node already has the bytes, so a
   resync moves metadata only. Drivers reconnect with jittered backoff; the
   server sets a max connection age to rebalance streams across replicas.
+- **`AppReport` is a separate, optional stage after the ACK.** For volumes
+  that opt in, the driver relays the application's own verdict (loaded or
+  rejected) on a version it wrote; see "Application acknowledgement" in
+  section 5. It needs no answer.
 - **Config is never withdrawn from a running pod.** The protocol has no delete
   toward the driver; see deletion handling in section 7.
 
@@ -242,6 +249,8 @@ State lives under a hostPath so mounts and cache survive driver restarts:
       ..data -> ..2026_10_12_07_51_00.123
       app.yaml -> ..data/app.yaml
       flags    -> ..data/flags
+      ..chandler.json -> ..data/..chandler.json   only with appAck
+      ..chandler.sock                             only with appAck
 ```
 
 Applying an update, per subscription:
@@ -272,11 +281,112 @@ The driver NACKs only for these reasons:
 | `FAILED_PRECONDITION` | A path collides with another source of the same volume | Do not resend; counts toward `maxNacks` |
 | `INVALID_ARGUMENT` | Unsafe path or bundle over the limits (the server should have refused it) | Do not resend; counts toward `maxNacks` |
 
-Last known good therefore means the last version successfully written. It
-holds at three levels: a failed update leaves `..data` where
+Last known good therefore means the last version successfully written, or,
+for a volume with application acknowledgement, the last version the
+application reported as loaded. It holds at three levels: a failed update leaves `..data` where
 it was; the previous generation stays on disk; and the node cache keeps the
 blobs of the current and previous version of every live volume, so a server
 rollback is a `UseCached` update and a local swap, with no bytes on the wire.
+
+### Application acknowledgement
+
+An ACK from the driver means "written". An application can optionally add the
+stage only it can judge: "loaded" or "rejected". This keeps the core opaque:
+the application decides whether a config is good, and the driver and server
+only carry its verdict.
+
+A volume opts in with the attribute `appAck: "true"`. The driver then adds two
+entries at the volume root:
+
+```
+..chandler.json -> ..data/..chandler.json    manifest of the current generation
+..chandler.sock                              Unix socket served by the driver
+```
+
+**Manifest.** Written into every generation directory, so it is swapped
+atomically with the content it describes. A volume can combine sources from
+several providers, so the manifest lists each one with its own version. A
+source's `name` comes from the volume attributes and defaults to its `path`.
+
+```json
+{
+  "generation": "g-5d41402abc4b2a76",
+  "sources": [
+    {"name": "app",   "uri": "s3://acme-config/payments/app.yaml", "path": "app.yaml", "version": "sha256:9f86d0..."},
+    {"name": "flags", "uri": "flagstore://payments/eu",            "path": "flags",    "version": "sha256:2c26b4..."}
+  ]
+}
+```
+
+`generation` identifies this exact combination of source versions.
+
+**Socket.** The driver serves plain HTTP/1.1 with JSON bodies on the socket;
+there is no gRPC and no client library. Connecting works although the volume
+is mounted read-only. Each volume has its own socket, so the driver knows
+which pod and volume is speaking without any authentication; any container
+that mounts the volume may report, which also lets a sidecar report on behalf
+of an application that cannot be changed.
+
+| Request | Purpose |
+|---|---|
+| `GET /v1/config` | The manifest, plus the state the driver has recorded for each source (`pending`, `loaded`, `rejected`) |
+| `POST /v1/reports` | Report the outcome of loading a generation |
+
+A report names the generation the application read and gives a state for all
+of it, or for individual sources:
+
+```json
+{"generation": "g-5d41402abc4b2a76", "state": "loaded"}
+```
+
+```json
+{
+  "generation": "g-5d41402abc4b2a76",
+  "sources": [
+    {"name": "app",   "state": "loaded"},
+    {"name": "flags", "state": "rejected", "message": "unknown flag 'checkout.v3'"}
+  ]
+}
+```
+
+```
+curl --unix-socket /etc/payments/..chandler.sock \
+  -d '{"generation":"g-5d41402abc4b2a76","state":"loaded"}' http://chandler/v1/reports
+```
+
+- With `sources`, only the listed sources are affected; the others stay
+  `pending`. An application whose components load different sources at
+  different times sends several reports and they accumulate.
+- Without `sources`, the top-level `state` applies to every source.
+- The driver resolves the generation to source versions and records each
+  verdict against `(source, version)`, so a report stays meaningful for the
+  sources that did not change when a newer generation has arrived meanwhile.
+- Responses: `204` accepted; `400` malformed; `404` unknown source name;
+  `409` when the generation is neither the current nor the previous one, with
+  the current manifest in the body so the application can reload and retry.
+
+**What the driver does with a verdict.**
+
+- `loaded`: the version becomes the source's last known good, which now means
+  the last version the application accepted rather than the last one written.
+- `rejected`: the driver immediately builds a new generation with that source
+  back on its last loaded version and swaps it in, without waiting for the
+  server. The application may still hold the old config in memory, but if it
+  restarted it would otherwise read the rejected files from disk. A rejection
+  of the whole generation reverts every source whose version differs from its
+  last loaded one. If a source has never had a loaded version (first mount)
+  there is nothing to revert to and the files stay.
+- Either way the driver forwards an `AppReport` to the server for each source
+  affected. The server does not send a rejected version to that subscription
+  again, and rollouts can react to the reports (section 8).
+
+Verdicts are kept in `meta.json`, and the driver re-creates the sockets when
+it restarts. The driver binds through a directory file descriptor, so the
+socket's long host path does not hit the 108-byte limit; inside the container
+the mount path plus `/..chandler.sock` must fit in it. As with updates, a
+`subPath` mount sees neither the manifest nor the socket.
+
+### Mounting
 
 `NodePublishVolume` creates the volume directory, subscribes every source and
 waits for all initial answers (deadline 90s, inside kubelet's own timeout)
@@ -448,6 +558,10 @@ spec:
     - {percent: 10, hold: 10m}
     - {percent: 50, hold: 10m}
   maxNacks: 0             # undeliverable-bundle NACKs tolerated before pausing
+  appAck:                 # optional; applies to pods whose volume sets appAck
+    maxRejects: 0         # application rejections tolerated before pausing
+    loadTimeout: 2m       # written but not reported within this counts as a timeout
+    maxTimeouts: 5        # timeouts tolerated before pausing
   onDelete: Retain
 ```
 
@@ -480,7 +594,7 @@ leader observed them. Only replicas that have finished warm-up campaign.
 |---|---|
 | Create a `ConfigRollout`, supersede an older one | Serve and place pods by the hash rule |
 | Mark a rollout completed and move the stable version | Advance the ramp (it is computed, not stored) |
-| Sum NACK counts when `maxNacks` is above zero | Pause a rollout on an undeliverable-bundle NACK |
+| Sum NACK, rejection and timeout counts when a threshold is above zero | Pause a rollout on an undeliverable-bundle NACK or an application rejection |
 
 A follower that has received a version the leader has not recorded yet holds
 it and serves it to nobody. A follower that lacks the candidate's bytes serves
@@ -510,9 +624,15 @@ stateDiagram-v2
 - **Paused**: the percentage is frozen. Pods that already took the candidate
   keep it. An operator pauses when the new config misbehaves. The system
   pauses on its own only when the bundle itself cannot be written
-  (`FAILED_PRECONDITION` or `INVALID_ARGUMENT` NACKs above `maxNacks`); node
-  problems such as a full disk do not pause a rollout. Time spent paused does
-  not count toward the ramp.
+  (`FAILED_PRECONDITION` or `INVALID_ARGUMENT` NACKs above `maxNacks`), or
+  when the policy has an `appAck` block and applications reject the version
+  or fail to report it loaded in time. Node problems such as a full disk do
+  not pause a rollout. Time spent paused does not count toward the ramp.
+
+  Application reports are the only signal about the content itself. A
+  rejecting pod has already been reverted by its driver; pausing keeps the
+  version from reaching more pods. A timeout only pauses: a pod is never
+  reverted for being slow to report.
 - **Completed**: the leader makes the candidate the stable version; the object
   is removed after a retention period.
 - **Aborted**: pods on the candidate are sent the stable version again (a
@@ -535,6 +655,9 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
 - **Authorisation is mandatory.** The server holds the provider credentials, so
   without a check any pod could mount any URI the server can read. A policy
   maps namespaces and service accounts to URI patterns; the default is deny.
+- The acknowledgement socket is reachable only from containers that mount the
+  volume, and a report can only affect that volume and the rollout counters
+  of the configs it holds. Request bodies are size-limited.
 - Bundle paths are checked on both server and node; the volume is always
   mounted read-only.
 
@@ -551,6 +674,7 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
 | Rollout leader lost | Keep current files; running ramps continue | Served as usual; new versions wait for re-election (about 15s) |
 | Driver restarts | Mounts stay; resync on start | Mount waits for driver, kubelet retries |
 | Node reboots | n/a | Node cache persists; behaves as server-down or normal |
+| Application rejects a config (volume with `appAck`) | That pod is reverted to its last loaded version at once; rollout pauses per policy | Placed by the same hash rule |
 | Update cannot be written on a node | NACK, previous generation stays; retried per error code | n/a |
 | Origin object deleted | Keep current files | `Retain`: cached version; `Block`: `NOT_FOUND` |
 | Cache quota reached | Unaffected | New keys refused with `RESOURCE_EXHAUSTED`; existing keys unaffected |
@@ -561,16 +685,16 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
   variants per URI against quota; stale and orphaned keys; ACK/NACK counts by
   rollout; provider stream state; peer sync age and keys pulled; which replica
   holds the lease.
-- Driver: apply latency, NACKs by reason, node cache size, mounts served from
+- Driver: application reports by state, apply latency, NACKs by reason, node cache size, mounts served from
   cache, time blocked in `NodePublishVolume`.
 - Kubernetes events on the pod for NACKs and stale or cached mounts;
   `ConfigRollout.status` carries the phase, current percentage and NACK count.
 
 ## 12. Open questions
 
-1. **Health-based pausing.** Content is opaque, so a bad config is stopped
-   only by an operator pausing the ramp. Pausing automatically on pod
-   restarts or lost readiness, or on an explicit "config loaded" signal from
+1. **Health-based pausing.** For pods without application acknowledgement, a
+   bad config is stopped only by an operator pausing the ramp. Pausing
+   automatically on pod restarts or lost readiness, which needs no change to
    the application, is not designed.
 2. **Total cache loss.** When the server has nothing for a key, it could
    answer "use your newest cached version, marked stale" so that pods on

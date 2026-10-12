@@ -50,7 +50,7 @@ esc() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|/]/\\&/g'; }
 
 # --- 2. the chart's image defaults are derived --------------------------------
 values=charts/chandler/values.yaml
-for target in //csi:image_push //server:image_push //providers/file:image_push; do
+for target in //csi:image_push //server:image_push //providers/file:image_push //providers/s3:image_push; do
 	t="$(esc "$target")"
 	n_repo="$(grep -cE "^[[:space:]]*repository:[[:space:]]*\"\{@${t}\.repository\}\"[[:space:]]*\$" "$values" || true)"
 	n_digest="$(grep -cE "^[[:space:]]*digest:[[:space:]]*\"\{@${t}\.digest\}\"[[:space:]]*\$" "$values" || true)"

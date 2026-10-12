@@ -1,0 +1,124 @@
+{{- if .Values.providers.s3.enabled -}}
+{{- $selector := dict "root" . "component" "provider-s3" -}}
+{{- $s3 := .Values.providers.s3 -}}
+{{- $serviceAccount := default (printf "%s-provider-s3" (include "chandler.name" .)) $s3.serviceAccount.name -}}
+{{- if $s3.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $serviceAccount }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: provider-s3
+  {{- with $s3.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chandler.name" . }}-provider-s3
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: provider-s3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "chandler.selectorLabels" $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "chandler.labels" . | nindent 8 }}
+        app.kubernetes.io/component: provider-s3
+      {{- with $s3.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $serviceAccount }}
+      # The provider does not talk to the Kubernetes API. A web identity token
+      # for AWS is projected separately and does not depend on this.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $s3.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $s3.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: provider
+          image: {{ include "chandler.image" (dict "root" . "image" $s3.image) }}
+          imagePullPolicy: {{ $s3.image.pullPolicy }}
+          args:
+            - --listen=:{{ $s3.port }}
+            - --name={{ $s3.name }}
+            - --poll-interval={{ $s3.pollInterval }}
+            {{- with $s3.endpointUrl }}
+            - --endpoint-url={{ . }}
+            {{- end }}
+            {{- if $s3.pathStyle }}
+            - --path-style
+            {{- end }}
+            {{- range $s3.buckets }}
+            - --bucket={{ . }}
+            {{- end }}
+          {{- if or $s3.region $s3.env }}
+          env:
+            {{- with $s3.region }}
+            - name: AWS_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $s3.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ $s3.port }}
+          readinessProbe:
+            grpc:
+              port: {{ $s3.port }}
+            periodSeconds: 5
+          livenessProbe:
+            grpc:
+              port: {{ $s3.port }}
+            periodSeconds: 10
+          securityContext:
+            {{- include "chandler.restrictedSecurityContext" . | nindent 12 }}
+          {{- with $s3.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- with $s3.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chandler.name" . }}-provider-s3
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: provider-s3
+spec:
+  selector:
+    {{- include "chandler.selectorLabels" $selector | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ $s3.port }}
+      targetPort: grpc
+      appProtocol: grpc
+{{- end }}

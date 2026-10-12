@@ -9,8 +9,9 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//api/chandler/v1:chandler",
+        "//common/provider",
         "//common/version",
-        "//providers/file/internal/provider",
+        "//providers/file/internal/source",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//health",
         "@org_golang_google_grpc//health/grpc_health_v1",

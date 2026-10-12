@@ -177,6 +177,7 @@ jobs:
           pinned //csi:image_index "${CSI_IMAGE}"
           pinned //server:image_index "${SERVER_IMAGE}"
           pinned //providers/file:image_index "${PROVIDER_FILE_IMAGE}"
+          pinned //providers/s3:image_index "${PROVIDER_S3_IMAGE}"
 
       # One login covers everything below: image_push (rules_img) and cosign
       # read the Docker config this writes. The chart push logs in on its own,

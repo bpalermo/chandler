@@ -7,7 +7,17 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/bpalermo/chandler/providers/s3",
     visibility = ["//visibility:private"],
-    deps = ["//common/version"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/provider",
+        "//common/version",
+        "//providers/s3/internal/origin",
+        "@com_github_aws_aws_sdk_go_v2_config//:config",
+        "@com_github_aws_aws_sdk_go_v2_service_s3//:s3",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//health",
+        "@org_golang_google_grpc//health/grpc_health_v1",
+    ],
 )
 
 go_binary(

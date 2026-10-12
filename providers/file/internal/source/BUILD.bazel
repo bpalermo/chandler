@@ -2,19 +2,31 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "source",
-    srcs = ["source.go"],
+    srcs = [
+        "origin.go",
+        "source.go",
+    ],
     importpath = "github.com/bpalermo/chandler/providers/file/internal/source",
     visibility = ["//providers/file:__subpackages__"],
     deps = [
         "//api/chandler/v1:chandler",
         "//common/bundle",
+        "//common/provider",
+        "//common/uri",
         "@org_golang_google_protobuf//proto",
     ],
 )
 
 go_test(
     name = "source_test",
-    srcs = ["source_test.go"],
+    srcs = [
+        "origin_test.go",
+        "source_test.go",
+    ],
     embed = [":source"],
-    deps = ["//common/bundle"],
+    deps = [
+        "//common/bundle",
+        "//common/provider",
+        "//common/uri",
+    ],
 )

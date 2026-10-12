@@ -67,3 +67,38 @@ providers:
         memory: 32Mi
     podAnnotations:
       example.com/scrape: "true"
+  s3:
+    enabled: true
+    name: s3-prod
+    buckets:
+      - acme-config
+      - acme-shared
+    region: eu-west-1
+    endpointUrl: http://localhost:4566
+    pathStyle: true
+    pollInterval: 5s
+    port: 9102
+    serviceAccount:
+      name: s3-reader
+      annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/chandler-s3
+    env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: s3-credentials
+            key: access-key-id
+    extraContainers:
+      - name: sidecar
+        image: registry.example.com/sidecar:1
+    nodeSelector:
+      kubernetes.io/os: linux
+    tolerations:
+      - key: dedicated
+        operator: Exists
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+    podAnnotations:
+      example.com/scrape: "true"

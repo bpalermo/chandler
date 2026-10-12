@@ -11,8 +11,8 @@ design and the protos in `api/chandler/v1` are the contracts; read both before
 changing behaviour, and update them in the same pull request when behaviour
 changes.
 
-The project is early. Configuration is delivered end to end from the file
-provider; the S3 provider is a placeholder. The design describes the target,
+The project is early. Configuration is delivered end to end from the file and
+S3 providers. The design describes the target,
 and its last section, "Implementation status", says what is built. Keep that
 section true in the same pull request that changes it.
 
@@ -38,6 +38,12 @@ bazel run @rules_go//go -- get -tool github.com/some/cmd
 
 Follow it with `bazel mod tidy` and `bazel run //:gazelle`.
 
+Go modules are fetched directly from their repositories here (`GOPROXY=direct`
+in the user's Go environment). A module in a very large repository, such as the
+AWS SDK, takes many minutes to add. Let `go get` finish before running Gazelle:
+Gazelle starts its own download for imports it cannot resolve, and the two
+compete.
+
 CI runs with `--config=ci`, which fails if `MODULE.bazel.lock` is out of date,
 and requires that Gazelle leaves no diff. Regenerate BUILD files rather than
 hand-editing what Gazelle owns.
@@ -48,6 +54,9 @@ hand-editing what Gazelle owns.
   `csi/`, `server/`, `providers/<name>/`.
 - Code private to a binary goes under its `internal/`.
 - Code shared between binaries goes under `common/`.
+- A provider is an `Origin` (how to name and read its resources) plugged into
+  `common/provider`, which owns the stream, the watches and what is sent when.
+  Do not reimplement the protocol in a provider.
 - `api/chandler/v1` holds the protos. The Go import path is
   `github.com/bpalermo/chandler/api/chandler/v1`.
 - `bazel/` holds build rules, `scripts/` release tooling, `charts/chandler` the

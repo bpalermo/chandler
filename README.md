@@ -5,9 +5,9 @@ A pod names the configuration it wants with URIs; the driver mounts the files
 read-only and replaces them atomically when they change.
 
 > **Status: early development.** Configuration is delivered end to end from
-> the file provider, and updated in place. There is no security yet:
-> connections are plaintext and any pod can read any URI. Caching, staged
-> rollouts and the S3 provider are not built. See
+> the file and S3 providers, and updated in place. There is no security yet:
+> connections are plaintext and any pod can read any URI. Caching and staged
+> rollouts are not built. See
 > [What works today](#what-works-today).
 
 ## How it is meant to work
@@ -28,8 +28,8 @@ flowchart LR
   acknowledges every update, in the style of Envoy xDS.
 - **Providers.** Plugins behind one streaming gRPC interface. Each provider
   owns how configuration is published and validated. This repository has a
-  file provider, which serves a directory such as a mounted ConfigMap, and
-  will have an S3 provider as a reference implementation.
+  file provider, which serves a directory such as a mounted ConfigMap, and an
+  S3 provider as a reference implementation.
 
 Configuration content is opaque to the server and the driver. They deliver
 bytes; they never parse them.
@@ -65,8 +65,8 @@ in [api/chandler/v1](api/chandler/v1).
 | CSI driver | Mounts a volume once every source is delivered, replaces files atomically on change, and resumes after a restart |
 | Config server | Shares one provider watch between subscriptions and pushes each new revision; holds content in memory only |
 | File provider | Serves files and directories from a volume, such as a ConfigMap |
-| S3 provider | Placeholder binary |
-| Helm chart | Installs the driver and the server, and optionally the file provider |
+| S3 provider | Serves objects and prefixes from allow-listed buckets, on AWS or an S3-compatible store |
+| Helm chart | Installs the driver and the server, and optionally the file and S3 providers |
 | Security | Not built: plaintext, unauthenticated, no authorisation |
 | Caching, staged rollouts, application acknowledgement | Designed, not built |
 
@@ -114,6 +114,22 @@ helm install chandler oci://quay.io/shipchandler/chandler \
 A pod then mounts `file:///app.yaml` as shown above. A change to the ConfigMap
 reaches the pod's files after kubelet refreshes the provider's mount, about a
 minute.
+
+To serve S3 buckets instead, enable the S3 provider and name the buckets it
+may serve. With IAM roles for service accounts:
+
+```bash
+helm install chandler oci://quay.io/shipchandler/chandler \
+  --namespace chandler-system --create-namespace --devel \
+  --set providers.s3.enabled=true \
+  --set providers.s3.region=eu-west-1 \
+  --set 'providers.s3.buckets={acme-config}' \
+  --set-string 'providers.s3.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::111122223333:role/chandler-s3'
+```
+
+Pods then mount `s3://acme-config/payments/app.yaml`, or a prefix as a
+directory with `s3://acme-config/shared/flags/`. Without `buckets`, the
+provider serves every bucket its role can read to every pod.
 
 To verify a signature:
 

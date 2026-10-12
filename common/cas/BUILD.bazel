@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cas",
+    srcs = ["cas.go"],
+    importpath = "github.com/bpalermo/chandler/common/cas",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/bundle",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "cas_test",
+    srcs = ["cas_test.go"],
+    embed = [":cas"],
+    deps = [
+        "//api/chandler/v1:chandler",
+        "//common/bundle",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

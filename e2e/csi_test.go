@@ -406,3 +406,85 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	}
 	expectFile(ctx, t, ns, "strict", "app.yaml", "v2")
 }
+
+// The server cache: with the provider gone, a new pod is still given what the
+// server holds, even though no pod was subscribed to it any more.
+func TestServerCacheServesThroughAProviderOutage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	ns := newNamespace(ctx, t)
+	held, unseen := ns+".held.yaml", ns+".unseen.yaml"
+	source := func(key string) string { return fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key) }
+
+	// A pod brings the file into the server's cache, then goes away, so no
+	// subscription holds it.
+	publish(ctx, t, held, "v1")
+	mustApply(ctx, t, ns, consumerPod("first", true, source(held)))
+	if _, err := waitForPodPhase(ctx, ns, "first", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	mustKubectl(ctx, t, "delete", "pod", "first", "-n", ns, "--wait=true")
+
+	scale := func(ctx context.Context, replicas int) error {
+		if _, err := kubectl(ctx, "scale", "deployment/chandler-provider-file", "-n", driverNamespace, fmt.Sprintf("--replicas=%d", replicas)); err != nil {
+			return err
+		}
+		if replicas == 0 {
+			_, err := kubectl(ctx, "wait", "--for=delete", "pod", "-n", driverNamespace,
+				"-l", "app.kubernetes.io/component=provider-file", "--timeout=120s")
+			return err
+		}
+		_, err := kubectl(ctx, "rollout", "status", "deployment/chandler-provider-file", "-n", driverNamespace, "--timeout=180s")
+		return err
+	}
+	t.Cleanup(func() {
+		// Whatever happened, the next test needs a provider.
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		if err := scale(ctx, 1); err != nil {
+			t.Errorf("restoring the file provider: %v", err)
+		}
+	})
+	if err := scale(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// The default failure policy: this pod is not allowed the node cache,
+	// so what it reads came from the server.
+	mustApply(ctx, t, ns, consumerPod("during", true, source(held)))
+	mustApply(ctx, t, ns, consumerPod("unseen", true, source(unseen)))
+	if _, err := waitForPodPhase(ctx, ns, "during", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustKubectl(ctx, t, "exec", "during", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+		t.Errorf("the pod started during the outage reads %q, want v1", got)
+	}
+	// What the server never held, it cannot serve.
+	err := eventually(ctx, func() error {
+		events, err := kubectl(ctx, "get", "events", "-n", ns,
+			"--field-selector", "involvedObject.name=unseen,reason=FailedMount",
+			"-o", "jsonpath={.items[*].message}")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(events, "not connected") {
+			return fmt.Errorf("no FailedMount event saying the provider is not connected yet; events: %q", events)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The provider returns: the watch resumes and both pods get what it has.
+	if err := scale(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	publish(ctx, t, held, "v2")
+	publish(ctx, t, unseen, "now seen")
+	expectFile(ctx, t, ns, "during", "app.yaml", "v2")
+	if _, err := waitForPodPhase(ctx, ns, "unseen", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	expectFile(ctx, t, ns, "unseen", "app.yaml", "now seen")
+}

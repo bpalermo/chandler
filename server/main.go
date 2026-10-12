@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -38,6 +39,9 @@ func main() {
 		serverID       = flag.String("server-id", os.Getenv("POD_NAME"), "identity of this replica (default $POD_NAME, else the hostname)")
 		maxBundleBytes = flag.Uint64("max-bundle-bytes", bundle.DefaultMaxBytes, "largest bundle accepted from a provider, in bytes")
 		maxBundleFiles = flag.Int("max-bundle-files", bundle.DefaultMaxFiles, "largest number of files in a bundle")
+		cacheDir       = flag.String("cache-dir", "", "directory the cache is kept in; empty keeps it in memory only")
+		cacheGrace     = flag.Duration("cache-grace", 24*time.Hour, "how long a cache entry no pod uses is kept")
+		negativeTTL    = flag.Duration("negative-ttl", 30*time.Second, "how long a not-found or permission-denied answer from a provider is remembered")
 		showVersion    = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Var(&providers, "provider", "a provider as <name>=<gRPC target>; <name> is the scheme of the URIs it serves. Repeatable")
@@ -50,13 +54,23 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	limits := bundle.Limits{MaxBytes: *maxBundleBytes, MaxFiles: *maxBundleFiles}
-	if err := run(log, *listen, *serverID, limits, providers); err != nil {
+	cfg := hub.Config{
+		ServerID:    *serverID,
+		Limits:      limits,
+		Quotas:      hub.DefaultQuotas(),
+		CacheDir:    *cacheDir,
+		Grace:       *cacheGrace,
+		NegativeTTL: *negativeTTL,
+		Log:         log,
+	}
+	if err := run(log, *listen, cfg, providers); err != nil {
 		log.Error("chandler-server failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, listen, serverID string, limits bundle.Limits, providers []string) error {
+func run(log *slog.Logger, listen string, cfg hub.Config, providers []string) error {
+	limits, serverID := cfg.Limits, cfg.ServerID
 	switch {
 	case limits.MaxBytes == 0 || limits.MaxBytes > bundle.HardMaxBytes:
 		// A bundle travels in one gRPC message.
@@ -72,7 +86,11 @@ func run(log *slog.Logger, listen, serverID string, limits bundle.Limits, provid
 		serverID = hostname
 	}
 
-	h := hub.New(hub.Config{ServerID: serverID, Limits: limits, Log: log})
+	cfg.ServerID = serverID
+	h, err := hub.New(cfg)
+	if err != nil {
+		return fmt.Errorf("open the cache: %w", err)
+	}
 	for _, p := range providers {
 		name, target, ok := strings.Cut(p, "=")
 		if !ok || name == "" || target == "" {

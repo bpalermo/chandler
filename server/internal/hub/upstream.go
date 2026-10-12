@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"slices"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/status"
@@ -34,6 +37,36 @@ type upstream struct {
 	out *queue.Queue[*chandlerv1.ProviderRequest]
 	// watches maps the watch IDs of the current stream to their resources.
 	watches map[string]*resource
+	// varyOn is the subscriber attributes the provider varies content on, as
+	// it last declared them. Remembered across restarts, since it decides
+	// which resource a subscription belongs to.
+	varyOn []string
+	// defaultCacheControl applies to updates that carry none.
+	defaultCacheControl *chandlerv1.CacheControl
+}
+
+// project returns the values of the provider's vary attributes for one
+// subscriber. An attribute with no value is absent.
+func (u *upstream) project(w *chandlerv1.Workload, cluster string) map[string]string {
+	if len(u.varyOn) == 0 {
+		return nil
+	}
+	attributes := make(map[string]string)
+	for _, name := range u.varyOn {
+		value := ""
+		switch name {
+		case "cluster":
+			value = cluster
+		case "namespace":
+			value = w.GetNamespace()
+		case "service_account":
+			value = w.GetServiceAccount()
+		}
+		if value != "" {
+			attributes[name] = value
+		}
+	}
+	return attributes
 }
 
 // AddProvider registers a provider under name, the scheme of the URIs it
@@ -41,10 +74,16 @@ type upstream struct {
 func (h *Hub) AddProvider(name, target string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if _, ok := h.upstreams[name]; ok {
+	up := h.upstreams[name]
+	if up == nil {
+		// Possibly known from the cache directory, with its vary attributes.
+		up = &upstream{hub: h, name: name}
+		h.upstreams[name] = up
+	}
+	if up.target != "" {
 		return fmt.Errorf("provider %q is registered twice", name)
 	}
-	h.upstreams[name] = &upstream{hub: h, name: name, target: target, watches: make(map[string]*resource)}
+	up.target, up.watches = target, make(map[string]*resource)
 	return nil
 }
 
@@ -52,10 +91,17 @@ func (h *Hub) AddProvider(name, target string) error {
 func (h *Hub) Run(ctx context.Context) {
 	h.mu.Lock()
 	ups := make([]*upstream, 0, len(h.upstreams))
-	for _, up := range h.upstreams {
+	for name, up := range h.upstreams {
+		if up.target == "" {
+			// Remembered from the cache directory but no longer configured.
+			delete(h.upstreams, name)
+			continue
+		}
 		ups = append(ups, up)
 	}
 	h.mu.Unlock()
+
+	go h.keep(ctx)
 
 	done := make(chan struct{})
 	for _, up := range ups {
@@ -82,14 +128,15 @@ func (u *upstream) unavailable() *status.Status {
 func (u *upstream) watchLocked(r *resource) {
 	u.hub.watchSeq++
 	r.watchID = strconv.FormatUint(u.hub.watchSeq, 10)
-	r.failure = nil
+	r.failure, r.answered, r.live = nil, false, false
 	u.watches[r.watchID] = r
 	watch := chandlerv1.Watch_builder{
-		WatchId: proto.String(r.watchID),
-		Uri:     proto.String(r.uri),
+		WatchId:    proto.String(r.watchID),
+		Uri:        proto.String(r.uri),
+		Attributes: r.attributes,
 	}
-	if r.version != "" {
-		watch.KnownRevision = proto.String(r.revision)
+	if r.entry != nil {
+		watch.KnownRevision = proto.String(r.entry.current().Revision)
 	}
 	u.out.Push(chandlerv1.ProviderRequest_builder{Watch: watch.Build()}.Build())
 }
@@ -104,7 +151,7 @@ func (u *upstream) unwatchLocked(r *resource) {
 			Unwatch: chandlerv1.Unwatch_builder{WatchId: proto.String(r.watchID)}.Build(),
 		}.Build())
 	}
-	r.watchID = ""
+	r.watchID, r.live, r.answered = "", false, false
 }
 
 // run keeps a stream to the provider open, reconnecting with jittered backoff.
@@ -172,13 +219,28 @@ func (u *upstream) stream(ctx context.Context, client chandlerv1.ConfigProviderC
 	if got := first.GetHello().GetName(); got != u.name {
 		return false, fmt.Errorf("registered as %q but the provider calls itself %q", u.name, got)
 	}
-	h.log.Info("provider connected", "provider", u.name)
+	varyOn := append([]string(nil), first.GetHello().GetVaryOn()...)
+	sort.Strings(varyOn)
+	for _, name := range varyOn {
+		if !varyAllowed[name] {
+			return false, fmt.Errorf("the provider varies on %q, which is not an attribute a provider may vary on", name)
+		}
+	}
+	h.log.Info("provider connected", "provider", u.name, "vary_on", strings.Join(varyOn, ","))
 
 	out := queue.New[*chandlerv1.ProviderRequest]()
 	h.mu.Lock()
 	u.out = out
+	u.defaultCacheControl = first.GetHello().GetDefaultCacheControl()
+	if !slices.Equal(varyOn, u.varyOn) {
+		// Which resource a subscription belongs to has changed: sort every
+		// subscription of this provider again.
+		u.varyOn = varyOn
+		h.regroupLocked(u)
+		h.saveLocked()
+	}
 	for _, r := range h.resources {
-		if r.up == u {
+		if r.up == u && r.delayed == nil {
 			u.watchLocked(r)
 		}
 	}
@@ -189,18 +251,23 @@ func (u *upstream) stream(ctx context.Context, client chandlerv1.ConfigProviderC
 		defer h.mu.Unlock()
 		u.out = nil
 		u.watches = make(map[string]*resource)
+		now := h.now()
 		for _, r := range h.resources {
 			if r.up != u {
 				continue
 			}
-			r.watchID = ""
-			// A resource with a version keeps serving it; one without has
-			// nothing to give.
-			if r.version == "" {
-				r.failure = u.unavailable()
-				h.answerPendingLocked(r)
+			if r.live && r.entry != nil {
+				r.entry.lastRefreshed = now
 			}
+			r.watchID, r.live, r.answered = "", false, false
+			if r.entry == nil && r.failure == nil {
+				r.failure = u.unavailable()
+			}
+			// Whoever still waits for an initial answer gets it now: the
+			// held version, marked stale, or the reason there is none.
+			h.serveAllLocked(r)
 		}
+		h.saveLocked()
 	}()
 
 	go func() {
@@ -228,6 +295,26 @@ func (u *upstream) stream(ctx context.Context, client chandlerv1.ConfigProviderC
 	}
 }
 
+// regroupLocked re-resolves every subscription of a provider to its resource,
+// after the provider's vary attributes changed.
+func (h *Hub) regroupLocked(u *upstream) {
+	var subs []*subscription
+	for _, r := range h.resources {
+		if r.up == u {
+			for sub := range r.subs {
+				subs = append(subs, sub)
+			}
+		}
+	}
+	for _, sub := range subs {
+		h.dropLocked(sub)
+	}
+	for _, sub := range subs {
+		sub.res = nil
+		h.attachLocked(sub)
+	}
+}
+
 // fromProvider handles one message of a provider stream.
 func (h *Hub) fromProvider(u *upstream, msg *chandlerv1.ProviderResponse) {
 	h.mu.Lock()
@@ -249,11 +336,26 @@ func (h *Hub) fromProvider(u *upstream, msg *chandlerv1.ProviderResponse) {
 		st := msg.GetError().GetStatus()
 		h.log.Warn("provider cannot serve a watch", "provider", u.name, "uri", r.uri,
 			"code", codes.Code(st.GetCode()).String(), "reason", st.GetMessage())
-		if r.version == "" {
-			r.failure = &status.Status{Code: st.GetCode(), Message: st.GetMessage()}
-			h.answerPendingLocked(r)
+		h.failLocked(r, &status.Status{Code: st.GetCode(), Message: st.GetMessage()})
+	}
+}
+
+// failLocked records that the provider cannot serve a resource's watch. A
+// held version keeps being served, as stale.
+func (h *Hub) failLocked(r *resource, st *status.Status) {
+	if r.live && r.entry != nil {
+		r.entry.lastRefreshed = h.now()
+	}
+	r.failure, r.answered, r.live = st, true, false
+	switch codes.Code(st.GetCode()) {
+	case codes.NotFound, codes.PermissionDenied:
+		// Remembered briefly, so a pod that keeps asking does not make the
+		// server keep asking the provider.
+		if r.entry == nil && (len(h.negative) < maxNegative || h.negative[r.id].status != nil) {
+			h.negative[r.id] = negative{status: st, until: h.now().Add(h.negativeTTL)}
 		}
 	}
+	h.serveAllLocked(r)
 }
 
 func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.ResourceUpdate) {
@@ -267,47 +369,107 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 			}.Build(),
 		}.Build())
 	}
+	refuse := func(code codes.Code, err error) {
+		log.Error("refused a bundle from the provider", "code", code.String(), "error", err)
+		u.out.Push(chandlerv1.ProviderRequest_builder{
+			Nack: chandlerv1.ProviderNack_builder{
+				WatchId:     proto.String(update.GetWatchId()),
+				Nonce:       proto.String(update.GetNonce()),
+				Revision:    proto.String(update.GetRevision()),
+				ErrorDetail: &status.Status{Code: int32(code), Message: err.Error()},
+			}.Build(),
+		}.Build())
+		// The last accepted version, if any, keeps being served.
+		h.failLocked(r, &status.Status{
+			Code:    int32(code),
+			Message: fmt.Sprintf("provider %s emitted a bundle that cannot be delivered: %v", u.name, err),
+		})
+	}
+	now := h.now()
 
 	switch {
 	case update.HasBundle():
 		if code, err := h.accept(update); err != nil {
-			log.Error("refused a bundle from the provider", "code", code.String(), "error", err)
-			u.out.Push(chandlerv1.ProviderRequest_builder{
-				Nack: chandlerv1.ProviderNack_builder{
-					WatchId:     proto.String(update.GetWatchId()),
-					Nonce:       proto.String(update.GetNonce()),
-					Revision:    proto.String(update.GetRevision()),
-					ErrorDetail: &status.Status{Code: int32(code), Message: err.Error()},
-				}.Build(),
-			}.Build())
-			// The last accepted version, if any, keeps being served.
-			if r.version == "" {
-				r.failure = &status.Status{
-					Code:    int32(code),
-					Message: fmt.Sprintf("provider %s emitted a bundle that cannot be delivered: %v", u.name, err),
-				}
-				h.answerPendingLocked(r)
-			}
+			refuse(code, err)
 			return
 		}
-		r.bundle = update.GetBundle()
-		r.version = bundle.Version(r.bundle)
-		r.revision, r.cacheKey, r.failure = update.GetRevision(), update.GetCacheKey(), nil
+		b := update.GetBundle()
+		key := entryKey{u.name, update.GetCacheKey()}
+		version, size := bundle.Version(b), bundle.Size(b)
+		if err := h.admit(r, key, size); err != nil {
+			refuse(codes.ResourceExhausted, err)
+			return
+		}
+		cc := update.GetCacheControl()
+		if cc == nil {
+			cc = u.defaultCacheControl
+		}
+		e := h.entries[key]
+		if e == nil || e.current().Version != version {
+			// no_store content is never written to disk.
+			if h.store != nil && !cc.GetNoStore() {
+				if err := h.store.Put(version, b); err != nil {
+					refuse(codes.Internal, err)
+					return
+				}
+			}
+		}
+		if e == nil {
+			e = &entry{key: key, bundles: make(map[string]*chandlerv1.Bundle), refs: make(map[*resource]struct{})}
+			h.entries[key] = e
+		}
+		newest := held{Version: version, Revision: update.GetRevision(), Bytes: size}
+		versions := []held{newest}
+		for _, v := range e.versions {
+			if v.Version != version && len(versions) < VersionsPerKey {
+				versions = append(versions, v)
+			}
+		}
+		for _, v := range e.versions {
+			if !slices.ContainsFunc(versions, func(k held) bool { return k.Version == v.Version }) {
+				delete(e.bundles, v.Version)
+			}
+		}
+		e.versions, e.bundles[version] = versions, b
+		e.cacheControl, e.lastRefreshed, e.lastReferenced, e.orphaned = cc, now, now, false
+
+		h.bindLocked(r, e)
+		h.aliases[r.id] = alias{Provider: u.name, CacheKey: key.cacheKey, URI: r.uri}
+		delete(h.negative, r.id)
+		r.failure, r.answered, r.live = nil, true, true
 		ack()
-		log.Info("accepted a revision", "version", r.version, "subscriptions", len(r.subs))
-		for sub := range r.subs {
-			h.deliverLocked(sub, false)
+		h.saveLocked()
+		log.Info("accepted a revision", "version", version, "cache_key", key.cacheKey)
+		// Every resource that resolves to the key gets the version.
+		for other := range e.refs {
+			h.serveAllLocked(other)
 		}
 	case update.HasNotModified():
 		ack()
-	case update.HasDeleted():
-		ack()
-		if r.version != "" {
-			// Config is never withdrawn from a pod: the last version stays.
-			log.Warn("resource was deleted at the origin; keeping the last version", "version", r.version)
+		if r.entry == nil {
 			return
 		}
-		r.failure = &status.Status{Code: int32(codes.NotFound), Message: "the resource was deleted at the origin"}
-		h.answerPendingLocked(r)
+		r.entry.lastRefreshed, r.entry.orphaned = now, false
+		if cc := update.GetCacheControl(); cc != nil {
+			r.entry.cacheControl = cc
+		}
+		r.failure, r.answered, r.live = nil, true, true
+		h.serveAllLocked(r)
+	case update.HasDeleted():
+		ack()
+		if r.entry == nil {
+			h.failLocked(r, &status.Status{Code: int32(codes.NotFound), Message: "the resource was deleted at the origin"})
+			return
+		}
+		// Config is never withdrawn: the last version stays and keeps being
+		// served, to running pods and to new ones.
+		log.Warn("resource was deleted at the origin; keeping the last version", "version", r.entry.current().Version)
+		if r.live {
+			r.entry.lastRefreshed = now
+		}
+		r.entry.orphaned = true
+		r.failure, r.answered, r.live = nil, true, false
+		h.saveLocked()
+		h.serveAllLocked(r)
 	}
 }

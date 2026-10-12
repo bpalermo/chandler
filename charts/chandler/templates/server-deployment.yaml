@@ -41,6 +41,9 @@ spec:
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           args:
             - --listen=:{{ .Values.server.port }}
+            - --cache-dir=/var/cache/chandler
+            - --cache-grace={{ .Values.server.cache.grace }}
+            - --negative-ttl={{ .Values.server.cache.negativeTtl }}
             - --max-bundle-bytes={{ int64 .Values.server.maxBundleBytes }}
             - --max-bundle-files={{ int64 .Values.server.maxBundleFiles }}
             {{- if .Values.providers.file.enabled }}
@@ -74,3 +77,13 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache/chandler
+      securityContext:
+        # The image's user; makes the emptyDir writable by it.
+        fsGroup: 65532
+      volumes:
+        - name: cache
+          emptyDir:
+            sizeLimit: {{ .Values.server.cache.sizeLimit }}

@@ -25,6 +25,7 @@ func (h *Hub) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_StreamConfi
 	}
 	sess := &session{
 		node: first.GetHello().GetNodeId(),
+		cluster: first.GetHello().GetCluster(),
 		out:  queue.New[*chandlerv1.ConfigResponse](),
 		subs: make(map[string]*subscription),
 	}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,9 @@ const wait = 10 * time.Second
 type fakeProvider struct {
 	chandlerv1.UnimplementedConfigProviderServer
 	name string
+	// varyOn and cacheControl are what the provider declares in its hello.
+	varyOn       []string
+	cacheControl *chandlerv1.CacheControl
 	// requests carries everything the server sends after its hello.
 	requests chan *chandlerv1.ProviderRequest
 	// responses is sent on the current stream.
@@ -39,7 +43,11 @@ func (p *fakeProvider) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConf
 		return err
 	}
 	err := stream.Send(chandlerv1.ProviderResponse_builder{
-		Hello: chandlerv1.ProviderHello_builder{Name: proto.String(p.name)}.Build(),
+		Hello: chandlerv1.ProviderHello_builder{
+			Name:                proto.String(p.name),
+			VaryOn:              p.varyOn,
+			DefaultCacheControl: p.cacheControl,
+		}.Build(),
 	}.Build())
 	if err != nil {
 		return err
@@ -151,6 +159,24 @@ func (n *node) expectUpdate(t *testing.T, id string, b *chandlerv1.Bundle) *chan
 	return u
 }
 
+// expectUpdates expects one update to b for each of the subscriptions, in any
+// order: subscriptions of one resource are served in no particular order.
+func (n *node) expectUpdates(t *testing.T, b *chandlerv1.Bundle, ids ...string) {
+	t.Helper()
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	for range ids {
+		msg := n.next(t)
+		u := msg.GetUpdate()
+		if !msg.HasUpdate() || !want[u.GetSubscriptionId()] || u.GetVersion() != bundle.Version(b) {
+			t.Fatalf("driver got %v, want an update of one of %v to %s", msg, ids, bundle.Version(b))
+		}
+		delete(want, u.GetSubscriptionId())
+	}
+}
+
 func (n *node) expectError(t *testing.T, id string, code codes.Code) *status.Status {
 	t.Helper()
 	msg := n.next(t)
@@ -173,9 +199,30 @@ func (n *node) expectNothing(t *testing.T) {
 type harness struct {
 	provider *fakeProvider
 	target   string
+	hub      *Hub
+	// stop ends the hub and its servers, as a process exit would.
+	stop func()
 }
 
-func serve(t *testing.T, register func(*grpc.Server)) string {
+// clock is a settable time source.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func serve(t *testing.T, register func(*grpc.Server)) (target string, stop func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -185,32 +232,83 @@ func serve(t *testing.T, register func(*grpc.Server)) string {
 	register(server)
 	go server.Serve(listener)
 	t.Cleanup(server.Stop)
-	return listener.Addr().String()
+	return listener.Addr().String(), server.Stop
 }
 
 // start runs a hub with one fake provider registered as "file".
 func start(t *testing.T, limits bundle.Limits) harness {
 	t.Helper()
-	p := &fakeProvider{
+	return startWith(t, Config{Limits: limits}, newFakeProvider())
+}
+
+func newFakeProvider() *fakeProvider {
+	return &fakeProvider{
 		name:      "file",
 		requests:  make(chan *chandlerv1.ProviderRequest, 64),
 		responses: make(chan *chandlerv1.ProviderResponse),
 		hangup:    make(chan struct{}),
 	}
-	providerTarget := serve(t, func(s *grpc.Server) { chandlerv1.RegisterConfigProviderServer(s, p) })
+}
 
-	h := New(Config{ServerID: "server-1", Limits: limits, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+// startUnconnected is startWith for a provider whose handshake the hub will
+// refuse: it does not wait for the two to connect.
+func startUnconnected(t *testing.T, p *fakeProvider) harness {
+	t.Helper()
+	return run(t, Config{}, p, false)
+}
+
+// startWith runs a hub configured by cfg against p, and waits until the two
+// are connected. A nil p runs the hub with its provider unreachable.
+func startWith(t *testing.T, cfg Config, p *fakeProvider) harness {
+	t.Helper()
+	return run(t, cfg, p, p != nil)
+}
+
+func run(t *testing.T, cfg Config, p *fakeProvider, waitConnected bool) harness {
+	t.Helper()
+	// A port nothing listens on.
+	providerTarget := "127.0.0.1:1"
+	stopProvider := func() {}
+	if p != nil {
+		providerTarget, stopProvider = serve(t, func(s *grpc.Server) { chandlerv1.RegisterConfigProviderServer(s, p) })
+	}
+
+	cfg.ServerID = "server-1"
+	cfg.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	if cfg.Limits == (bundle.Limits{}) {
+		cfg.Limits = bundle.DefaultLimits()
+	}
+	if cfg.Grace == 0 {
+		cfg.Grace = time.Hour
+	}
+	if cfg.NegativeTTL == 0 {
+		cfg.NegativeTTL = time.Hour
+	}
+	h, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := h.AddProvider("file", providerTarget); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go h.Run(ctx)
-	target := serve(t, func(s *grpc.Server) { chandlerv1.RegisterConfigDiscoveryServiceServer(s, h) })
+	done := make(chan struct{})
+	go func() {
+		h.Run(ctx)
+		close(done)
+	}()
+	target, stopServer := serve(t, func(s *grpc.Server) { chandlerv1.RegisterConfigDiscoveryServiceServer(s, h) })
+	stop := sync.OnceFunc(func() {
+		stopServer()
+		cancel()
+		<-done
+		stopProvider()
+	})
+	t.Cleanup(stop)
 
 	// Wait for the provider stream, so tests start from a connected server.
 	deadline := time.Now().Add(wait)
-	for {
+	for waitConnected {
 		h.mu.Lock()
 		connected := h.upstreams["file"].connected()
 		h.mu.Unlock()
@@ -222,7 +320,7 @@ func start(t *testing.T, limits bundle.Limits) harness {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	return harness{provider: p, target: target}
+	return harness{provider: p, target: target, hub: h, stop: stop}
 }
 
 func (h harness) connect(t *testing.T) *node {

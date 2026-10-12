@@ -30,6 +30,10 @@ server:
     digest: ""
     tag: v9.9.9
   replicas: 3
+  cache:
+    sizeLimit: 512Mi
+    grace: 1h
+    negativeTtl: 5s
   port: 9443
   providers:
     - name: s3

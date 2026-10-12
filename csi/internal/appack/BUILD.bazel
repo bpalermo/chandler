@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "appack",
+    srcs = ["appack.go"],
+    importpath = "github.com/bpalermo/chandler/csi/internal/appack",
+    visibility = ["//csi:__subpackages__"],
+    deps = [
+        "//csi/internal/volume",
+        "@org_golang_x_sys//unix",
+    ],
+)

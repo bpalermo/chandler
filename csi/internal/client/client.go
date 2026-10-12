@@ -43,6 +43,9 @@ type Handler interface {
 	// Cached returns the versions the node cache holds, newest first. The
 	// server may name one of them instead of sending its bytes.
 	Cached() []string
+	// Loaded returns the last version the application reported loaded, ""
+	// for none or when the volume has no application acknowledgement.
+	Loaded() string
 }
 
 // Subscription is one source of one pod volume.
@@ -51,7 +54,9 @@ type Subscription struct {
 	ID       string
 	URI      string
 	Workload *chandlerv1.Workload
-	Handler  Handler
+	// AppAck is set when the application reports on the versions written.
+	AppAck  bool
+	Handler Handler
 }
 
 // Config configures a Client.
@@ -112,6 +117,17 @@ func (c *Client) Unsubscribe(id string) {
 	}
 }
 
+// Report relays what an application said about a version. It is dropped when
+// the client is not connected: the next Subscribe carries the loaded version,
+// and a rejected version is refused by the driver itself if it comes again.
+func (c *Client) Report(report *chandlerv1.AppReport) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.out != nil {
+		c.out.Push(chandlerv1.ConfigRequest_builder{AppReport: report}.Build())
+	}
+}
+
 // Err returns why the client is not connected, or nil when it is.
 func (c *Client) Err() error {
 	c.mu.Lock()
@@ -135,6 +151,12 @@ func subscribeRequest(s Subscription) *chandlerv1.ConfigRequest {
 	for _, version := range s.Handler.Cached() {
 		if version != applied {
 			subscribe.CachedVersions = append(subscribe.CachedVersions, version)
+		}
+	}
+	if s.AppAck {
+		subscribe.AppAck = proto.Bool(true)
+		if loaded := s.Handler.Loaded(); loaded != "" {
+			subscribe.LoadedVersion = proto.String(loaded)
 		}
 	}
 	return chandlerv1.ConfigRequest_builder{Subscribe: subscribe.Build()}.Build()

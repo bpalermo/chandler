@@ -59,11 +59,31 @@ func NewWriter(dir string) *Writer {
 // anything fails before the swap, the volume is left exactly as it was. After
 // the swap the previous generation is kept on disk and older ones are removed.
 func (w *Writer) Write(files map[string]File) error {
+	return w.WriteWith(files, nil)
+}
+
+// WriteWith is Write with driver-owned files added to the generation. Their
+// names are single path segments starting with "..", which no bundle may use,
+// so they can never collide with configuration. Each is swapped in with the
+// generation it describes and linked at the volume root like any other entry.
+func (w *Writer) WriteWith(files, reserved map[string]File) error {
 	for path := range files {
 		if err := bundle.ValidatePath(path); err != nil {
 			return err
 		}
 	}
+	all := make(map[string]File, len(files)+len(reserved))
+	for path, f := range files {
+		all[path] = f
+	}
+	for name, f := range reserved {
+		if !strings.HasPrefix(name, "..") || strings.Contains(name, "/") || name == ".." ||
+			name == dataLink || name == dataLinkTmp {
+			return fmt.Errorf("%q is not a name the driver may reserve", name)
+		}
+		all[name] = f
+	}
+	files = all
 
 	previous, err := w.Current()
 	if err != nil {

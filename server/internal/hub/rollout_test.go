@@ -290,3 +290,50 @@ func TestRolloutIsCopiedByPeers(t *testing.T) {
 	n.subscribePod(t, "out/0", "file:///app.yaml", f.out[0])
 	n.expectUpdate(t, "out/0", f.v1)
 }
+
+// What an application says about a version is carried to the provider, and a
+// version it rejected is not sent to it again.
+func TestApplicationReports(t *testing.T) {
+	f := startRollout(t, Config{})
+	f.provider.emitShare(f.watch, "n2", "r2", f.v2, half)
+	first, second := f.node.next(t).GetUpdate(), f.node.next(t).GetUpdate()
+	report := func(u *chandlerv1.ConfigUpdate, state chandlerv1.AppReport_State, applied string) {
+		t.Helper()
+		f.node.send(t, ack(u))
+		f.node.send(t, chandlerv1.ConfigRequest_builder{
+			AppReport: chandlerv1.AppReport_builder{
+				SubscriptionId: proto.String(u.GetSubscriptionId()),
+				Version:        proto.String(u.GetVersion()),
+				State:          state.Enum(),
+				AppliedVersion: proto.String(applied),
+			}.Build(),
+		}.Build())
+	}
+	report(first, chandlerv1.AppReport_STATE_LOADED, first.GetVersion())
+	// The second application refuses it; its driver put v1 back.
+	report(second, chandlerv1.AppReport_STATE_REJECTED, bundle.Version(f.v1))
+
+	deadline := time.After(wait)
+	for {
+		var fb *chandlerv1.Feedback
+		select {
+		case fb = <-f.provider.feedback:
+		case <-deadline:
+			t.Fatal("the provider was never told loaded=1 rejected=1")
+		}
+		if fb.GetRevision() == "r2" && fb.GetLoaded() == 1 && fb.GetRejected() == 1 {
+			break
+		}
+	}
+
+	// Releasing the version to everyone reaches the pods that did not have
+	// it, and not the one whose application refused it.
+	f.provider.advance(f.watch, "n3", "r2", rollout.Everyone)
+	f.node.expectUpdates(t, f.v2, ids(f.out)...)
+	f.node.expectNothing(t)
+
+	// The next version is sent to it like to anyone else.
+	v3 := oneFile("v3")
+	f.provider.emit(f.watch, "n4", "r3", v3)
+	f.node.expectUpdates(t, v3, append(ids(f.in), ids(f.out)...)...)
+}

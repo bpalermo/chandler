@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "e2e_test",
     srcs = [
+        "appack_test.go",
         "csi_test.go",
         "images_test.go",
         "kubectl_test.go",

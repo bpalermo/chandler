@@ -18,6 +18,7 @@ const (
 	// Volume attributes of the inline volume in the pod spec.
 	sourcesKey       = "sources"
 	failurePolicyKey = "failurePolicy"
+	appAckKey        = "appAck"
 
 	// FailurePolicyFail fails the mount when a source has no answer.
 	FailurePolicyFail = "Fail"
@@ -51,6 +52,9 @@ func (s Source) IsDir() bool { return strings.HasSuffix(s.URI, "/") }
 type Spec struct {
 	Sources       []Source `json:"sources"`
 	FailurePolicy string   `json:"failurePolicy"`
+	// AppAck is set when the application reports whether it could load each
+	// version, over the socket in the volume.
+	AppAck bool `json:"appAck,omitempty"`
 }
 
 // ParseSpec reads the volume attributes of a pod's inline volume.
@@ -63,6 +67,14 @@ func ParseSpec(attributes map[string]string) (Spec, error) {
 	default:
 		return Spec{}, fmt.Errorf("%w: %s must be %s or %s, not %q", ErrInvalidSpec,
 			failurePolicyKey, FailurePolicyFail, FailurePolicyUseCached, spec.FailurePolicy)
+	}
+
+	switch attributes[appAckKey] {
+	case "", "false":
+	case "true":
+		spec.AppAck = true
+	default:
+		return Spec{}, fmt.Errorf("%w: %s must be \"true\" or \"false\", not %q", ErrInvalidSpec, appAckKey, attributes[appAckKey])
 	}
 
 	raw, ok := attributes[sourcesKey]

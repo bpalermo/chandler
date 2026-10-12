@@ -54,6 +54,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- include "chandler.telemetryEnv" . | nindent 12 }}
           securityContext:
             # Mounting into kubelet's pod directories needs CAP_SYS_ADMIN and
             # Bidirectional propagation, which requires privileged.

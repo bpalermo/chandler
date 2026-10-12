@@ -37,6 +37,19 @@ tls:
     providerFile: ""
     providerS3: ""
 
+# Metrics, pushed over OTLP to an OpenTelemetry collector.
+telemetry:
+  # The collector's OTLP gRPC endpoint, e.g.
+  # http://otel-collector.observability.svc:4317 (http:// for plaintext,
+  # https:// for TLS). Empty sends nothing and dials nothing.
+  otlpEndpoint: ""
+  # How often metrics are sent, in seconds.
+  exportIntervalSeconds: 60
+  # Attributes added to every metric's resource, e.g. the cluster's name:
+  #   resourceAttributes:
+  #     k8s.cluster.name: prod-eu
+  resourceAttributes: {}
+
 # Every image of the chart is set the same way:
 #
 #   repository  Substituted at package time from the component's image_push

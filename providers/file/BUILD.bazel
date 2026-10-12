@@ -11,6 +11,7 @@ go_library(
         "//api/chandler/v1:chandler",
         "//common/provider",
         "//common/rollout",
+        "//common/telemetry",
         "//common/transport",
         "//common/version",
         "//providers/file/internal/source",

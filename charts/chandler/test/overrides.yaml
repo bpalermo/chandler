@@ -1,6 +1,12 @@
 # Every non-default knob the chart has, so a template test renders the paths
 # the defaults leave out.
 nameOverride: custom
+telemetry:
+  otlpEndpoint: https://otel-collector.observability.svc:4317
+  exportIntervalSeconds: 15
+  resourceAttributes:
+    k8s.cluster.name: test
+    deployment.environment: ci
 tls:
   mode: existing
   existingSecrets:

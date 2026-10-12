@@ -2,16 +2,22 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "driver",
-    srcs = ["driver.go"],
+    srcs = [
+        "driver.go",
+        "metrics.go",
+    ],
     importpath = "github.com/bpalermo/chandler/csi/internal/driver",
     visibility = ["//csi:__subpackages__"],
     deps = [
         "//api/chandler/v1:chandler",
+        "//common/telemetry",
         "//csi/internal/appack",
         "//csi/internal/client",
         "//csi/internal/mount",
         "//csi/internal/volume",
         "@com_github_container_storage_interface_spec//lib/go/csi",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_metric//:metric",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",

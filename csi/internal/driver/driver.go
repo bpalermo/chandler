@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -96,6 +98,7 @@ type Driver struct {
 	server      Subscriber
 	cache       volume.Cache
 	audience    string
+	metrics     metrics
 	timeout     time.Duration
 	cachedAfter time.Duration
 
@@ -164,7 +167,7 @@ func New(cfg Config) (*Driver, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, volumesDir), dirMode); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
-	return &Driver{
+	d := &Driver{
 		nodeID:      cfg.NodeID,
 		version:     cfg.Version,
 		stateDir:    cfg.StateDir,
@@ -176,7 +179,9 @@ func New(cfg Config) (*Driver, error) {
 		cachedAfter: cfg.CachedAfter,
 		published:   make(map[string]*volume.Volume),
 		apis:        make(map[string]*appack.Server),
-	}, nil
+	}
+	d.instrument()
+	return d, nil
 }
 
 // GetPluginInfo implements csi.IdentityServer.
@@ -213,25 +218,37 @@ func (d *Driver) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitiesRe
 // A failure leaves nothing behind, so kubelet's retry starts again from the
 // beginning.
 func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
+	start := time.Now()
+	resp, fresh, err := d.publish(ctx, req)
+	// Republishing a mounted volume is not a mount, and is not measured.
+	if fresh || err != nil {
+		d.metrics.publishes.Record(ctx, since(start), outcome(err))
+	}
+	return resp, err
+}
+
+// publish does the work of NodePublishVolume. fresh reports whether the
+// volume was mounted by this call, as opposed to being found mounted.
+func (d *Driver) publish(ctx context.Context, req *csi.NodePublishVolumeRequest) (_ *csi.NodePublishVolumeResponse, fresh bool, _ error) {
 	volumeID, target := req.GetVolumeId(), req.GetTargetPath()
 	switch {
 	case !validVolumeID(volumeID):
-		return nil, status.Errorf(codes.InvalidArgument, "invalid volume ID %q", volumeID)
+		return nil, false, status.Errorf(codes.InvalidArgument, "invalid volume ID %q", volumeID)
 	case target == "":
-		return nil, status.Error(codes.InvalidArgument, "target path is required")
+		return nil, false, status.Error(codes.InvalidArgument, "target path is required")
 	case req.GetVolumeCapability() == nil:
-		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
+		return nil, false, status.Error(codes.InvalidArgument, "volume capability is required")
 	case req.GetVolumeCapability().GetMount() == nil:
-		return nil, status.Error(codes.InvalidArgument, "only mount volumes are supported")
+		return nil, false, status.Error(codes.InvalidArgument, "only mount volumes are supported")
 	case req.GetVolumeContext()[ephemeralKey] != "true":
-		return nil, status.Error(codes.InvalidArgument, "only ephemeral inline volumes are supported")
+		return nil, false, status.Error(codes.InvalidArgument, "only ephemeral inline volumes are supported")
 	case !req.GetReadonly():
-		return nil, status.Error(codes.InvalidArgument, "the volume must be mounted readOnly: true")
+		return nil, false, status.Error(codes.InvalidArgument, "the volume must be mounted readOnly: true")
 	}
 	attributes := req.GetVolumeContext()
 	spec, err := volume.ParseSpec(attributes)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		return nil, false, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
 	token := d.token(attributes)
@@ -252,15 +269,15 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		if known.NeedsToken() {
 			d.subscribe(known)
 		}
-		return &csi.NodePublishVolumeResponse{}, nil
+		return &csi.NodePublishVolumeResponse{}, false, nil
 	}
 
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "check target path: %v", err)
+		return nil, false, status.Errorf(codes.Internal, "check target path: %v", err)
 	}
 	if mounted {
-		return &csi.NodePublishVolumeResponse{}, nil
+		return &csi.NodePublishVolumeResponse{}, false, nil
 	}
 
 	// Whatever an earlier attempt left is discarded: a volume is mounted
@@ -279,7 +296,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}, d.cache)
 	if err != nil {
 		d.discard(volumeID)
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, false, status.Errorf(codes.Internal, "%v", err)
 	}
 	v.SetToken(token)
 	d.subscribe(v)
@@ -289,26 +306,26 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		// When the server cannot be reached, that is the cause worth
 		// showing in the pod's event.
 		if serverErr := d.server.Err(); serverErr != nil && status.Code(err) == codes.Unavailable {
-			return nil, status.Errorf(codes.Unavailable, "%s: %v", status.Convert(err).Message(), serverErr)
+			return nil, false, status.Errorf(codes.Unavailable, "%s: %v", status.Convert(err).Message(), serverErr)
 		}
-		return nil, err
+		return nil, false, err
 	}
 
 	// The socket is there before the mount, so the application finds it
 	// from its first instruction.
 	if err := d.serveAppAck(v); err != nil {
 		d.discard(volumeID)
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, false, status.Errorf(codes.Internal, "%v", err)
 	}
 	if err := os.MkdirAll(target, dirMode); err != nil {
 		d.discard(volumeID)
-		return nil, status.Errorf(codes.Internal, "create target path: %v", err)
+		return nil, false, status.Errorf(codes.Internal, "create target path: %v", err)
 	}
 	if err := d.mounter.BindReadOnly(v.DataDir(), target); err != nil {
 		d.discard(volumeID)
-		return nil, status.Errorf(codes.Internal, "mount volume: %v", err)
+		return nil, false, status.Errorf(codes.Internal, "mount volume: %v", err)
 	}
-	return &csi.NodePublishVolumeResponse{}, nil
+	return &csi.NodePublishVolumeResponse{}, true, nil
 }
 
 // NodeUnpublishVolume implements csi.NodeServer: it ends the volume's
@@ -409,6 +426,7 @@ func (d *Driver) waitReady(ctx context.Context, v *volume.Volume, policy string)
 			if cacheErr := v.ApplyCached(); cacheErr != nil {
 				return cacheErr
 			}
+			d.metrics.fromCache.Add(ctx, 1)
 			return nil
 		}
 	}
@@ -457,7 +475,7 @@ func (d *Driver) subscribe(v *volume.Volume) {
 			URI:      source.URI,
 			Workload: workload,
 			AppAck:   v.AppAck(),
-			Handler:  sourceHandler{volume: v, index: i},
+			Handler:  sourceHandler{volume: v, index: i, metrics: &d.metrics},
 		})
 	}
 }
@@ -470,6 +488,7 @@ func (d *Driver) serveAppAck(v *volume.Volume) error {
 	}
 	api, err := appack.Serve(v.DataDir(), v, func(outcomes []volume.Outcome) {
 		for _, o := range outcomes {
+			d.metrics.appReports.Add(context.Background(), 1, metric.WithAttributes(attribute.String("state", o.State)))
 			state := chandlerv1.AppReport_STATE_LOADED
 			if o.State == volume.StateRejected {
 				state = chandlerv1.AppReport_STATE_REJECTED
@@ -520,12 +539,16 @@ func (d *Driver) discard(volumeID string) error {
 
 // sourceHandler is one source of a volume, as the client's handler.
 type sourceHandler struct {
-	volume *volume.Volume
-	index  int
+	volume  *volume.Volume
+	index   int
+	metrics *metrics
 }
 
 func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
-	return h.volume.Apply(h.index, update)
+	start := time.Now()
+	err := h.volume.Apply(h.index, update)
+	h.metrics.applies.Record(context.Background(), since(start), outcome(err))
+	return err
 }
 func (h sourceHandler) Fail(st *rpcstatus.Status) { h.volume.Fail(h.index, st) }
 func (h sourceHandler) Applied() string           { return h.volume.Applied(h.index) }

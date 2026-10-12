@@ -55,6 +55,10 @@ kubectl create namespace chandler-system --dry-run=client -o yaml | kubectl appl
 kubectl delete configmap chandler-e2e-config -n chandler-system --ignore-not-found
 kubectl create configmap chandler-e2e-config -n chandler-system
 
+# A collector for the components to push their metrics to. It prints what it
+# receives, which is what the telemetry test reads.
+kubectl apply -n chandler-system -f e2e/otel-collector.yaml
+
 "${helm}" upgrade --install chandler "${bin}/charts/chandler/chandler.tgz" \
   --namespace chandler-system \
   --values e2e/values.yaml \

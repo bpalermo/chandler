@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -410,6 +412,8 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 	}
 	refuse := func(code codes.Code, err error) {
 		log.Error("refused a bundle from the provider", "code", code.String(), "error", err)
+		h.metrics.refusedBundles.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("provider", u.name), attribute.String("code", code.String())))
 		u.out.Push(chandlerv1.ProviderRequest_builder{
 			Nack: chandlerv1.ProviderNack_builder{
 				WatchId:     proto.String(update.GetWatchId()),

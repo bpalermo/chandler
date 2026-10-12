@@ -81,8 +81,9 @@ spec:
             {{- range $s3.buckets }}
             - --bucket={{ . }}
             {{- end }}
-          {{- if or $s3.region $s3.env }}
+          {{- if or $s3.region $s3.env .Values.telemetry.otlpEndpoint }}
           env:
+            {{- include "chandler.telemetryEnv" . | nindent 12 }}
             {{- with $s3.region }}
             - name: AWS_REGION
               value: {{ . | quote }}

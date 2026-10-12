@@ -22,6 +22,7 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,6 +32,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -148,6 +151,7 @@ type Hub struct {
 	now         func() time.Time
 	cacheDir    string
 	store       *cas.Store
+	metrics     metrics
 	dial        func(identities []string) credentials.TransportCredentials
 	verify      func(token string) (Identity, error)
 
@@ -189,6 +193,7 @@ func New(cfg Config) (*Hub, error) {
 		negative:    make(map[string]negative),
 		namespaces:  make(map[string]map[string]int),
 	}
+	h.instrument()
 	if h.now == nil {
 		h.now = time.Now
 	}
@@ -674,6 +679,7 @@ func (h *Hub) ack(sess *session, msg *chandlerv1.Ack) {
 	if !ok || msg.GetNonce() != sub.nonce {
 		return // superseded: only the newest update counts
 	}
+	h.metrics.acks.Add(context.Background(), 1, providerAttr(sub.res.up.name))
 	sub.acked, sub.attempts = msg.GetVersion(), 0
 	sub.refused, sub.failing = "", ""
 	sub.nodeHas[sub.acked] = true
@@ -690,6 +696,8 @@ func (h *Hub) nack(sess *session, msg *chandlerv1.Nack) {
 	}
 	version := msg.GetVersion()
 	code := codes.Code(msg.GetErrorDetail().GetCode())
+	h.metrics.nacks.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("provider", sub.res.up.name), attribute.String("code", code.String())))
 	log := h.log.With("node", sess.node, "subscription", sub.id, "uri", sub.res.uri,
 		"version", version, "code", code.String(), "reason", msg.GetErrorDetail().GetMessage())
 
@@ -743,6 +751,9 @@ func (h *Hub) appReport(sess *session, msg *chandlerv1.AppReport) {
 	if !ok {
 		return
 	}
+	h.metrics.appReports.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("provider", sub.res.up.name),
+		attribute.String("state", strings.ToLower(strings.TrimPrefix(msg.GetState().String(), "STATE_")))))
 	switch msg.GetState() {
 	case chandlerv1.AppReport_STATE_LOADED:
 		sub.loaded = msg.GetVersion()

@@ -94,6 +94,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- include "chandler.telemetryEnv" . | nindent 12 }}
           ports:
             - name: grpc
               containerPort: {{ .Values.server.port }}

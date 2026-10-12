@@ -739,13 +739,24 @@ kubelet rewrites them all (the share never shrinks, so this only delays).
 
 ## 11. Observability
 
-- Server: subscriptions and watches by provider; cache keys, bytes and
-  variants per URI against quota; stale and orphaned keys; ACK/NACK counts by
-  version; rollouts in progress and their share; provider stream state; peer
-  sync age and keys pulled.
-- Driver: application reports by state, apply latency, NACKs by reason, node cache size, mounts served from
-  cache, time blocked in `NodePublishVolume`.
-- Kubernetes events on the pod for NACKs and stale or cached mounts.
+Every component pushes metrics over OTLP to an OpenTelemetry collector,
+configured by the standard environment variables
+(`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_METRIC_EXPORT_INTERVAL`,
+`OTEL_RESOURCE_ATTRIBUTES`). With no endpoint set nothing is exported and
+nothing is dialled. Each reports as its own `service.name`.
+
+| Component | Metrics (`chandler.` prefix) |
+|---|---|
+| Server | `server.subscriptions`, `server.watches`, `server.provider.connected`, `server.cache.keys`, `server.cache.bytes`, `server.cache.orphaned_keys`, `server.rollouts`, all per provider; `server.acks`; `server.nacks` and `server.provider.refused` by code; `server.app_reports` by state; `server.peer.adopted` |
+| Driver | `csi.volumes`, `csi.server.connected`, `csi.publish.duration` and `csi.apply.duration` by outcome, `csi.mounts_from_cache`, `csi.app_reports` by state |
+| Providers | `provider.watches`, `provider.updates` by kind, `provider.failures` by code |
+
+Logs are structured JSON on standard error.
+
+Not built: Kubernetes events on the pod for NACKs and for stale or cached
+mounts (a failed mount already produces kubelet's own event, with the reason);
+keys and variants against quota as separate metrics; node cache size; peer
+sync age; traces.
 
 ## 12. Open questions
 
@@ -778,7 +789,7 @@ What exists today, against the design above.
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | Max connection age to rebalance driver streams |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation; peers authorised by identity per service; a chart-issued private authority by default, or your own Secrets. The pod's identity verified offline from its service account token | SPIFFE Workload API as a certificate source, authorisation of URIs (open question 3) |
-| Observability | Structured logs | Metrics and events |
+| Observability | Metrics pushed over OTLP from every component (section 11), structured logs | Events on pods, traces, and the metrics section 11 lists as missing |
 
 The server's cache survives a rollout because each new replica copies it from
 the ready ones before it takes traffic. If every replica is lost at once, the

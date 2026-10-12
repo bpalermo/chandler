@@ -342,6 +342,7 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 		e.lastReferenced = referenced
 	}
 	h.entries[key] = e
+	h.metrics.adopted.Add(ctx, 1, providerAttr(key.provider))
 	for _, a := range ke.GetAliases() {
 		id := resourceID(a.GetUri(), a.GetAttributes())
 		h.aliases[id] = alias{Provider: key.provider, CacheKey: key.cacheKey, URI: a.GetUri(), Attributes: a.GetAttributes()}

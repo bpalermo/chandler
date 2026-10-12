@@ -86,6 +86,66 @@ providers:
     resources: {}
     podAnnotations: {}
 
+  # The S3 provider serves objects from S3 buckets: <name>://<bucket>/<key> is
+  # one object, <name>://<bucket>/<prefix>/ every object below a prefix.
+  #
+  # It is a reference implementation. It only reads, so whoever writes to the
+  # bucket is responsible for the validity of what is there.
+  s3:
+    enabled: false
+
+    image:
+      repository: "{@//providers/s3:image_push.repository}"
+      tag: ""
+      digest: "{@//providers/s3:image_push.digest}"
+      pullPolicy: IfNotPresent
+
+    # The scheme pods use for this provider's URIs. Two buckets with different
+    # credentials are two releases of the provider under two names.
+    name: s3
+
+    # The buckets URIs may name. Empty allows any bucket the credentials can
+    # read, which lets every pod read all of them; list the buckets.
+    buckets: []
+
+    # The AWS region. Required unless the environment provides one.
+    region: ""
+
+    # For an S3-compatible store: its endpoint, and whether buckets are
+    # addressed as <endpoint>/<bucket> rather than <bucket>.<endpoint>.
+    endpointUrl: ""
+    pathStyle: false
+
+    # How often watched objects are checked for change.
+    pollInterval: 30s
+
+    port: 9100
+
+    # Credentials come from the AWS SDK's default chain. With IAM roles for
+    # service accounts, annotate the service account with the role:
+    #   serviceAccount:
+    #     annotations:
+    #       eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/chandler-s3
+    serviceAccount:
+      create: true
+      # Defaults to <release name>-provider-s3.
+      name: ""
+      annotations: {}
+
+    # Extra environment variables, e.g. static credentials from a Secret:
+    #   env:
+    #     - name: AWS_ACCESS_KEY_ID
+    #       valueFrom: {secretKeyRef: {name: s3-credentials, key: access-key-id}}
+    env: []
+
+    # Extra containers for the provider's pod.
+    extraContainers: []
+
+    nodeSelector: {}
+    tolerations: []
+    resources: {}
+    podAnnotations: {}
+
 # The CSI node driver, one pod per node.
 csi:
   image:

@@ -494,12 +494,14 @@ its store and validate there.
 | Aspect | Behaviour |
 |---|---|
 | URI | `s3://<bucket>/<key>` for one object; `s3://<bucket>/<prefix>/` for a directory bundle. Any query parameter is rejected. |
+| Buckets | An allow-list. Without one the provider serves any bucket its credentials can read, to any pod. |
 | `cache_key` | `<bucket>/<key-or-prefix>` |
 | `vary_on` | empty |
 | `revision` | Object: version id if the bucket is versioned, else ETag. Prefix: hash of the sorted `(key, ETag)` list. |
-| Change detection | Jittered poll (default 30s) using `HeadObject` / `ListObjectsV2` and conditional `GetObject`; optional S3 event notifications through SQS to trigger an immediate check. |
-| Consistent prefix read | List, then `GetObject` each key with `If-Match` on the listed ETag; any mismatch restarts the read, so a bundle is never a mix of two uploads. |
-| `CacheControl` | From the object's `Cache-Control` metadata, else provider defaults. |
+| Change detection | Jittered poll (default 30s) using `HeadObject` / `ListObjectsV2` and conditional `GetObject`; the content is read only when the revision changed. Optional S3 event notifications through SQS to trigger an immediate check (not built). |
+| Consistent prefix read | List, then `GetObject` each key with `If-Match` on the listed ETag; any mismatch or missing key restarts the read, so a bundle is never a mix of two uploads. Zero-byte "folder" keys are skipped. |
+| `CacheControl` | `max-age`, `stale-if-error` and `no-store` from a single object's `Cache-Control` header, else provider defaults. A prefix has none of its own. |
+| File modes | Not carried: S3 has none, so files get the default `0444`. |
 | Deletion | `Deleted` once the object or the whole prefix is gone. |
 
 The provider name is the scheme, so two buckets with different credentials are
@@ -745,7 +747,7 @@ What exists today, against the design above.
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for the version a driver already wrote, full resync on reconnect | Resend after 60s without an answer, max connection age, `AppReport` |
 | Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart | Node cache (`blobs/`, `index.db`), `failurePolicy: UseCached` (parsed, behaves as `Fail`), `no_store` tmpfs, application acknowledgement |
 | Server | One watch per canonical URI shared by its subscriptions, envelope checks, provider reconnect with `known_revision`, serving the held version through a provider outage | Persistent cache and its quotas, aliases and `vary_on`, freshness, negative caching, peer sync, rollouts, authorisation |
-| Providers | File provider | S3 provider |
+| Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
 | Security | None: connections are plaintext and unauthenticated, and any pod may read any URI | Everything in section 9 |
 | Observability | Structured logs | Metrics and events |
 

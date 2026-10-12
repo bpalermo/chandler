@@ -55,32 +55,17 @@ kubectl create namespace chandler-system --dry-run=client -o yaml | kubectl appl
 kubectl delete configmap chandler-e2e-config -n chandler-system --ignore-not-found
 kubectl create configmap chandler-e2e-config -n chandler-system
 
-# Each image is the one just loaded: by tag, never pulled, with the digest the
-# chart pins cleared (that digest exists in no registry until it is published).
-local_image=()
-for pair in csi=chandler-csi server=chandler-server providers.file=chandler-provider-file; do
-  local_image+=(
-    --set "${pair%%=*}.image.repository=localhost/${pair#*=}"
-    --set "${pair%%=*}.image.tag=e2e"
-    --set "${pair%%=*}.image.pullPolicy=Never"
-    --set "${pair%%=*}.image.digest="
-  )
-done
-
 "${helm}" upgrade --install chandler "${bin}/charts/chandler/chandler.tgz" \
   --namespace chandler-system \
-  "${local_image[@]}" \
-  --set providers.file.enabled=true \
-  --set providers.file.source.configMap.name=chandler-e2e-config \
-  --set providers.file.pollInterval=500ms \
-  --wait --timeout 150s
-workloads=(daemonset/chandler-csi deployment/chandler-server deployment/chandler-provider-file)
+  --values e2e/values.yaml \
+  --wait --timeout 300s
+workloads=(daemonset/chandler-csi deployment/chandler-server deployment/chandler-provider-file deployment/chandler-provider-s3)
 for workload in "${workloads[@]}"; do
   kubectl rollout restart "${workload}" -n chandler-system
 done
 # The suite checks the driver's rollout itself too.
 for workload in "${workloads[@]}"; do
-  kubectl rollout status "${workload}" -n chandler-system --timeout=150s
+  kubectl rollout status "${workload}" -n chandler-system --timeout=300s
 done
 
 bazel test "$@" --config=e2e //e2e/...

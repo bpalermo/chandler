@@ -1,0 +1,58 @@
+# How e2e/run.sh installs the chart in the kind cluster.
+#
+# Every image is the one run.sh just loaded into the node: by tag, never
+# pulled, with the digest the chart pins cleared (that digest exists in no
+# registry until it is published).
+csi:
+  image: &local
+    repository: localhost/chandler-csi
+    tag: e2e
+    digest: ""
+    pullPolicy: Never
+server:
+  image:
+    <<: *local
+    repository: localhost/chandler-server
+providers:
+  # Serves the ConfigMap run.sh creates and the tests add keys to.
+  file:
+    enabled: true
+    image:
+      <<: *local
+      repository: localhost/chandler-provider-file
+    source:
+      configMap:
+        name: chandler-e2e-config
+    pollInterval: 500ms
+
+  # Serves a bucket of the LocalStack that runs beside it, so the S3 provider
+  # is exercised against an S3 API without anything outside the cluster.
+  s3:
+    enabled: true
+    image:
+      <<: *local
+      repository: localhost/chandler-provider-s3
+    buckets:
+      - chandler-e2e
+    region: us-east-1
+    endpointUrl: http://localhost:4566
+    pathStyle: true
+    pollInterval: 1s
+    env:
+      # LocalStack accepts any credentials; the SDK insists on having some.
+      - name: AWS_ACCESS_KEY_ID
+        value: test
+      - name: AWS_SECRET_ACCESS_KEY
+        value: test
+    extraContainers:
+      - name: localstack
+        # The archived community S3 image: S3 only, and no account needed.
+        image: docker.io/localstack/localstack:s3-community-archive@sha256:b14111811a1071ff8e05ea2d89fac68dc3aa115bcb0b053f5502a1dfffba4ff8
+        ports:
+          - name: s3
+            containerPort: 4566
+        readinessProbe:
+          httpGet:
+            path: /_localstack/health
+            port: 4566
+          periodSeconds: 2

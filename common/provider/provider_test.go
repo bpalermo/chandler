@@ -2,11 +2,11 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,9 +17,69 @@ import (
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/uri"
 )
 
 const wait = 10 * time.Second
+
+// memory is an Origin held in a map: every path is a one-file resource whose
+// revision is a counter, so a test can tell a refetch from a change.
+type memory struct {
+	mu      sync.Mutex
+	content map[string]string
+	serial  map[string]int
+}
+
+func newMemory() *memory {
+	return &memory{content: map[string]string{}, serial: map[string]int{}}
+}
+
+func (m *memory) put(path, content string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.content[path] = content
+	m.serial[path]++
+}
+
+func (m *memory) remove(path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.content, path)
+}
+
+func (m *memory) Resolve(u uri.URI) (Resource, error) {
+	if u.Authority() != "" || len(u.Query()) != 0 {
+		return nil, fmt.Errorf("%w: %s", ErrInvalid, u)
+	}
+	return memoryResource{origin: m, path: u.Path()}, nil
+}
+
+type memoryResource struct {
+	origin *memory
+	path   string
+}
+
+func (r memoryResource) CacheKey() string { return r.path }
+
+func (r memoryResource) Fetch(_ context.Context, known string, limits bundle.Limits) (State, error) {
+	r.origin.mu.Lock()
+	defer r.origin.mu.Unlock()
+	content, ok := r.origin.content[r.path]
+	if !ok {
+		return State{}, fmt.Errorf("%w: %s", ErrNotFound, r.path)
+	}
+	if uint64(len(content)) > limits.MaxBytes {
+		return State{}, fmt.Errorf("%w: %s", bundle.ErrTooLarge, r.path)
+	}
+	revision := fmt.Sprintf("r%d", r.origin.serial[r.path])
+	if revision == known {
+		return State{Revision: revision}, nil
+	}
+	b := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
+		chandlerv1.File_builder{Path: proto.String("f"), Content: []byte(content)}.Build(),
+	}}.Build()
+	return State{Revision: revision, Bundle: b}, nil
+}
 
 type watcher struct {
 	t      *testing.T
@@ -27,9 +87,9 @@ type watcher struct {
 	in     chan *chandlerv1.ProviderResponse
 }
 
-// start serves root as provider "file" and opens a stream to it with the
+// start serves origin as provider "file" and opens a stream to it with the
 // given size limit.
-func start(t *testing.T, root string, maxBytes uint64) *watcher {
+func start(t *testing.T, origin Origin, maxBytes uint64) *watcher {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -38,7 +98,7 @@ func start(t *testing.T, root string, maxBytes uint64) *watcher {
 	server := grpc.NewServer()
 	chandlerv1.RegisterConfigProviderServer(server, &Server{
 		Name:         "file",
-		Root:         root,
+		Origin:       origin,
 		PollInterval: 10 * time.Millisecond,
 		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -131,51 +191,34 @@ func (w *watcher) quiet() {
 	}
 }
 
-func put(t *testing.T, root, rel, content string) {
-	t.Helper()
-	p := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Written beside and renamed, as any writer that cares about readers does.
-	if err := os.WriteFile(p+".tmp", []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(p+".tmp", p); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestWatchFollowsAFile(t *testing.T) {
-	root := t.TempDir()
-	put(t, root, "app.yaml", "v1")
-	w := start(t, root, 0)
+	origin := newMemory()
+	origin.put("/app.yaml", "v1")
+	w := start(t, origin, 0)
 
 	w.watch("1", "file:///app.yaml", "")
 	first := w.update("1")
 	if !first.HasBundle() || string(first.GetBundle().GetFiles()[0].GetContent()) != "v1" {
 		t.Fatalf("first update = %v", first)
 	}
-	if first.GetCacheKey() != "/app.yaml" || first.GetRevision() != bundle.Version(first.GetBundle()) || first.GetNonce() == "" {
+	if first.GetCacheKey() != "/app.yaml" || first.GetRevision() != "r1" || first.GetNonce() == "" {
 		t.Errorf("key %q revision %q nonce %q", first.GetCacheKey(), first.GetRevision(), first.GetNonce())
 	}
 	w.quiet() // unchanged: nothing more
 
-	put(t, root, "app.yaml", "v2")
+	origin.put("/app.yaml", "v2")
 	second := w.update("1")
 	if string(second.GetBundle().GetFiles()[0].GetContent()) != "v2" || second.GetNonce() == first.GetNonce() {
 		t.Errorf("second update = %v", second)
 	}
 
 	// Gone: reported once, and the content returns when the file does.
-	if err := os.Remove(filepath.Join(root, "app.yaml")); err != nil {
-		t.Fatal(err)
-	}
+	origin.remove("/app.yaml")
 	if deleted := w.update("1"); !deleted.HasDeleted() {
 		t.Errorf("after removal got %v, want Deleted", deleted)
 	}
 	w.quiet()
-	put(t, root, "app.yaml", "v3")
+	origin.put("/app.yaml", "v3")
 	if back := w.update("1"); string(back.GetBundle().GetFiles()[0].GetContent()) != "v3" {
 		t.Errorf("after the file returned got %v", back)
 	}
@@ -185,14 +228,14 @@ func TestWatchFollowsAFile(t *testing.T) {
 		Unwatch: chandlerv1.Unwatch_builder{WatchId: proto.String("1")}.Build(),
 	}.Build())
 	time.Sleep(50 * time.Millisecond)
-	put(t, root, "app.yaml", "v4")
+	origin.put("/app.yaml", "v4")
 	w.quiet()
 }
 
 func TestWatchWithKnownRevision(t *testing.T) {
-	root := t.TempDir()
-	put(t, root, "flags/a.json", "a")
-	w := start(t, root, 0)
+	origin := newMemory()
+	origin.put("/flags/", "a")
+	w := start(t, origin, 0)
 
 	w.watch("1", "file:///flags/", "")
 	revision := w.update("1").GetRevision()
@@ -203,22 +246,22 @@ func TestWatchWithKnownRevision(t *testing.T) {
 		t.Errorf("got %v, want NotModified at %s", again, revision)
 	}
 	// It holds an older one: the bundle follows.
-	w.watch("3", "file:///flags/", "sha256:stale")
+	w.watch("3", "file:///flags/", "r0")
 	if fresh := w.update("3"); !fresh.HasBundle() {
 		t.Errorf("got %v, want the bundle", fresh)
 	}
 }
 
 func TestWatchErrors(t *testing.T) {
-	root := t.TempDir()
-	put(t, root, "big.bin", "0123456789")
-	w := start(t, root, 4)
+	origin := newMemory()
+	origin.put("/big.bin", "0123456789")
+	w := start(t, origin, 4)
 
 	// Missing: reported once, and delivered when it appears.
 	w.watch("1", "file:///later.yaml", "")
 	w.failure("1", codes.NotFound)
 	w.quiet()
-	put(t, root, "later.yaml", "ok")
+	origin.put("/later.yaml", "ok")
 	if u := w.update("1"); !u.HasBundle() {
 		t.Errorf("got %v, want the bundle once the file exists", u)
 	}
@@ -233,8 +276,7 @@ func TestWatchErrors(t *testing.T) {
 		"3": "file:///later.yaml?version=2",
 		"4": "file://host/later.yaml",
 		"5": "s3:///later.yaml",
-		"6": "file:///..data/later.yaml",
-		"7": "not a uri",
+		"6": "not a uri",
 	} {
 		w.watch(id, uri, "")
 		w.failure(id, codes.InvalidArgument)

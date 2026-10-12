@@ -46,6 +46,9 @@ spec:
             {{- if .Values.providers.file.enabled }}
             - --provider={{ .Values.providers.file.name }}={{ include "chandler.name" . }}-provider-file.{{ .Release.Namespace }}.svc:{{ .Values.providers.file.port }}
             {{- end }}
+            {{- if .Values.providers.s3.enabled }}
+            - --provider={{ .Values.providers.s3.name }}={{ include "chandler.name" . }}-provider-s3.{{ .Release.Namespace }}.svc:{{ .Values.providers.s3.port }}
+            {{- end }}
             {{- range .Values.server.providers }}
             - --provider={{ required "server.providers[].name is required" .name }}={{ required "server.providers[].target is required" .target }}
             {{- end }}

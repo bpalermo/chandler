@@ -22,6 +22,7 @@ load("//bazel:registry.bzl", "chart_push_url", "chart_registry_url", "image_refe
 PINNED_COMPONENTS = [
     "csi",
     "provider-file",
+    "provider-s3",
     "server",
 ]
 
@@ -31,6 +32,7 @@ helm_chart(
     images = [
         "//csi:image_push",
         "//providers/file:image_push",
+        "//providers/s3:image_push",
         "//server:image_push",
     ],
     registry_url = chart_push_url(),

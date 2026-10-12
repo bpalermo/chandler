@@ -24,8 +24,9 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	"github.com/bpalermo/chandler/common/provider"
 	"github.com/bpalermo/chandler/common/version"
-	"github.com/bpalermo/chandler/providers/file/internal/provider"
+	"github.com/bpalermo/chandler/providers/file/internal/source"
 )
 
 func main() {
@@ -72,7 +73,7 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 	server := grpc.NewServer()
 	chandlerv1.RegisterConfigProviderServer(server, &provider.Server{
 		Name:         name,
-		Root:         root,
+		Origin:       source.Origin{Root: root},
 		PollInterval: pollInterval,
 		Log:          log,
 	})

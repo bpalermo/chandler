@@ -37,7 +37,10 @@ Non-goals
   to deliver a bundle safely: its digest, its size and file count, and that
   its paths stay inside the volume. Whether the content is a good config is
   the provider's concern before it emits and the application's after.
-
+- How configuration gets into a provider. Authoring, uploading and
+  validating config happen on the provider's side of the `ConfigProvider`
+  interface. Chandler defines how config is delivered, not how it is
+  published; each provider must offer its users a safe way to do that.
 - Large artifacts. A bundle is capped (default 1 MiB, hard cap 3 MiB) and sent
   in one gRPC message; there is no chunking.
 - Secrets management. Content can be marked `no_store`, but Chandler is not a
@@ -317,16 +320,31 @@ sequenceDiagram
   and the cache-key and quota rules. It never inspects the content.
   `ProviderNack` means the envelope was refused and the server keeps serving
   its last version.
-- **Validity is the provider's job.** A provider must not emit a revision it
-  has not validated by whatever means suit its source (schema check, signed
-  manifest, review gate at the origin). Anything it emits will be written to
-  pods as is.
+- **Validity is the provider's job.** Anything a provider emits is written to
+  pods as is, so a provider must only emit revisions it knows to be valid.
+  The expected way to guarantee that is to validate on upload: the provider
+  owns the path by which config enters its store (an upload API, a review
+  gate, a signing step) and refuses invalid config there, so that nothing
+  invalid is ever stored, let alone emitted. That path is entirely the
+  provider's; it is not part of Chandler and does not appear in these
+  protocols.
 - `Feedback` is the late, informational outcome of the rollout (completed,
   aborted, superseded), since an ACK cannot know that yet.
 - On reconnect the server re-watches everything with `known_revision`; the
   provider answers `NotModified` for what has not changed.
 
-### S3 provider
+### S3 provider (reference implementation)
+
+The S3 provider is a reference implementation of `ConfigProvider`, not the
+intended production provider and not the only one. It exists to show the
+protocol end to end with the simplest possible origin, and to be the thing
+other providers are modelled on.
+
+It is read-only and has no upload path of its own: it emits whatever is in the
+bucket. It therefore relies on whoever writes to the bucket to have validated
+the content, which is a weaker guarantee than the contract above asks of a
+real provider. A production provider would put its own upload API in front of
+its store and validate there.
 
 | Aspect | Behaviour |
 |---|---|

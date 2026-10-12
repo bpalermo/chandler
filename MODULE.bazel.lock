@@ -187,6 +187,8 @@
     "https://bcr.bazel.build/modules/rules_helm/0.34.0/source.json": "3901fa485f33b1815dda7a2af94d4de8cf45650dd0827d0fd4bc550daa41418a",
     "https://bcr.bazel.build/modules/rules_img/0.3.23/MODULE.bazel": "8462cb37e22fa10c739d73fd28cb210b54c71e63aa484435f99b793f999a1eb5",
     "https://bcr.bazel.build/modules/rules_img/0.3.23/source.json": "a7265ee7a30fd7e9534d5980a2cad0dc20c29d4c3c0d2c4b237bf6317ce7cfde",
+    "https://bcr.bazel.build/modules/rules_img_signer_cosign/0.0.1/MODULE.bazel": "525ad72b4b1919c77d0de943148dde90860e2e25d2dc2c49be036d68a9c58cc9",
+    "https://bcr.bazel.build/modules/rules_img_signer_cosign/0.0.1/source.json": "d95dd70db8b98f53898bf733f52b54004cf26a63e22cdacdcba1f9507e1308dc",
     "https://bcr.bazel.build/modules/rules_java/4.0.0/MODULE.bazel": "5a78a7ae82cd1a33cef56dc578c7d2a46ed0dca12643ee45edbb8417899e6f74",
     "https://bcr.bazel.build/modules/rules_java/5.3.5/MODULE.bazel": "a4ec4f2db570171e3e5eb753276ee4b389bae16b96207e9d3230895c99644b86",
     "https://bcr.bazel.build/modules/rules_java/6.3.0/MODULE.bazel": "a97c7678c19f236a956ad260d59c86e10a463badb7eb2eda787490f4c969b963",
@@ -567,7 +569,7 @@
     },
     "@@rules_rust+//crate_universe:extension.bzl%crate": {
       "general": {
-        "bzlTransitiveDigest": "PHJGBMMtasgQsPfmkz0pWtVZl3Od4Efb8KuqG3h+MPU=",
+        "bzlTransitiveDigest": "2O8lGodX+nUrAN0oD2VmkCydm00OKDCmKuD6Q5g3CgU=",
         "usagesDigest": "x0vrCWeHpY81Qjj7vEW+k03YwVf1a+fL0Y9237dy0E4=",
         "recordedInputs": [
           "ENV:CARGO_BAZEL_DEBUG \\0",
@@ -842,7 +844,7 @@
     },
     "@@rules_rust+//crate_universe/private:internal_extensions.bzl%cu_nr": {
       "general": {
-        "bzlTransitiveDigest": "ngk2nv2D2+tUJf5s1Fs2bzH9HPOt11zmZsi81TUhaaQ=",
+        "bzlTransitiveDigest": "H+6L8ZGQAv7GxOx1+MYnajuBX6Lrjaz7xKMgYrPt5R0=",
         "usagesDigest": "tG3p3Nb5XxC7vWY/bcKdb//g0HoAxpxxH3F5/jBVlk4=",
         "recordedInputs": [
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",

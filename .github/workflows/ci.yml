@@ -38,9 +38,29 @@ jobs:
           repository-cache: true
           cache-save: ${{ github.ref == 'refs/heads/main' }}
 
+      # The registry is one setting, bazel/registry.bzl; a literal anywhere
+      # else would survive a move and keep pointing at the old registry.
+      - name: The registry is spelled out in one place
+        run: scripts/check-registry-config.sh
+
       # --config=ci refuses lockfile drift.
       - name: bazel build //...
         run: bazel build //... --config=ci
+
+      # publish.yml runs only on main, so everything it runs is built here, on
+      # the pull request, first: the image push targets, the chart and its
+      # push, and the pinned cosign and verifier. `//...` already includes
+      # them; naming them keeps a rename or a removal from passing here and
+      # failing on the first merge. Keep this list equal to the one in
+      # publish.yml. Nothing is pushed or signed.
+      - name: the publish targets build
+        run: |
+          bazel build --config=ci \
+            //server:image_push //server:image_index \
+            //csi:image_push //csi:image_index \
+            //providers/s3:image_push //providers/s3:image_index \
+            //charts/chandler:chandler //charts/chandler:chandler.push_registry \
+            //bazel/cosign //bazel/cosign:verify_image
 
       - name: bazel test //...
         run: bazel test //... --config=ci

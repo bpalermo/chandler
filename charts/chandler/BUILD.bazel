@@ -1,10 +1,26 @@
 load("@rules_helm//helm:defs.bzl", "helm_chart", "helm_lint_test", "helm_template_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel:registry.bzl", "chart_push_url", "chart_registry_url", "image_reference")
 
 # The chart package, built with the pinned helm toolchain:
 # bazel-bin/charts/chandler/chandler.tgz.
+#
+# `images` pins the digest of //csi:image_push into values.yaml at package time
+# ({@//csi:image_push.digest}), so the chart and the image it names cannot
+# drift. It also derives the default repository from the push target
+# ({@//csi:image_push.repository}), which takes it from bazel/registry.bzl.
+#
+# Published by :chandler.push_registry: plain `helm push` of the package to
+# chart_push_url() lands it in chart_registry_url("chandler"), since helm
+# appends the chart's `name:` and the chart is named after its repository. Run
+# it with HELM_REGISTRY_USERNAME and HELM_REGISTRY_PASSWORD set (rules_helm
+# logs in with them), after the image it pins has been pushed and signed. Never
+# use :chandler.push, which pushes the images too.
 helm_chart(
     name = "chandler",
     chart = "Chart.yaml",
+    images = ["//csi:image_push"],
+    registry_url = chart_push_url(),
     templates = glob(["templates/**"]),
     values = "values.yaml",
     visibility = ["//visibility:public"],
@@ -36,4 +52,21 @@ helm_lint_test(
     size = "small",
     chart = ":chandler",
     values = ["test/overrides.yaml"],
+)
+
+# The chart packs the pin the way the publish workflow relies on: the CSI
+# repository is exactly bazel/registry.bzl's, the digest is a sha256 and the
+# version is the 0.0.0 pre-release line (stamped with the commit, or with
+# rules_helm's placeholder in a --nostamp build).
+sh_test(
+    name = "pin_test",
+    size = "small",
+    srcs = ["pin_test.sh"],
+    data = [":chandler"],
+    env = {
+        "CHART_RLOCATIONPATH": "$(rlocationpath :chandler)",
+        "EXPECT_CSI_REPOSITORY": image_reference("csi"),
+        "EXPECT_CHART_REPOSITORY": chart_registry_url("chandler"),
+    },
+    deps = ["@bazel_tools//tools/bash/runfiles"],
 )

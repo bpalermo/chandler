@@ -1,5 +1,19 @@
 common --enable_platform_specific_config
 build --incompatible_strict_action_env
+
+# Image tags and the chart's version carry the git commit; this is where it
+# comes from. The script never fails, so it cannot break a build.
+build --workspace_status_command=bazel/workspace_status.sh
+
+# Stamp by default. rules_helm has no per-target equivalent of the image rules'
+# stamp = "force": helm_package always defers to this flag, so without it a
+# chart built outside a release would carry the literal placeholders
+# "0.0.0-STABLE-GIT-COMMIT" and "STABLE-GIT-VERSION" as its versions. Only the
+# image push's tags and the chart consume the workspace status, so this re-runs
+# a few cheap actions per commit and nothing else (no binary embeds it). A
+# `--nostamp` build is still a valid chart; the publish workflow refuses to push
+# one.
+build --stamp
 test --test_output=errors
 # The end-to-end suite needs a kind cluster, so it is tagged e2e and excluded
 # from `bazel test //...`; `--config=e2e` selects it instead, forwards the

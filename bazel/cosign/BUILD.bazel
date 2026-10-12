@@ -1,0 +1,53 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel:registry.bzl", "SIGNATURE_LAYOUT")
+
+# The cosign CLI -- only the CLI. @rules_img_signer_cosign//cosign is the
+# official prebuilt release binary, selected per platform, with its sha256
+# pinned in that module's lock (v3.1.2 at 0.0.1). Wrapped here so CI and a
+# workstation run the same checksummed cosign: the publish workflow signs and
+# verifies with it, and `bazel run //bazel/cosign -- verify ...` is how anyone
+# checks a published digest. Bumping cosign is bumping that bazel_dep.
+_COSIGN = "@rules_img_signer_cosign//cosign"
+
+sh_binary(
+    name = "cosign",
+    srcs = ["cosign.sh"],
+    data = [_COSIGN],
+    env = {"COSIGN_RLOCATIONPATH": "$(rlocationpath %s)" % _COSIGN},
+    visibility = ["//visibility:public"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)
+
+# Verifies a published digest: for a multi-arch image the index and every child
+# manifest, with --single one manifest (the chart); and that each signature is
+# published in SIGNATURE_LAYOUT of //bazel:registry.bzl.
+# `bazel run //bazel/cosign:verify_image -- <ref>@sha256:...`
+sh_binary(
+    name = "verify_image",
+    srcs = ["verify_image.sh"],
+    data = [
+        _COSIGN,
+        "//scripts:registry-lib.sh",
+        "//scripts:verify-image-signatures.sh",
+    ],
+    env = {
+        "COSIGN_RLOCATIONPATH": "$(rlocationpath %s)" % _COSIGN,
+        # The script cannot parse registry.bzl from runfiles; Bazel hands it
+        # the setting instead.
+        "EXPECT_SIGNATURE_LAYOUT": SIGNATURE_LAYOUT,
+        "VERIFY_SCRIPT_RLOCATIONPATH": "$(rlocationpath //scripts:verify-image-signatures.sh)",
+    },
+    visibility = ["//visibility:public"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)
+
+# Fails until EXPECTED in version_test.sh moves with a bump of the bazel_dep.
+sh_test(
+    name = "version_test",
+    size = "small",
+    srcs = ["version_test.sh"],
+    data = [_COSIGN],
+    env = {"COSIGN_RLOCATIONPATH": "$(rlocationpath %s)" % _COSIGN},
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)

@@ -54,6 +54,7 @@ helm="$(bazel info "$@" execution_root)/${helm}"
   --set csi.image.repository=localhost/chandler-csi \
   --set csi.image.tag=e2e \
   --set csi.image.pullPolicy=Never \
+  --set csi.image.digest= \
   --wait --timeout 150s
 kubectl rollout restart daemonset/chandler-csi -n chandler-system
 # The suite checks the rollout itself too.

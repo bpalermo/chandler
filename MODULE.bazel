@@ -9,6 +9,23 @@ bazel_dep(name = "protobuf", version = "36.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_img", version = "0.3.23")
 bazel_dep(name = "rules_helm", version = "0.34.0")
+
+# Named by //bazel/image for string_flag, and already in the graph through
+# rules_img and rules_go; declared so a bump of those cannot drop it.
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+
+# sh_binary and sh_test for the tool wrappers in //bazel/cosign. Already in the
+# graph (0.6.1) through rules_go and rules_helm.
+bazel_dep(name = "rules_shell", version = "0.6.1")
+
+# The cosign CLI -- only the CLI. @rules_img_signer_cosign//cosign is the
+# official prebuilt release binary, selected per platform, with its sha256
+# pinned in the module's own lock (v3.1.2 at 0.0.1). //bazel/cosign wraps it so
+# the publish workflow and a workstation run the same checksummed cosign;
+# bumping cosign is bumping this bazel_dep (and EXPECTED in
+# //bazel/cosign:version_test). The module's signer plugin for `img deploy` is
+# not used: publishing keeps image_push and a separate `cosign sign`.
+bazel_dep(name = "rules_img_signer_cosign", version = "0.0.1")
 bazel_dep(name = "googleapis", version = "0.0.0-20260929-28769825")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")

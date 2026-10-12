@@ -8,8 +8,12 @@ description: |
   This chart installs the CSI node driver. The config server and the providers
   are added to it as they are implemented.
 type: application
-version: 0.0.0
-appVersion: "dev"
+# Stamped at package time from the workspace status (bazel/workspace_status.sh):
+# the commit that built the chart. The project does not deliver configuration
+# yet, so this is 0.0.0 until it moves to 0.1.0, at which point the prefix
+# below changes and nothing else.
+version: "0.0.0-{STABLE_GIT_COMMIT}"
+appVersion: "{STABLE_GIT_VERSION}"
 keywords:
   - configuration
   - csi

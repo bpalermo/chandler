@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//bazel:registry.bzl", "IMAGE_REGISTRY", "image_repository")
 load("//bazel/image:defs.bzl", "go_image")
 
 go_library(
@@ -27,4 +28,6 @@ go_image(
     binary = ":server",
     load_tag = "localhost/chandler-server:e2e",
     path = "/chandler-server",
+    registry = IMAGE_REGISTRY,
+    repository = image_repository("server"),
 )

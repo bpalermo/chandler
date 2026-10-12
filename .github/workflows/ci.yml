@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Third-party actions are pinned to commit SHAs, not tags; the version each SHA
+# corresponds to is in the comment beside it. Dependabot keeps them current.
+#
+# Caches: every job RESTORES the Bazel caches, but only runs on main SAVE them
+# (cache-save below), so only reviewed code populates a cache that a later
+# trusted build consumes. Gated on the ref rather than the event, because
+# workflow_dispatch can target any branch.
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # No version is pinned here: bazelisk reads .bazelversion, so the
+      # checkout is the single source of the Bazel version.
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+
+      # --config=ci refuses lockfile drift.
+      - name: bazel build //...
+        run: bazel build //... --config=ci
+
+      - name: bazel test //...
+        run: bazel test //... --config=ci
+
+      # Gazelle generates the BUILD files, so a hand-edited or stale one is a
+      # real failure mode: the build keeps working against the old graph until
+      # someone regenerates and the diff appears in an unrelated PR.
+      - name: BUILD files are up to date
+        run: |
+          bazel run --config=ci //:gazelle
+          if ! git diff --exit-code -- 'BUILD.bazel' '**/BUILD.bazel'; then
+            echo "::error::BUILD files are stale; run 'bazel run //:gazelle'" >&2
+            exit 1
+          fi
+
+  # The single check the main ruleset requires, and the only reason this job
+  # exists.
+  #
+  # A required status check is matched by check-run name, so requiring the
+  # jobs themselves ties the ruleset to their names: rename or split one and
+  # the required check can never report again, which blocks every pull request
+  # instead of failing it. Requiring one aggregate leaves the jobs free to
+  # change.
+  #
+  # if: always() so it runs even when a job fails; a skipped job reports
+  # nothing, and a required check that never reports blocks the pull request.
+  ci:
+    name: ci
+    needs: [build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      # Reads the results rather than naming the jobs, so adding a job to
+      # `needs` above is enough to have it gate merges.
+      - name: every job this depends on must have succeeded
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "results: ${results}"
+          for result in ${results}; do
+            if [ "${result}" != "success" ]; then
+              echo "::error::a required job reported '${result}'" >&2
+              exit 1
+            fi
+          done

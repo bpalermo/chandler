@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package chandler.v1;
+
+import "chandler/v1/common.proto";
+import "google/rpc/status.proto";
+
+option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
+
+// ConfigDiscoveryService is spoken between the CSI node driver (client) and
+// the config server. One long-lived stream per node multiplexes every
+// subscription of every pod volume on that node.
+//
+// The ACK/NACK semantics follow Envoy's incremental xDS, with two deliberate
+// differences:
+//   * requests are a oneof instead of one overloaded message, so an ACK can
+//     never be confused with a subscription change;
+//   * a response carries exactly one subscription's update, so a NACK rejects
+//     one pod's one source and nothing else.
+service ConfigDiscoveryService {
+  rpc StreamConfigs(stream ConfigRequest) returns (stream ConfigResponse);
+}
+
+message ConfigRequest {
+  oneof request {
+    // Must be the first message on the stream.
+    NodeHello hello = 1;
+    Subscribe subscribe = 2;
+    Unsubscribe unsubscribe = 3;
+    Ack ack = 4;
+    Nack nack = 5;
+  }
+}
+
+message ConfigResponse {
+  oneof response {
+    // Always the first message on the stream.
+    ServerHello hello = 1;
+    ConfigUpdate update = 2;
+    SubscriptionError error = 3;
+  }
+}
+
+message NodeHello {
+  // Kubernetes node name.
+  string node_id = 1;
+  string cluster = 2;
+  string driver_version = 3;
+  // Low-cardinality node attributes usable as cache-key vary dimensions,
+  // e.g. region, zone.
+  map<string, string> attributes = 4;
+}
+
+message ServerHello {
+  string server_id = 1;
+  // Upper bound for one Bundle; the driver rejects larger subscriptions early.
+  uint64 max_bundle_bytes = 2;
+}
+
+// Workload identifies the pod behind a subscription. It is used for
+// authorisation, rollout placement and vary-attribute projection. It is
+// never part of a cache key as a whole.
+message Workload {
+  string namespace = 1;
+  string pod_name = 2;
+  string pod_uid = 3;
+  string service_account = 4;
+  // Projected service account token (audience: the config server) obtained
+  // through the CSIDriver tokenRequests mechanism. Proves the pod identity.
+  string service_account_token = 5;
+}
+
+message Subscribe {
+  // Chosen by the driver, unique per stream and stable across reconnects:
+  // "<pod-uid>/<volume-name>/<source-index>".
+  string subscription_id = 1;
+
+  // <provider-name>://... as written in the pod's volumeAttributes.
+  string uri = 2;
+
+  Workload workload = 3;
+
+  // Version currently materialised in the volume (the last known good one).
+  // Empty on first mount.
+  string applied_version = 4;
+
+  // Versions of this resource whose bytes are present in the node cache
+  // (at most 4). Lets the server answer with a payload-free update, the
+  // equivalent of an HTTP 304.
+  repeated string cached_versions = 5;
+}
+
+message Unsubscribe {
+  string subscription_id = 1;
+}
+
+// ConfigUpdate tells the driver which version a subscription must converge to.
+// Every Subscribe is answered by exactly one initial ConfigUpdate or
+// SubscriptionError; further ConfigUpdates follow whenever the target changes
+// (new version, rollout placement, rollback).
+message ConfigUpdate {
+  string subscription_id = 1;
+
+  // Unique per stream. Echoed in the Ack or Nack.
+  string nonce = 2;
+
+  // Content address of the bundle, "sha256:<hex>".
+  string version = 3;
+
+  // Provider-issued cache key the node cache must file this version under.
+  string cache_key = 4;
+
+  oneof payload {
+    Bundle bundle = 5;
+    // The version is one of Subscribe.cached_versions (or applied_version):
+    // materialise it from the node cache.
+    UseCached use_cached = 6;
+  }
+
+  CacheControl cache_control = 7;
+
+  // The server is serving from its cache because the provider is unavailable.
+  bool stale = 8;
+
+  Track track = 9;
+
+  // Name of the ConfigRollout that caused this update, if any.
+  string rollout = 10;
+}
+
+message UseCached {}
+
+// Ack confirms that the version was validated and atomically swapped into the
+// volume. It is now this subscription's last known good version.
+message Ack {
+  string subscription_id = 1;
+  string nonce = 2;
+  string version = 3;
+}
+
+// Nack reports that the version was rejected. The volume still serves
+// applied_version untouched. The server must not resend a NACKed version to
+// the same subscription, except after DATA_LOSS (node cache miss or corruption
+// on a UseCached update), where it resends the full bundle.
+message Nack {
+  string subscription_id = 1;
+  string nonce = 2;
+  string version = 3;
+  // Version still in effect after the rejection; empty if none.
+  string applied_version = 4;
+  google.rpc.Status error_detail = 5;
+}
+
+// SubscriptionError reports that the server cannot currently produce a target
+// version. The subscription stays open: a ConfigUpdate follows as soon as one
+// is available.
+//
+//   NOT_FOUND           the provider has no such resource
+//   PERMISSION_DENIED   the workload may not read this URI
+//   INVALID_ARGUMENT    malformed URI or parameters the provider rejects
+//   RESOURCE_EXHAUSTED  a cache or subscription quota would be exceeded
+//   UNAVAILABLE         provider down and nothing servable in cache
+message SubscriptionError {
+  string subscription_id = 1;
+  google.rpc.Status status = 2;
+}

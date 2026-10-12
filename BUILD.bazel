@@ -1,0 +1,8 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/bpalermo/chandler
+# gazelle:proto_strip_import_prefix /api
+# gazelle:resolve proto google/rpc/status.proto @googleapis//google/rpc:status_proto
+# gazelle:resolve proto go google/rpc/status.proto @org_golang_google_genproto_googleapis_rpc//status
+
+gazelle(name = "gazelle")

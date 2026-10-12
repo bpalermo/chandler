@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package chandler.v1;
+
+import "chandler/v1/common.proto";
+import "google/rpc/status.proto";
+
+option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
+
+// ConfigProvider is implemented by every configuration provider. The config
+// server is the client and dials one stream per registered provider; built-in
+// providers are served in-process through the same interface.
+//
+// The stream mirrors the driver-facing protocol: the server watches URIs, the
+// provider pushes revisions, and the server ACKs or NACKs each one.
+service ConfigProvider {
+  rpc StreamConfigs(stream ProviderRequest) returns (stream ProviderResponse);
+}
+
+message ProviderRequest {
+  oneof request {
+    // Must be the first message on the stream.
+    WatcherHello hello = 1;
+    Watch watch = 2;
+    Unwatch unwatch = 3;
+    ProviderAck ack = 4;
+    ProviderNack nack = 5;
+    Feedback feedback = 6;
+  }
+}
+
+message ProviderResponse {
+  oneof response {
+    // Always the first message on the stream.
+    ProviderHello hello = 1;
+    ResourceUpdate update = 2;
+    WatchError error = 3;
+  }
+}
+
+message WatcherHello {
+  string server_id = 1;
+  // Limits the server will enforce; a provider should not exceed them.
+  uint64 max_bundle_bytes = 2;
+  uint32 max_bundle_files = 3;
+}
+
+// ProviderHello declares the provider's cache-key contract up front, so the
+// server can bound cardinality before the first resource is ever served.
+message ProviderHello {
+  // Registered provider name, i.e. the URI scheme it serves.
+  string name = 1;
+
+  // The only subscriber attributes this provider's responses may depend on
+  // (the equivalent of HTTP Vary). Each must be on the server's allow-list of
+  // low-cardinality attributes (cluster, region, zone, namespace, ...).
+  // Pod-unique attributes are never allowed. Watches carry only these.
+  repeated string vary_on = 2;
+
+  // Defaults applied when a ResourceUpdate carries no CacheControl.
+  CacheControl default_cache_control = 3;
+}
+
+message Watch {
+  // Chosen by the server, unique per stream.
+  string watch_id = 1;
+
+  // Canonicalised URI (see docs/design.md, "URIs and cache keys").
+  string uri = 2;
+
+  // Values of the attributes listed in ProviderHello.vary_on, nothing else.
+  map<string, string> attributes = 3;
+
+  // Revision the server already holds for this watch, if any. The provider
+  // answers NotModified when it is still current (If-None-Match).
+  string known_revision = 4;
+}
+
+message Unwatch {
+  string watch_id = 1;
+}
+
+message ResourceUpdate {
+  string watch_id = 1;
+
+  // Unique per stream. Echoed in the ProviderAck or ProviderNack.
+  string nonce = 2;
+
+  // The provider's normalised identity for this resource: every Watch that
+  // resolves to the same content must return the same cache_key. Max 256
+  // bytes. The server namespaces it with the provider name.
+  string cache_key = 3;
+
+  // Opaque provider validator (ETag, object version id, commit sha, ...).
+  string revision = 4;
+
+  oneof payload {
+    Bundle bundle = 5;
+    NotModified not_modified = 6;
+    // The resource no longer exists at the origin.
+    Deleted deleted = 7;
+  }
+
+  CacheControl cache_control = 8;
+}
+
+message NotModified {}
+
+message Deleted {}
+
+// ProviderAck confirms the revision passed server validation and was stored
+// in the server cache. It says nothing about rollout; see Feedback.
+message ProviderAck {
+  string watch_id = 1;
+  string nonce = 2;
+  string revision = 3;
+}
+
+// ProviderNack reports that the server rejected the revision (oversized or
+// malformed bundle, cache-key or quota violation, failed validation). The
+// server keeps serving its last known good version. The provider must not
+// resend the same revision.
+message ProviderNack {
+  string watch_id = 1;
+  string nonce = 2;
+  string revision = 3;
+  google.rpc.Status error_detail = 4;
+}
+
+// Feedback reports, after the fact, how the rollout of an ACKed revision
+// ended. Purely informational: providers may surface it at the origin
+// (status object, commit status, ...) or ignore it.
+message Feedback {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_COMPLETED = 1;
+    OUTCOME_ABORTED = 2;
+    OUTCOME_SUPERSEDED = 3;
+  }
+
+  string cache_key = 1;
+  string revision = 2;
+  Outcome outcome = 3;
+  string detail = 4;
+}
+
+// WatchError reports that the provider cannot serve a watch. Codes as in
+// SubscriptionError (NOT_FOUND, PERMISSION_DENIED, INVALID_ARGUMENT,
+// UNAVAILABLE). The watch stays open unless the code is INVALID_ARGUMENT.
+message WatchError {
+  string watch_id = 1;
+  google.rpc.Status status = 2;
+}

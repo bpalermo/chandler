@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "csi_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/bpalermo/chandler/csi",
+    visibility = ["//visibility:private"],
+    deps = ["//common/version"],
+)
+
+go_binary(
+    name = "csi",
+    basename = "chandler-csi",
+    embed = [":csi_lib"],
+    visibility = ["//visibility:public"],
+)

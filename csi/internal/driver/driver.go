@@ -245,9 +245,11 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	known := d.published[volumeID]
 	d.mu.Unlock()
 	if known != nil && known.Meta().TargetPath == target {
-		// A subscription the server refused, as it does one made without a
-		// token after a driver restart, is made again with the new token.
-		if known.SetToken(token) && known.Refused() {
+		// A subscription the server refused for want of a token, as it does
+		// one made after a driver restart, is made again with the one kubelet
+		// has supplied since.
+		known.SetToken(token)
+		if known.NeedsToken() {
 			d.subscribe(known)
 		}
 		return &csi.NodePublishVolumeResponse{}, nil
@@ -529,7 +531,7 @@ func (h sourceHandler) Fail(st *rpcstatus.Status) { h.volume.Fail(h.index, st) }
 func (h sourceHandler) Applied() string           { return h.volume.Applied(h.index) }
 func (h sourceHandler) Cached() []string          { return h.volume.CachedVersions(h.index) }
 func (h sourceHandler) Loaded() string            { return h.volume.Loaded(h.index) }
-func (h sourceHandler) Token() string             { return h.volume.Token() }
+func (h sourceHandler) Token() string             { return h.volume.TokenForSubscribe() }
 
 func (d *Driver) volumePath(volumeID string) string {
 	return filepath.Join(d.stateDir, volumesDir, volumeID)

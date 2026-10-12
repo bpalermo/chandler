@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"syscall"
+	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
@@ -111,7 +112,16 @@ type Volume struct {
 	// token is the pod's service account token, as kubelet last supplied
 	// it. It is kept in memory only.
 	token string
+	// sentToken is the token the volume's subscriptions were last made with,
+	// and sentAt when.
+	sentToken string
+	sentAt    time.Time
 }
+
+// retryRefused is how often a subscription the server refused for want of a
+// valid token is made again with the same token. The refusal may have been
+// the server's doing: it could not fetch the cluster's signing keys just then.
+const retryRefused = 30 * time.Second
 
 // SetToken records the pod's service account token and reports whether it
 // changed.
@@ -123,21 +133,32 @@ func (v *Volume) SetToken(token string) bool {
 	return changed
 }
 
-// Token returns the pod's service account token, "" when kubelet has not
-// supplied one since the driver started.
-func (v *Volume) Token() string {
+// TokenForSubscribe returns the pod's service account token to subscribe
+// with, "" when kubelet has not supplied one since the driver started, and
+// remembers that it was the one used.
+func (v *Volume) TokenForSubscribe() string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.sentToken, v.sentAt = v.token, time.Now()
 	return v.token
 }
 
-// Refused reports whether the server last refused any of the volume's
-// sources, as it does a subscription whose token it cannot verify.
-func (v *Volume) Refused() bool {
+// NeedsToken reports whether the server refused a subscription of the volume
+// for want of a valid token, and subscribing again may succeed: the volume
+// now has another token than the one it subscribed with, or enough time has
+// passed to try the same one again.
+//
+// It compares with the token that was sent, not with whether the token just
+// changed: a token can arrive after a subscription went out without one and
+// before the server's refusal comes back.
+func (v *Volume) NeedsToken() bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.token == v.sentToken && (v.token == "" || time.Since(v.sentAt) < retryRefused) {
+		return false
+	}
 	for _, failure := range v.failures {
-		if failure != nil {
+		if codes.Code(failure.GetCode()) == codes.Unauthenticated {
 			return true
 		}
 	}

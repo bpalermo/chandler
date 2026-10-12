@@ -697,8 +697,15 @@ func TestNoAcknowledgementUnlessAsked(t *testing.T) {
 	}
 }
 
-// The pod's token goes to the server with every subscription, and a new one
-// from kubelet repairs a subscription the server refused for lack of one.
+// tokenSent is what a real client does when it sends a Subscribe: it asks the
+// handler for the token at that moment.
+func tokenSent(f fixture, id string) string {
+	return f.server.subs[id].Handler.Token()
+}
+
+// The pod's token goes to the server with every subscription, and one that
+// kubelet supplies later repairs a subscription the server refused for want
+// of it.
 func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -708,12 +715,12 @@ func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Only the token for the server's audience.
-	if got := f.server.subs["csi-token/0"].Handler.Token(); got != "token-1" {
+	if got := tokenSent(f, "csi-token/0"); got != "token-1" {
 		t.Fatalf("subscribed with token %q, want token-1", got)
 	}
 
 	// kubelet publishes again with a renewed token: nothing is remounted or
-	// resubscribed, and the next subscribe will carry the new one.
+	// resubscribed, as the server has refused nothing.
 	f.server.subs = map[string]client.Subscription{}
 	req.VolumeContext[tokensKey] = `{"chandler":{"token":"token-2"}}`
 	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
@@ -723,25 +730,63 @@ func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 		t.Errorf("a renewed token caused %d subscriptions; the server did not ask for one", n)
 	}
 
-	// After a driver restart the token is gone until kubelet supplies one,
-	// and a server that verifies tokens refuses the subscription meanwhile.
-	restarted := f.restart(t)
-	if err := restarted.Restore(); err != nil {
+	refuse := func(sub client.Subscription) {
+		sub.Handler.Fail(&rpcstatus.Status{Code: int32(codes.Unauthenticated), Message: "no token"})
+	}
+	restartAndSubscribeWithoutToken := func() (*Driver, client.Subscription) {
+		t.Helper()
+		restarted := f.restart(t)
+		if err := restarted.Restore(); err != nil {
+			t.Fatal(err)
+		}
+		restored := f.server.subs["csi-token/0"]
+		// The subscription goes out: with no token, as tokens are not kept
+		// on disk.
+		if got := restored.Handler.Token(); got != "" {
+			t.Fatalf("the restored volume subscribed with token %q; tokens must not be kept on disk", got)
+		}
+		f.server.subs = map[string]client.Subscription{}
+		return restarted, restored
+	}
+
+	// After a driver restart: the server refuses, then kubelet supplies the
+	// token, and the volume subscribes again with it.
+	restarted, restored := restartAndSubscribeWithoutToken()
+	refuse(restored)
+	if _, err := restarted.NodePublishVolume(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	restored := f.server.subs["csi-token/0"]
-	if got := restored.Handler.Token(); got != "" {
-		t.Fatalf("the restored volume has token %q; tokens must not be kept on disk", got)
+	if _, ok := f.server.subs["csi-token/0"]; !ok || tokenSent(f, "csi-token/0") != "token-2" {
+		t.Errorf("after kubelet supplied a token the volume was not subscribed again with it")
 	}
-	restored.Handler.Fail(&rpcstatus.Status{Code: int32(codes.Unauthenticated), Message: "no token"})
+
+	// The other order: kubelet supplies the token after the subscription
+	// went out but before the refusal comes back. The refusal is about the
+	// subscription without a token, so the volume must still subscribe again.
+	restarted, restored = restartAndSubscribeWithoutToken()
+	if _, err := restarted.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.server.subscribed(); n != 0 {
+		t.Fatalf("subscribed again before the server refused anything")
+	}
+	refuse(restored)
+	if _, err := restarted.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.server.subs["csi-token/0"]; !ok || tokenSent(f, "csi-token/0") != "token-2" {
+		t.Errorf("a token that arrived before the refusal was never used: the volume stays refused")
+	}
+	// Once subscribed with the token, a refusal is not answered by
+	// subscribing with the same token over and over.
 	f.server.subs = map[string]client.Subscription{}
 	if _, err := restarted.NodePublishVolume(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	again, ok := f.server.subs["csi-token/0"]
-	if !ok || again.Handler.Token() != "token-2" {
-		t.Errorf("after kubelet supplied a token the volume was not subscribed again with it")
+	if n := f.server.subscribed(); n != 0 {
+		t.Errorf("resubscribed %d times with a token that was already sent", n)
 	}
+
 	// The files were there all along.
 	if got := read(t, filepath.Join(f.mounts.mounts[target], "app.yaml")); got != "a: 1\n" {
 		t.Errorf("app.yaml = %q", got)

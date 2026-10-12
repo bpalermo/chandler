@@ -4,11 +4,13 @@ go_library(
     name = "transport",
     srcs = [
         "options.go",
+        "spiffe.go",
         "transport.go",
     ],
     importpath = "github.com/bpalermo/chandler/common/transport",
     visibility = ["//visibility:public"],
     deps = [
+        "@com_github_spiffe_go_spiffe_v2//workloadapi",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials",

@@ -1,11 +1,13 @@
 package transport
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -17,6 +19,9 @@ import (
 type Options struct {
 	// Cert, Key and CA are the PEM files of a Files source.
 	Cert, Key, CA string
+	// SPIFFESocket is the address of a SPIFFE Workload API, used instead of
+	// files.
+	SPIFFESocket string
 	// Insecure runs without TLS: nothing is encrypted and nobody is
 	// authenticated.
 	Insecure bool
@@ -27,21 +32,29 @@ func (o *Options) Register() {
 	flag.StringVar(&o.Cert, "tls-cert", "", "PEM file with this component's certificate chain")
 	flag.StringVar(&o.Key, "tls-key", "", "PEM file with the certificate's private key")
 	flag.StringVar(&o.CA, "tls-ca", "", "PEM file with the certificate authorities the other components must chain to")
+	flag.StringVar(&o.SPIFFESocket, "spiffe-socket", "", "address of a SPIFFE Workload API to get this component's identity from instead of files, e.g. unix:///spiffe-workload-api/spire-agent.sock")
 	flag.BoolVar(&o.Insecure, "insecure", false, "run without TLS: connections are neither encrypted nor authenticated")
 }
 
 // Source returns where certificates come from, or nil when the process was
 // told to run without TLS. Running without TLS is never a default: it has to
-// be asked for.
-func (o *Options) Source() (Source, error) {
+// be asked for. With a SPIFFE socket it waits for the Workload API to issue
+// an identity, until ctx ends.
+func (o *Options) Source(ctx context.Context) (Source, error) {
 	files := o.Cert != "" || o.Key != "" || o.CA != ""
 	switch {
-	case o.Insecure && files:
-		return nil, errors.New("--insecure cannot be combined with --tls-cert, --tls-key or --tls-ca")
+	case o.Insecure && (files || o.SPIFFESocket != ""):
+		return nil, errors.New("--insecure cannot be combined with the --tls flags or --spiffe-socket")
 	case o.Insecure:
 		return nil, nil
+	case o.SPIFFESocket != "" && files:
+		return nil, errors.New("--spiffe-socket cannot be combined with --tls-cert, --tls-key or --tls-ca")
+	case o.SPIFFESocket != "":
+		wait, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		return NewSPIFFE(wait, o.SPIFFESocket)
 	case o.Cert == "" || o.Key == "" || o.CA == "":
-		return nil, errors.New("--tls-cert, --tls-key and --tls-ca are all required (or --insecure to run without TLS)")
+		return nil, errors.New("--tls-cert, --tls-key and --tls-ca are all required, or --spiffe-socket (or --insecure to run without TLS)")
 	}
 	src := &Files{Cert: o.Cert, Key: o.Key, CA: o.CA}
 	// Fail at start rather than at the first handshake.

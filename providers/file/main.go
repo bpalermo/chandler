@@ -105,7 +105,7 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
-	src, err := sec.tls.Source()
+	src, err := sec.tls.Source(context.Background())
 	if err != nil {
 		return err
 	}

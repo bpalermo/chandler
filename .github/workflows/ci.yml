@@ -106,6 +106,34 @@ jobs:
       - name: e2e/run.sh
         run: e2e/run.sh --config=ci
 
+  # The same, with the components' identities coming from a SPIRE agent's
+  # Workload API instead of the chart's certificates: the second of the two
+  # certificate sources, which nothing else exercises. It runs the tests that
+  # depend on the transport, not the whole suite.
+  e2e-spiffe:
+    name: e2e (kind, SPIFFE)
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-e2e
+          repository-cache: true
+          # The other e2e job saves this cache.
+          cache-save: false
+
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: chandler-e2e
+
+      - name: e2e/run.sh with SPIFFE identities
+        run: E2E_TLS=spiffe e2e/run.sh --config=ci
+
   # The single check the main ruleset requires, and the only reason this job
   # exists.
   #
@@ -119,7 +147,7 @@ jobs:
   # nothing, and a required check that never reports blocks the pull request.
   ci:
     name: ci
-    needs: [build, e2e]
+    needs: [build, e2e, e2e-spiffe]
     if: always()
     runs-on: ubuntu-latest
     steps:

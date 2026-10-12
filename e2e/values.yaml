@@ -3,6 +3,12 @@
 # Every image is the one run.sh just loaded into the node: by tag, never
 # pulled, with the digest the chart pins cleared (that digest exists in no
 # registry until it is published).
+# Metrics go to the collector run.sh deploys, often, so the tests can see them.
+telemetry:
+  otlpEndpoint: http://otel-collector.chandler-system.svc:4317
+  exportIntervalSeconds: 5
+  resourceAttributes:
+    k8s.cluster.name: chandler-e2e
 csi:
   image: &local
     repository: localhost/chandler-csi

@@ -106,6 +106,15 @@ hand-editing what Gazelle owns.
 - The gRPC health service is on its own port, without TLS, because kubelet's
   probes cannot present a certificate. Nothing else may be served there.
 
+## Metrics
+
+- Instrument with the OpenTelemetry API through `common/telemetry`
+  (`telemetry.Meter()`); metrics are pushed over OTLP and there is no scrape
+  endpoint. Names start with `chandler.<component>.`.
+- Keep attributes low-cardinality: a provider name, a gRPC code, a state.
+  Never a URI, a pod, a namespace or a version.
+- List a new metric in section 11 of the design.
+
 ## Concurrency
 
 - Only one goroutine may call `Send` on a gRPC stream. Producers push to a

@@ -10,6 +10,7 @@ go_library(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/bundle",
+        "//common/telemetry",
         "//common/transport",
         "//common/version",
         "//server/internal/hub",

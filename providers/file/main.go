@@ -25,6 +25,7 @@ import (
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/provider"
 	"github.com/bpalermo/chandler/common/rollout"
+	"github.com/bpalermo/chandler/common/telemetry"
 	"github.com/bpalermo/chandler/common/transport"
 	"github.com/bpalermo/chandler/common/version"
 	"github.com/bpalermo/chandler/providers/file/internal/source"
@@ -135,6 +136,12 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	stopTelemetry, err := telemetry.Setup(ctx, "chandler-provider-file", version.Version)
+	if err != nil {
+		return err
+	}
+	defer stopTelemetry()
 	go func() {
 		<-ctx.Done()
 		log.Info("stopping")

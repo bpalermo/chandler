@@ -22,6 +22,7 @@ import (
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/telemetry"
 	"github.com/bpalermo/chandler/common/transport"
 	"github.com/bpalermo/chandler/common/version"
 	"github.com/bpalermo/chandler/server/internal/hub"
@@ -239,6 +240,12 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	stopTelemetry, err := telemetry.Setup(ctx, "chandler-server", version.Version)
+	if err != nil {
+		return err
+	}
+	defer stopTelemetry()
 	go h.Run(ctx)
 	go h.RunPeers(ctx, peers, func() {
 		log.Info("ready")

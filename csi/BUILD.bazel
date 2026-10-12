@@ -8,6 +8,7 @@ go_library(
     importpath = "github.com/bpalermo/chandler/csi",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/telemetry",
         "//common/transport",
         "//common/version",
         "//csi/internal/cache",

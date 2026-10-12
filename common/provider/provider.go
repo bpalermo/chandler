@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -28,6 +30,7 @@ import (
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/rollout"
+	"github.com/bpalermo/chandler/common/telemetry"
 	"github.com/bpalermo/chandler/common/uri"
 )
 
@@ -117,6 +120,30 @@ type Server struct {
 	// held is the share each revision was held at when too many
 	// subscriptions refused it.
 	held map[revisionKey]uint32
+
+	instruments sync.Once
+	updates     metric.Int64Counter
+	failures    metric.Int64Counter
+	watching    metric.Int64UpDownCounter
+}
+
+// instrument creates the provider's metrics, once. They cost nothing until
+// the process sets up an exporter.
+func (s *Server) instrument() {
+	s.instruments.Do(func() {
+		m := telemetry.Meter()
+		s.updates = telemetry.Must(m.Int64Counter("chandler.provider.updates",
+			metric.WithDescription("Updates sent to config servers, by kind: bundle, not_modified or deleted.")))
+		s.failures = telemetry.Must(m.Int64Counter("chandler.provider.failures",
+			metric.WithDescription("Watches the provider could not serve, by gRPC code.")))
+		s.watching = telemetry.Must(m.Int64UpDownCounter("chandler.provider.watches",
+			metric.WithDescription("Watches config servers hold on this provider.")))
+	})
+}
+
+func (s *Server) count(counter metric.Int64Counter, key, value string) {
+	counter.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("provider", s.Name), attribute.String(key, value)))
 }
 
 // revisionKey names one revision of one resource.
@@ -210,6 +237,7 @@ func (s *Server) share(key revisionKey, state State, last uint32) uint32 {
 
 // StreamConfigs implements chandlerv1.ConfigProviderServer.
 func (s *Server) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConfigsServer) error {
+	s.instrument()
 	first, err := stream.Recv()
 	if err != nil {
 		return err
@@ -339,7 +367,11 @@ func (s *session) nextNonce() string {
 // watch polls one resource until ctx ends, sending its state whenever it
 // changes.
 func (s *session) watch(ctx context.Context, id, rawURI, known string) {
+	provider := metric.WithAttributes(attribute.String("provider", s.server.Name))
+	s.server.watching.Add(context.Background(), 1, provider)
+	defer s.server.watching.Add(context.Background(), -1, provider)
 	fail := func(code codes.Code, msg string) {
+		s.server.count(s.server.failures, "code", code.String())
 		s.send(ctx, chandlerv1.ProviderResponse_builder{
 			Error: chandlerv1.WatchError_builder{
 				WatchId: proto.String(id),
@@ -356,6 +388,14 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 		}
 	}
 	emit := func(b chandlerv1.ResourceUpdate_builder) {
+		kind := "bundle"
+		switch {
+		case b.NotModified != nil:
+			kind = "not_modified"
+		case b.Deleted != nil:
+			kind = "deleted"
+		}
+		s.server.count(s.server.updates, "kind", kind)
 		s.send(ctx, chandlerv1.ProviderResponse_builder{Update: b.Build()}.Build())
 	}
 

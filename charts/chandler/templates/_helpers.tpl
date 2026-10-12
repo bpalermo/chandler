@@ -100,3 +100,24 @@ provider-file and provider-s3.
     secretName: {{ include "chandler.tlsSecret" . }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The environment that points a component's metrics at the collector, in the
+standard OpenTelemetry variables. Call with the root context.
+*/}}
+{{- define "chandler.telemetryEnv" -}}
+{{- with .Values.telemetry.otlpEndpoint -}}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ . | quote }}
+- name: OTEL_METRIC_EXPORT_INTERVAL
+  value: {{ mul (int $.Values.telemetry.exportIntervalSeconds) 1000 | quote }}
+{{- $attributes := list -}}
+{{- range $key, $value := $.Values.telemetry.resourceAttributes -}}
+{{- $attributes = append $attributes (printf "%s=%s" $key $value) -}}
+{{- end }}
+{{- if $attributes }}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ join "," $attributes | quote }}
+{{- end }}
+{{- end -}}
+{{- end -}}

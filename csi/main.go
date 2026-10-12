@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/bpalermo/chandler/common/telemetry"
 	"github.com/bpalermo/chandler/common/transport"
 	"github.com/bpalermo/chandler/common/version"
 	"github.com/bpalermo/chandler/csi/internal/cache"
@@ -77,6 +78,12 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, cred
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	stopTelemetry, err := telemetry.Setup(ctx, "chandler-csi", version.Version)
+	if err != nil {
+		return err
+	}
+	defer stopTelemetry()
 
 	configServer := client.New(client.Config{
 		Target:      serverTarget,

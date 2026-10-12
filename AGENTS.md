@@ -92,10 +92,14 @@ hand-editing what Gazelle owns.
 
 ## Images, chart and publishing
 
-- The registry is named in exactly one file, `bazel/registry.bzl`
-  (`quay.io/shipchandler`). Shell and workflows read it through
-  `scripts/registry.sh`; `scripts/check-registry-config.sh` fails CI if it is
-  spelled out anywhere else.
+- The registry is named in one build file, `bazel/registry.bzl`. Shell and
+  workflows read it through `scripts/registry.sh`;
+  `scripts/check-registry-config.sh` fails CI if it is spelled out anywhere
+  else. The README is the one exception, because people copy install commands
+  from it.
+- The publish workflow reads files from `bazel-out`. An output that is not a
+  target's default output is absent there on a cache hit, so request its
+  output group in the build step (see `--output_groups=+digest`).
 - Image repositories are `server`, `csi` and `provider-s3`; the chart is
   `chandler`.
 - Images are built with the `go_image` macro in `bazel/image/defs.bzl`.

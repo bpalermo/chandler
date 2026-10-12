@@ -1,5 +1,6 @@
-syntax = "proto3";
+edition = "2024";
 
+// The protocol between the config server and a configuration provider.
 package chandler.v1;
 
 import "chandler/v1/common.proto";
@@ -13,141 +14,281 @@ option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
 //
 // The stream mirrors the driver-facing protocol: the server watches URIs, the
 // provider pushes revisions, and the server ACKs or NACKs each one.
+//
+// Configuration content is opaque to the server and the CSI driver: whatever a
+// provider emits is delivered to pods as is. A provider must therefore only
+// emit revisions it has itself validated.
 service ConfigProvider {
+  // Opens the server's stream to the provider.
+  //
+  // The server sends WatcherHello first and the provider answers with
+  // ProviderHello. After that the server sends Watch and Unwatch as pods
+  // subscribe and unsubscribe, the provider sends a ResourceUpdate or
+  // WatchError for a watch whenever its resource changes, and the server
+  // answers every ResourceUpdate with a ProviderAck or a ProviderNack.
+  //
+  // The stream carries no state across reconnects: after a reconnect the
+  // server watches everything again, reporting the revision it already holds.
   rpc StreamConfigs(stream ProviderRequest) returns (stream ProviderResponse);
 }
 
+// ProviderRequest is a message from the server to the provider. Exactly one
+// member of the oneof is set.
 message ProviderRequest {
   oneof request {
-    // Must be the first message on the stream.
+    // Identifies the server and announces its limits. Must be the first
+    // message on the stream and must not be sent again.
     WatcherHello hello = 1;
+
+    // Starts watching one resource.
     Watch watch = 2;
+
+    // Stops watching one resource.
     Unwatch unwatch = 3;
+
+    // Reports that a ResourceUpdate was accepted for delivery.
     ProviderAck ack = 4;
+
+    // Reports that a ResourceUpdate was refused.
     ProviderNack nack = 5;
+
+    // Reports how the rollout of an earlier revision ended.
     Feedback feedback = 6;
   }
 }
 
+// ProviderResponse is a message from the provider to the server. Exactly one
+// member of the oneof is set.
 message ProviderResponse {
   oneof response {
-    // Always the first message on the stream.
+    // Declares the provider's name and cache-key contract. Always the first
+    // message on the stream, sent in answer to WatcherHello.
     ProviderHello hello = 1;
+
+    // Delivers the current state of one watched resource.
     ResourceUpdate update = 2;
+
+    // Reports that one watch cannot be served.
     WatchError error = 3;
   }
 }
 
+// WatcherHello introduces the server. It is the first message on every stream.
 message WatcherHello {
+  // Identity of the server replica that opened the stream. Informational.
   string server_id = 1;
-  // Limits the server will enforce; a provider should not exceed them.
+
+  // Largest Bundle, in bytes of file content, the server accepts. A larger one
+  // is refused with a ProviderNack, so a provider should not emit it.
   uint64 max_bundle_bytes = 2;
+
+  // Largest number of files in one Bundle the server accepts. A larger Bundle
+  // is refused with a ProviderNack.
   uint32 max_bundle_files = 3;
 }
 
 // ProviderHello declares the provider's cache-key contract up front, so the
-// server can bound cardinality before the first resource is ever served.
+// server can bound cache cardinality before the first resource is ever served.
 message ProviderHello {
-  // Registered provider name, i.e. the URI scheme it serves.
+  // The provider's registered name, which is the URI scheme it serves.
+  // Required. Must match the name the server has configured for this
+  // endpoint, or the server closes the stream.
   string name = 1;
 
-  // The only subscriber attributes this provider's responses may depend on
-  // (the equivalent of HTTP Vary). Each must be on the server's allow-list of
-  // low-cardinality attributes (cluster, region, zone, namespace, ...).
-  // Pod-unique attributes are never allowed. Watches carry only these.
+  // The only subscriber attributes this provider's responses may depend on,
+  // the equivalent of the HTTP Vary header. Each must be on the server's
+  // allow-list of low-cardinality attributes (cluster, region, zone,
+  // namespace, service account); otherwise the server closes the stream.
+  // Pod-unique attributes are never allowed.
+  //
+  // Watch.attributes carries these attributes and no others. Leave empty when
+  // a resource is the same for every subscriber.
   repeated string vary_on = 2;
 
-  // Defaults applied when a ResourceUpdate carries no CacheControl.
+  // Caching directives applied to a ResourceUpdate that carries none of its
+  // own. When unset, such resources become stale as soon as the watch is lost
+  // and are then served without a time limit.
   CacheControl default_cache_control = 3;
 }
 
+// Watch asks the provider to deliver a resource now and again on every change.
+// The server coalesces pod subscriptions, so the provider sees one Watch per
+// distinct pair of URI and attribute values.
 message Watch {
-  // Chosen by the server, unique per stream.
+  // Identifier of the watch, chosen by the server. Required. Unique within the
+  // stream. Every later message about the watch carries it.
   string watch_id = 1;
 
-  // Canonicalised URI (see docs/design.md, "URIs and cache keys").
+  // The resource to watch, as a canonical URI: lowercase scheme, no dot
+  // segments, query parameters sorted, no fragment, no userinfo. Required.
+  //
+  // A provider must answer INVALID_ARGUMENT for a URI it cannot interpret,
+  // including one with a query parameter it does not know. Silently ignoring
+  // an unknown parameter would let callers multiply cache entries.
   string uri = 2;
 
-  // Values of the attributes listed in ProviderHello.vary_on, nothing else.
+  // Values of the attributes the provider listed in ProviderHello.vary_on, and
+  // nothing else. An attribute with no value for the subscriber is absent.
   map<string, string> attributes = 3;
 
-  // Revision the server already holds for this watch, if any. The provider
-  // answers NotModified when it is still current (If-None-Match).
+  // The revision the server already holds for this watch. Unset when it holds
+  // none. If that revision is still current the provider answers with
+  // NotModified instead of the Bundle, the equivalent of HTTP If-None-Match.
   string known_revision = 4;
 }
 
+// Unwatch ends a watch. The provider stops sending updates for it. Unknown
+// identifiers are ignored.
 message Unwatch {
+  // The watch to end. Required.
   string watch_id = 1;
 }
 
+// ResourceUpdate delivers the state of a watched resource. The provider sends
+// one in answer to a Watch and another each time the resource changes.
+//
+// The server must answer with a ProviderAck or a ProviderNack carrying the
+// same nonce.
 message ResourceUpdate {
+  // The watch this update is for.
   string watch_id = 1;
 
-  // Unique per stream. Echoed in the ProviderAck or ProviderNack.
+  // Identifier of this update, unique within the stream. The server echoes it
+  // in the ProviderAck or ProviderNack.
   string nonce = 2;
 
-  // The provider's normalised identity for this resource: every Watch that
-  // resolves to the same content must return the same cache_key. Max 256
-  // bytes. The server namespaces it with the provider name.
+  // The provider's normalised identity for the resource. Required. Every Watch
+  // that resolves to the same content must yield the same cache_key, so that
+  // differently spelled URIs share one cache entry. At most 256 bytes. The
+  // server namespaces it with the provider name.
+  //
+  // The key may depend only on the URI and on the attributes declared in
+  // ProviderHello.vary_on. The server refuses an update that would exceed the
+  // allowed number of keys per URI.
   string cache_key = 3;
 
-  // Opaque provider validator (ETag, object version id, commit sha, ...).
+  // The provider's change marker for this state of the resource, such as an
+  // ETag, an object version id or a commit hash. Required. Opaque to the
+  // server, which only compares it for equality and echoes it back in
+  // Watch.known_revision.
   string revision = 4;
 
+  // The state of the resource. Exactly one member is set.
   oneof payload {
+    // The resource's content at this revision. The provider must have
+    // validated it; it is delivered to pods as is.
     Bundle bundle = 5;
+
+    // The resource is unchanged since Watch.known_revision. Only valid as the
+    // first answer to a Watch that carried known_revision.
     NotModified not_modified = 6;
-    // The resource no longer exists at the origin.
+
+    // The resource no longer exists at the origin. The server keeps serving
+    // the last version to running pods; what new pods get depends on the
+    // rollout policy's deletion setting.
     Deleted deleted = 7;
   }
 
+  // Caching directives for this resource. When unset,
+  // ProviderHello.default_cache_control applies.
   CacheControl cache_control = 8;
 }
 
+// NotModified is the payload of a ResourceUpdate for a resource that has not
+// changed. It carries no fields.
 message NotModified {}
 
+// Deleted is the payload of a ResourceUpdate for a resource that no longer
+// exists at the origin. It carries no fields.
 message Deleted {}
 
-// ProviderAck confirms the revision passed server validation and was stored
-// in the server cache. It says nothing about rollout; see Feedback.
+// ProviderAck confirms the revision was accepted for delivery and stored in
+// the server cache. The server checks only the envelope (size, file count,
+// path safety, cache-key and quota rules) and never inspects the content. It
+// says nothing about rollout; see Feedback.
 message ProviderAck {
+  // The watch the update was for.
   string watch_id = 1;
+
+  // The nonce of the ResourceUpdate being acknowledged.
   string nonce = 2;
+
+  // The revision that was accepted; equals ResourceUpdate.revision.
   string revision = 3;
 }
 
-// ProviderNack reports that the server rejected the revision (oversized or
-// malformed bundle, cache-key or quota violation, failed validation). The
-// server keeps serving its last known good version. The provider must not
-// resend the same revision.
+// ProviderNack reports that the server refused the revision's envelope
+// (oversized bundle, unsafe paths, cache-key or quota violation). The server
+// keeps serving its last version. The provider must not resend the same
+// revision.
 message ProviderNack {
+  // The watch the update was for.
   string watch_id = 1;
+
+  // The nonce of the ResourceUpdate being refused.
   string nonce = 2;
+
+  // The revision that was refused; equals ResourceUpdate.revision.
   string revision = 3;
+
+  // Why the revision was refused. Required. INVALID_ARGUMENT for a malformed
+  // or oversized Bundle or cache key, RESOURCE_EXHAUSTED for a quota.
   google.rpc.Status error_detail = 4;
 }
 
 // Feedback reports, after the fact, how the rollout of an ACKed revision
-// ended. Purely informational: providers may surface it at the origin
-// (status object, commit status, ...) or ignore it.
+// ended. It is informational: a provider may surface it at the origin (a
+// status object, a commit status) or ignore it. It needs no answer.
 message Feedback {
+  // Outcome is the terminal state of a rollout.
   enum Outcome {
+    // Not set. Never sent.
     OUTCOME_UNSPECIFIED = 0;
+
+    // The revision reached every subscriber and is now the stable version.
     OUTCOME_COMPLETED = 1;
+
+    // An operator aborted the rollout; subscribers that had received the
+    // revision were returned to the previous version. The server will not roll
+    // this content out again unless an operator clears the abort.
     OUTCOME_ABORTED = 2;
+
+    // A newer revision arrived before this one finished rolling out and
+    // replaced it.
     OUTCOME_SUPERSEDED = 3;
   }
 
+  // The cache key of the resource the revision belongs to.
   string cache_key = 1;
+
+  // The revision the outcome is about; equals the ResourceUpdate.revision it
+  // was delivered under.
   string revision = 2;
+
+  // How the rollout ended.
   Outcome outcome = 3;
+
+  // Human-readable explanation, such as the reason an operator gave for an
+  // abort. May be unset.
   string detail = 4;
 }
 
-// WatchError reports that the provider cannot serve a watch. Codes as in
-// SubscriptionError (NOT_FOUND, PERMISSION_DENIED, INVALID_ARGUMENT,
-// UNAVAILABLE). The watch stays open unless the code is INVALID_ARGUMENT.
+// WatchError reports that the provider cannot serve a watch. It needs no
+// answer. The watch stays open, and the provider sends a ResourceUpdate when
+// the resource becomes available, unless the code is INVALID_ARGUMENT, which
+// ends the watch.
+//
+// status.code is one of:
+//
+//   NOT_FOUND          the resource does not exist at the origin
+//   PERMISSION_DENIED  the provider's credentials may not read it
+//   INVALID_ARGUMENT   the URI is malformed or has unknown parameters
+//   UNAVAILABLE        the origin cannot be reached
 message WatchError {
+  // The watch the error is for.
   string watch_id = 1;
+
+  // What went wrong. The code is one of those listed above; the message is for
+  // humans.
   google.rpc.Status status = 2;
 }

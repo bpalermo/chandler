@@ -1,5 +1,6 @@
-syntax = "proto3";
+edition = "2024";
 
+// The protocol between config server replicas of one cluster.
 package chandler.v1;
 
 import "chandler/v1/common.proto";
@@ -15,71 +16,101 @@ option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
 // It is used in three situations: warm-up before a starting replica reports
 // ready, periodic anti-entropy between running replicas, and on-demand fetch
 // of a version named by a ConfigRollout that the replica does not hold.
+//
+// Only server replicas may call it; callers are authenticated by their
+// certificate.
 service PeerSync {
-  // Streams the caller every key the peer holds. The cache is small by
-  // construction (bounded keys, three versions per key), so a full listing is
-  // cheap and there is no incremental variant.
+  // Streams every key the peer holds, one KeyEntry per key, then ends. The
+  // cache is small by construction (bounded keys, three versions per key), so
+  // a full listing is cheap and there is no incremental variant.
   rpc ListKeys(ListKeysRequest) returns (stream KeyEntry);
 
-  // Returns the bundle with the given version, or NOT_FOUND. The caller
-  // verifies the content against the version digest before storing it.
+  // Returns the Bundle with the given version, or NOT_FOUND when the peer does
+  // not hold it. The caller verifies the content against the version digest
+  // before storing it, so a peer cannot hand over altered bytes.
   rpc GetBundle(GetBundleRequest) returns (GetBundleResponse);
 }
 
+// ListKeysRequest asks a peer for its whole key index.
 message ListKeysRequest {
+  // Identity of the calling replica. Informational; used in logs.
   string server_id = 1;
 }
 
+// KeyEntry describes one cache key held by a peer: which versions it has bytes
+// for, which URIs resolve to it, and how recently it was confirmed and used.
 message KeyEntry {
-  // Provider name and provider-issued cache key; together the key's identity.
+  // Name of the provider that issued the key. Together with cache_key it
+  // identifies the entry.
   string provider = 1;
+
+  // The provider-issued cache key, as in ResourceUpdate.cache_key.
   string cache_key = 2;
 
-  // The newest version the peer has ACKed from the provider for this key.
-  // Which version is stable or candidate during a rollout is not carried
-  // here: that comes from the ConfigRollout object.
+  // The newest version the peer accepted from the provider for this key. Unset
+  // when the peer holds the key only through peer sync and has never watched
+  // it itself.
+  //
+  // Which version is stable or candidate during a rollout is not carried here;
+  // that comes from the ConfigRollout object.
   string current_version = 3;
 
-  // Every version the peer holds bytes for (at most three).
+  // Every version the peer holds bytes for, at most three. Each can be fetched
+  // with GetBundle.
   repeated KeyVersion versions = 4;
 
-  // URIs known to resolve to this key.
+  // The URIs, with their attribute values, known to resolve to this key. They
+  // let the receiving replica answer a subscription from its cache without
+  // asking the provider.
   repeated Alias aliases = 5;
 
+  // The caching directives the provider attached to the key.
   CacheControl cache_control = 6;
 
-  // When current_version was last confirmed against the provider, by this
-  // peer or by the peer it was copied from. A replica without a live watch
-  // for the key adopts the entry with the newest value.
+  // When current_version was last confirmed against the provider, by this peer
+  // or by the peer it was copied from. A replica without a live watch for the
+  // key adopts the entry with the newest value. Freshness (CacheControl) is
+  // measured from here.
   google.protobuf.Timestamp last_refreshed = 7;
 
   // When any replica last had a subscription for the key. Replicas merge by
-  // taking the maximum and evict on the same grace period, so an evicted key
-  // is not resurrected by a peer.
+  // taking the maximum and evict after the same grace period, so a key one
+  // replica evicted is not brought back by another.
   google.protobuf.Timestamp last_referenced = 8;
 
-  // The resource was deleted at the origin and is retained from cache.
+  // True when the resource was deleted at the origin and is being retained
+  // from the cache.
   bool orphaned = 9;
 }
 
+// KeyVersion is one version of a key that a peer holds bytes for.
 message KeyVersion {
-  // Content address, "sha256:<hex>".
+  // The content address of the Bundle, "sha256:<hex>".
   string version = 1;
-  // The provider revision this version was received under.
+
+  // The provider revision this version was received under. Lets the receiving
+  // replica send Watch.known_revision without fetching from the provider.
   string revision = 2;
 }
 
+// Alias records that a URI, for given attribute values, resolves to a key.
 message Alias {
-  // Canonical URI.
+  // The canonical URI, as in Watch.uri.
   string uri = 1;
-  // Values of the provider's vary_on attributes.
+
+  // The values of the provider's vary_on attributes the alias holds for, as in
+  // Watch.attributes. Empty when the provider varies on nothing.
   map<string, string> attributes = 2;
 }
 
+// GetBundleRequest asks a peer for the content of one version.
 message GetBundleRequest {
+  // The version to fetch, "sha256:<hex>". Required.
   string version = 1;
 }
 
+// GetBundleResponse carries the content of the requested version.
 message GetBundleResponse {
+  // The Bundle whose canonical digest equals the requested version.
   Bundle bundle = 1;
 }

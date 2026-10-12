@@ -7,7 +7,7 @@ A pod names what it wants with URIs (`<provider-name>://...`); the driver
 subscribes to a config server, which sources the content from pluggable
 providers, caches it, rolls new versions out progressively, and pushes them to
 the node. The node replaces the files atomically and keeps the last known good
-version whenever anything upstream fails or a new version is rejected.
+version whenever anything upstream fails or a new version cannot be written.
 
 The wire contracts are in [`api/chandler/v1`](../api/chandler/v1):
 `discovery.proto` (driver ↔ server), `provider.proto` (server ↔ provider),
@@ -22,13 +22,21 @@ Goals
 - Driver ↔ server protocol with per-update ACK/NACK, in the style of Envoy xDS.
 - Providers are plugins behind one bidirectional-streaming gRPC interface.
 - Staged rollout: a new version reaches pods gradually, by percentage, rather
-  than all at once, and the ramp pauses when pods reject it.
+  than all at once, and an operator can pause or abort the ramp.
 - Provider failure, server failure and node restarts do not take config away
   from running pods and, where a cache exists, do not block new pods.
 - Updates are atomic per volume; the last known good config is always kept.
 - Caching is keyed by provider-issued cache keys and is bounded by design.
+- Configuration content is opaque to the server and the driver. Neither parses
+  or interprets it; a provider is responsible for the validity of what it
+  emits.
 
 Non-goals
+
+- Validating configuration. The server and driver check only what they need
+  to deliver a bundle safely: its digest, its size and file count, and that
+  its paths stay inside the volume. Whether the content is a good config is
+  the provider's concern before it emits and the application's after.
 
 - Large artifacts. A bundle is capped (default 1 MiB, hard cap 3 MiB) and sent
   in one gRPC message; there is no chunking.
@@ -60,7 +68,7 @@ flowchart LR
 
 | Component | Runs as | Responsibility |
 |---|---|---|
-| `chandler-csi` | DaemonSet, CSI node plugin (ephemeral inline volumes) | Mount volumes, hold one stream to the server, validate and atomically apply updates, ACK/NACK, node cache |
+| `chandler-csi` | DaemonSet, CSI node plugin (ephemeral inline volumes) | Mount volumes, hold one stream to the server, atomically write updates, ACK/NACK, node cache |
 | `chandler-server` | Deployment, several replicas, cache on `emptyDir` | Authorise subscriptions, coalesce them into provider watches, cache and replicate the cache to peers, decide which version each pod gets (rollouts), push |
 | Providers | In-process (built-in) or separate gRPC services | Resolve a URI to a bundle, issue its cache key and revision, push changes |
 
@@ -171,12 +179,12 @@ sequenceDiagram
   S->>D: ServerHello
   D->>S: Subscribe(sub=A, uri, workload, applied="", cached=[])
   S->>D: ConfigUpdate(sub=A, nonce=1, version=v1, bundle)
-  Note over D: stage, validate, atomic swap
+  Note over D: stage, verify digest, atomic swap
   D->>S: Ack(sub=A, nonce=1, v1)
   S->>D: ConfigUpdate(sub=A, nonce=2, version=v2, bundle, track=CANDIDATE)
-  Note over D: validation fails, v1 stays mounted
+  Note over D: write fails, v1 stays mounted
   D->>S: Nack(sub=A, nonce=2, v2, applied=v1, error_detail)
-  Note over S: v2 is not resent to A, NACK counts toward pausing the rollout
+  Note over S: retried or not according to the error code
 ```
 
 Rules
@@ -184,17 +192,23 @@ Rules
 - **Every `Subscribe` gets exactly one initial answer**, a `ConfigUpdate` or a
   `SubscriptionError`. This is what unblocks `NodePublishVolume`. After an
   error the subscription stays open and an update follows when one exists.
-- **ACK** means validated and atomically swapped in; the version is now that
-  subscription's last known good. **NACK** means rejected with the previous
-  version untouched; `error_detail` says why.
+- **ACK means written.** The bundle was verified against its digest and
+  atomically swapped into the volume; the version is now that subscription's
+  last known good. The driver cannot tell a good config from a bad one, so an
+  ACK says nothing about the content.
+- **NACK means not written**, with the previous version untouched. It reports
+  a delivery failure, never an opinion about the content; `error_detail` says
+  which (see the table in section 5).
 - **Nonces** are unique per stream. The server tracks, per subscription, the
   last sent nonce and version, the last ACKed version and the last NACK. An
   ACK or NACK whose nonce is not the latest sent for that subscription is
   ignored: the server may supersede an unanswered update, and only the newest
   counts.
-- **A NACKed version is never resent to the same subscription**, with one
-  exception: `DATA_LOSS` on a `UseCached` update (node cache miss or
-  corruption) makes the server resend the full bundle.
+- **Whether a NACKed version is resent depends on the code.** `DATA_LOSS`
+  makes the server resend the full bundle at once. A node-side failure
+  (`RESOURCE_EXHAUSTED`, `INTERNAL`) is retried with backoff. A bundle that
+  can never be written to that volume (`FAILED_PRECONDITION`,
+  `INVALID_ARGUMENT`) is not resent to that subscription.
 - **No answer within 60s** and the update is sent again once.
 - **Reconnect** is a full resync: the driver resubscribes everything with
   `applied_version` and `cached_versions`. The server answers each with its
@@ -207,7 +221,7 @@ Rules
 Unlike xDS, requests are a `oneof` and a response carries a single
 subscription's update. Envoy's overloaded `DiscoveryRequest` makes an ACK and a
 subscription change look alike, and a NACK there rejects a whole response; here
-one pod rejecting one source must not affect any other pod on the node.
+a failed write for one pod's source must not affect any other pod on the node.
 
 ## 5. Node: atomic replacement and last known good
 
@@ -231,9 +245,10 @@ Applying an update, per subscription:
 
 1. **Stage.** Write the bundle into the node cache (or locate it, for
    `UseCached`). Verify the version digest.
-2. **Validate.** Path safety, size and file-count limits, no path collision
-   with the volume's other sources, and a parse check when the file type is
-   known (JSON, YAML, TOML). Failure → NACK, nothing on disk has changed.
+2. **Check deliverability.** Paths stay inside the volume, size and file
+   count are within limits, and no path collides with the volume's other
+   sources. File contents are never opened or parsed. Failure → NACK, nothing
+   on disk has changed.
 3. **Build a generation.** A new directory holding the *whole volume*: this
    source's new bundle plus the currently applied bundle of every other
    source. Files are hardlinked from the node cache (the mount is read-only).
@@ -244,7 +259,18 @@ Applying an update, per subscription:
 5. **ACK**, update `meta.json`, and garbage-collect all but the current and
    previous generation.
 
-Last known good holds at three levels: a rejected update leaves `..data` where
+The driver NACKs only for these reasons:
+
+| Code | Cause | Server reaction |
+|---|---|---|
+| `DATA_LOSS` | Digest mismatch, or a `UseCached` version missing from the node cache | Resend the full bundle |
+| `RESOURCE_EXHAUSTED` | Node disk or the volume's size limit is full | Retry with backoff |
+| `INTERNAL` | I/O error while staging or swapping | Retry with backoff |
+| `FAILED_PRECONDITION` | A path collides with another source of the same volume | Do not resend; counts toward `maxNacks` |
+| `INVALID_ARGUMENT` | Unsafe path or bundle over the limits (the server should have refused it) | Do not resend; counts toward `maxNacks` |
+
+Last known good therefore means the last version successfully written. It
+holds at three levels: a failed update leaves `..data` where
 it was; the previous generation stays on disk; and the node cache keeps the
 blobs of the current and previous version of every live volume, so a server
 rollback is a `UseCached` update and a local swap, with no bytes on the wire.
@@ -286,10 +312,15 @@ sequenceDiagram
   S-->>P: Feedback(cache_key, r1, COMPLETED)
 ```
 
-- `ProviderAck` means the revision passed server-side validation (limits, key
-  and quota rules, optional schema validators) and is cached.
-  `ProviderNack` means it was rejected and the server keeps serving its last
-  known good version. This catches bad config before any pod sees it.
+- `ProviderAck` means the revision was accepted for delivery and cached. The
+  server checks only the envelope: bundle size and file count, path safety,
+  and the cache-key and quota rules. It never inspects the content.
+  `ProviderNack` means the envelope was refused and the server keeps serving
+  its last version.
+- **Validity is the provider's job.** A provider must not emit a revision it
+  has not validated by whatever means suit its source (schema check, signed
+  manifest, review gate at the origin). Anything it emits will be written to
+  pods as is.
 - `Feedback` is the late, informational outcome of the rollout (completed,
   aborted, superseded), since an ACK cannot know that yet.
 - On reconnect the server re-watches everything with `known_revision`; the
@@ -378,7 +409,9 @@ cases running pods keep their files.
 
 The purpose of a rollout is that a new version does not reach every pod at the
 same moment. A new version of a key is released to a growing percentage of its
-subscribers over time, and the ramp stops if pods start rejecting it.
+subscribers over time. Because the content is opaque, nothing in Chandler can
+judge whether a version is good: the ramp buys time for people and their
+monitoring to notice a bad one and stop it before it is everywhere.
 
 A `RolloutPolicy` matches URIs and defines the ramp. Without a matching policy
 a new version goes to everyone at once. A key's first version is always served
@@ -396,7 +429,7 @@ spec:
     - {percent: 1,  hold: 5m}
     - {percent: 10, hold: 10m}
     - {percent: 50, hold: 10m}
-  maxNacks: 0             # NACKs tolerated before the ramp pauses
+  maxNacks: 0             # undeliverable-bundle NACKs tolerated before pausing
   onDelete: Retain
 ```
 
@@ -429,7 +462,7 @@ leader observed them. Only replicas that have finished warm-up campaign.
 |---|---|
 | Create a `ConfigRollout`, supersede an older one | Serve and place pods by the hash rule |
 | Mark a rollout completed and move the stable version | Advance the ramp (it is computed, not stored) |
-| Sum NACK counts when `maxNacks` is above zero | Pause a rollout on a NACK |
+| Sum NACK counts when `maxNacks` is above zero | Pause a rollout on an undeliverable-bundle NACK |
 
 A follower that has received a version the leader has not recorded yet holds
 it and serves it to nobody. A follower that lacks the candidate's bytes serves
@@ -445,7 +478,7 @@ matching its own view of the provider and supersedes the rest.
 ```mermaid
 stateDiagram-v2
   [*] --> Progressing: new version ACKed, policy matched
-  Progressing --> Paused: NACKs exceed maxNacks, or operator pauses
+  Progressing --> Paused: operator pauses, or NACKs exceed maxNacks
   Paused --> Progressing: operator resumes
   Paused --> Aborted: operator aborts
   Progressing --> Aborted: operator aborts
@@ -457,9 +490,11 @@ stateDiagram-v2
 ```
 
 - **Paused**: the percentage is frozen. Pods that already took the candidate
-  keep it; pods that NACKed it are still on their last known good version.
-  Any replica that sees the NACK count exceeded sets the phase, and the time
-  spent paused does not count toward the ramp.
+  keep it. An operator pauses when the new config misbehaves. The system
+  pauses on its own only when the bundle itself cannot be written
+  (`FAILED_PRECONDITION` or `INVALID_ARGUMENT` NACKs above `maxNacks`); node
+  problems such as a full disk do not pause a rollout. Time spent paused does
+  not count toward the ramp.
 - **Completed**: the leader makes the candidate the stable version; the object
   is removed after a retention period.
 - **Aborted**: pods on the candidate are sent the stable version again (a
@@ -482,7 +517,7 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
 - **Authorisation is mandatory.** The server holds the provider credentials, so
   without a check any pod could mount any URI the server can read. A policy
   maps namespaces and service accounts to URI patterns; the default is deny.
-- Bundle paths are validated on both server and node; the volume is always
+- Bundle paths are checked on both server and node; the volume is always
   mounted read-only.
 
 ## 10. Failure modes
@@ -490,15 +525,15 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
 | Failure | Running pods | New pods |
 |---|---|---|
 | Provider down | Keep current files | Served from server cache (`stale=true`) until `stale_if_error` |
-| Provider returns oversized or invalid bundle | Unaffected; server NACKs provider | Get last known good |
+| Provider emits an oversized bundle or unsafe paths | Unaffected; server NACKs provider | Get the last version |
+| Provider emits a bad config | Written to the percentage reached; operator pauses or aborts | Placed by the same hash rule |
 | Server down, all replicas | Keep current files | `UseCached`: from node cache if present; `Fail`: wait |
 | One replica restarts during provider outage | Keep current files | Unaffected; the replica warms from a peer before it is ready |
 | All replicas lose their cache during provider outage | Keep current files | Node has a cache and `UseCached`: start; otherwise wait for the provider |
 | Rollout leader lost | Keep current files; running ramps continue | Served as usual; new versions wait for re-election (about 15s) |
 | Driver restarts | Mounts stay; resync on start | Mount waits for driver, kubelet retries |
 | Node reboots | n/a | Node cache persists; behaves as server-down or normal |
-| Update fails validation on node | NACK, previous generation stays | n/a |
-| Update is valid but breaks the app | Limited to the percentage reached; operator pauses or aborts | Placed by the same hash rule |
+| Update cannot be written on a node | NACK, previous generation stays; retried per error code | n/a |
 | Origin object deleted | Keep current files | `Retain`: cached version; `Block`: `NOT_FOUND` |
 | Cache quota reached | Unaffected | New keys refused with `RESOURCE_EXHAUSTED`; existing keys unaffected |
 
@@ -515,14 +550,11 @@ The operator pauses, resumes or aborts by editing the `ConfigRollout`.
 
 ## 12. Open questions
 
-1. **Server-side validators.** Schema checks (JSON Schema, CEL) before a
-   revision is ACKed are mentioned but not designed.
-2. **Health-based pausing.** The ramp pauses only on NACKs, which catch config
-   the node can tell is broken. Config that parses but breaks the application
-   needs an operator to pause. Pausing automatically on pod restarts or lost
-   readiness, or on an explicit "config loaded" signal from the application,
-   is not designed.
-3. **Total cache loss.** When the server has nothing for a key, it could
+1. **Health-based pausing.** Content is opaque, so a bad config is stopped
+   only by an operator pausing the ramp. Pausing automatically on pod
+   restarts or lost readiness, or on an explicit "config loaded" signal from
+   the application, is not designed.
+2. **Total cache loss.** When the server has nothing for a key, it could
    answer "use your newest cached version, marked stale" so that pods on
    nodes with a node cache start regardless of `failurePolicy`. Not adopted
    yet.

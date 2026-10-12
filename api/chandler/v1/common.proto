@@ -1,5 +1,15 @@
-syntax = "proto3";
+edition = "2024";
 
+// Types shared by every Chandler protocol.
+//
+// Two conventions hold across the whole package:
+//
+//   * Configuration content is opaque. Neither the config server nor the CSI
+//     driver parses or interprets file contents; a provider is responsible for
+//     the validity of what it emits.
+//   * A "version" is always a content address of a Bundle, written
+//     "sha256:<hex>". A "revision" is a provider's own change marker (an ETag,
+//     an object version id). The two are never interchangeable.
 package chandler.v1;
 
 import "google/protobuf/duration.proto";
@@ -8,49 +18,86 @@ option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
 
 // File is one regular file inside a Bundle.
 message File {
-  // Path relative to the source's mount path. Must be clean and relative: no
-  // leading "/", no "." or ".." segments, and no segment starting with ".."
-  // (reserved for the atomic writer's bookkeeping entries).
+  // Location of the file relative to the mount path of the source it belongs
+  // to, using "/" as separator. Required.
+  //
+  // The path must be clean and relative: no leading "/", no empty, "." or ".."
+  // segment, and no segment starting with ".." (those names are reserved for
+  // the driver's atomic-writer bookkeeping). A Bundle containing a path that
+  // breaks these rules is refused as a whole.
   string path = 1;
 
-  // Unix permission bits. Zero means 0444.
+  // Unix permission bits of the file, e.g. 0440. Only the low nine bits are
+  // honoured. When unset the file is created 0444. The volume is always
+  // mounted read-only, so write bits have no effect inside the pod.
   uint32 mode = 2;
 
+  // The file's bytes, delivered to the pod exactly as given. Never inspected
+  // by the server or the driver. May be empty.
   bytes content = 3;
 }
 
 // Bundle is the unit of atomic delivery for one URI: either a single file or a
-// directory tree. A bundle is always applied or rejected as a whole.
+// directory tree. A Bundle is always written or refused as a whole; a pod
+// never observes part of one.
 //
-// The bundle's version is "sha256:<hex>" over its canonical encoding: files
+// The Bundle's version is "sha256:<hex>" over its canonical encoding: files
 // sorted by path, each contributing len(path) | path | mode | sha256(content).
 // Versions are therefore content addresses, independent of the provider's own
-// revision identifiers.
+// revision identifiers, and two Bundles with the same files have the same
+// version no matter which provider or revision produced them.
 message Bundle {
+  // The files of the bundle, in any order. Paths must be unique within the
+  // Bundle. A URI that names a single object yields exactly one File; a URI
+  // that names a directory yields one File per object under it.
+  //
+  // The total size and the number of files are limited by the server (see
+  // ServerHello.max_bundle_bytes and WatcherHello.max_bundle_files).
   repeated File files = 1;
 }
 
 // CacheControl carries the HTTP-style caching directives a provider attaches
 // to a resource. It governs both the server cache and the node cache.
+//
+// Freshness only matters while a provider cannot be reached: as long as the
+// server's watch on the provider is live, the resource is kept current by push
+// and is always fresh.
 message CacheControl {
-  // How long the resource is fresh once its provider watch is no longer live.
-  // While the watch is live the resource is always fresh.
+  // How long the resource stays fresh after its provider watch was last live.
+  // Equivalent to HTTP "max-age". When unset the resource becomes stale as
+  // soon as the watch is lost.
   google.protobuf.Duration max_age = 1;
 
   // How long past max_age a stale resource may still be served to NEW
-  // subscriptions when the provider is unavailable. Unset means unlimited.
-  // Existing subscribers always keep what they already applied.
+  // subscriptions while the provider is unavailable. Equivalent to HTTP
+  // "stale-if-error". When unset there is no limit: a stale resource is served
+  // for as long as the provider stays down.
+  //
+  // This never affects existing subscribers, which always keep the version
+  // they already wrote.
   google.protobuf.Duration stale_if_error = 2;
 
-  // The content must never be written to persistent storage: the server keeps
-  // it in memory only and the node materialises it on tmpfs, bypassing the
-  // node cache. Replicas still copy it to each other, in memory.
+  // When true, the content must never be written to persistent storage.
+  // Equivalent to HTTP "no-store". The server keeps it in memory only and the
+  // node writes it to a per-volume tmpfs, bypassing the node cache. Server
+  // replicas still copy it to each other, in memory.
+  //
+  // The cost is availability: such a resource cannot be served from a node
+  // cache when the server is unreachable. Defaults to false.
   bool no_store = 3;
 }
 
-// Track says which side of an in-progress rollout a subscription is on.
+// Track says which side of an in-progress rollout a subscription is on. It is
+// informational: the driver writes whatever version it is sent, regardless of
+// track.
 enum Track {
+  // No rollout is in progress for the resource, or the sender did not say.
   TRACK_UNSPECIFIED = 0;
+
+  // The subscription is on the version that was current before the rollout
+  // started.
   TRACK_STABLE = 1;
+
+  // The subscription was selected by the rollout and is on the new version.
   TRACK_CANDIDATE = 2;
 }

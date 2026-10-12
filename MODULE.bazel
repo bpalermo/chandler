@@ -13,4 +13,4 @@ go_sdk.from_file(go_mod = "//:go.mod")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
-use_repo(go_deps, "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_protobuf")
+use_repo(go_deps, "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf")

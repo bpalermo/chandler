@@ -47,6 +47,9 @@ type Handler interface {
 	// Loaded returns the last version the application reported loaded, ""
 	// for none or when the volume has no application acknowledgement.
 	Loaded() string
+	// Token returns the pod's service account token, which proves to the
+	// server which pod the subscription is for; "" when there is none.
+	Token() string
 }
 
 // Subscription is one source of one pod volume.
@@ -142,10 +145,19 @@ func (c *Client) Err() error {
 }
 
 func subscribeRequest(s Subscription) *chandlerv1.ConfigRequest {
+	// The token is read now, not when the volume was mounted: kubelet
+	// replaces it before it expires.
+	workload := proto.CloneOf(s.Workload)
+	if workload == nil {
+		workload = &chandlerv1.Workload{}
+	}
+	if token := s.Handler.Token(); token != "" {
+		workload.SetServiceAccountToken(token)
+	}
 	subscribe := chandlerv1.Subscribe_builder{
 		SubscriptionId: proto.String(s.ID),
 		Uri:            proto.String(s.URI),
-		Workload:       s.Workload,
+		Workload:       workload,
 	}
 	applied := s.Handler.Applied()
 	if applied != "" {

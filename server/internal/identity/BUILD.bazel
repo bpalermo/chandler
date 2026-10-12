@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "identity",
+    srcs = [
+        "identity.go",
+        "jwks.go",
+    ],
+    importpath = "github.com/bpalermo/chandler/server/internal/identity",
+    visibility = ["//server:__subpackages__"],
+)
+
+go_test(
+    name = "identity_test",
+    srcs = ["identity_test.go"],
+    embed = [":identity"],
+)

@@ -195,6 +195,7 @@ func publishRequest(volumeID, target, sources string) *csi.NodePublishVolumeRequ
 			podNameKey:      "web-0",
 			podNamespaceKey: "shop",
 			podUIDKey:       "uid-1",
+			tokensKey:       `{"chandler":{"token":"token-1","expirationTimestamp":"2030-01-01T00:00:00Z"},"other":{"token":"not-ours"}}`,
 		},
 	}
 }
@@ -693,5 +694,56 @@ func TestNoAcknowledgementUnlessAsked(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(f.mounts.mounts[target], name)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s exists in a volume without appAck: %v", name, err)
 		}
+	}
+}
+
+// The pod's token goes to the server with every subscription, and a new one
+// from kubelet repairs a subscription the server refused for lack of one.
+func TestPodTokenIsPassedAndRenewed(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	target := filepath.Join(t.TempDir(), "mount")
+	req := publishRequest("csi-token", target, "- uri: file:///app.yaml\n  path: app.yaml\n")
+	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	// Only the token for the server's audience.
+	if got := f.server.subs["csi-token/0"].Handler.Token(); got != "token-1" {
+		t.Fatalf("subscribed with token %q, want token-1", got)
+	}
+
+	// kubelet publishes again with a renewed token: nothing is remounted or
+	// resubscribed, and the next subscribe will carry the new one.
+	f.server.subs = map[string]client.Subscription{}
+	req.VolumeContext[tokensKey] = `{"chandler":{"token":"token-2"}}`
+	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.server.subscribed(); n != 0 {
+		t.Errorf("a renewed token caused %d subscriptions; the server did not ask for one", n)
+	}
+
+	// After a driver restart the token is gone until kubelet supplies one,
+	// and a server that verifies tokens refuses the subscription meanwhile.
+	restarted := f.restart(t)
+	if err := restarted.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	restored := f.server.subs["csi-token/0"]
+	if got := restored.Handler.Token(); got != "" {
+		t.Fatalf("the restored volume has token %q; tokens must not be kept on disk", got)
+	}
+	restored.Handler.Fail(&rpcstatus.Status{Code: int32(codes.Unauthenticated), Message: "no token"})
+	f.server.subs = map[string]client.Subscription{}
+	if _, err := restarted.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	again, ok := f.server.subs["csi-token/0"]
+	if !ok || again.Handler.Token() != "token-2" {
+		t.Errorf("after kubelet supplied a token the volume was not subscribed again with it")
+	}
+	// The files were there all along.
+	if got := read(t, filepath.Join(f.mounts.mounts[target], "app.yaml")); got != "a: 1\n" {
+		t.Errorf("app.yaml = %q", got)
 	}
 }

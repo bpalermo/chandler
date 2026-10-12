@@ -30,7 +30,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: {{ include "chandler.name" . }}-server
+      # Used for one thing: reading the cluster's public token signing keys.
+      automountServiceAccountToken: {{ and .Values.server.podIdentity.verify (not .Values.server.podIdentity.keys) }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -51,6 +53,14 @@ spec:
             - --listen=:{{ .Values.server.port }}
             - --health-listen=:{{ add (int .Values.server.port) 1 }}
             {{- include "chandler.tlsArgs" $selector | nindent 12 }}
+            {{- if .Values.server.podIdentity.verify }}
+            - --pod-token-audience={{ .Values.server.podIdentity.audience }}
+            {{- with .Values.server.podIdentity.keys }}
+            - --pod-token-keys={{ . }}
+            {{- end }}
+            {{- else }}
+            - --trust-driver-identity
+            {{- end }}
             - --driver-identity={{ include "chandler.identity" (dict "root" . "component" "csi") }}
             - --peer-identity={{ include "chandler.identity" $selector }}
             - --peer-service={{ include "chandler.name" . }}-server-peers.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}

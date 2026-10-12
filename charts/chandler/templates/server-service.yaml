@@ -52,3 +52,16 @@ spec:
     matchLabels:
       {{- include "chandler.selectorLabels" $selector | nindent 6 }}
 {{- end }}
+---
+# The server holds no permissions of its own. Its service account exists so
+# that it can read the cluster's public token signing keys, which every
+# service account may.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "chandler.name" . }}-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+automountServiceAccountToken: false

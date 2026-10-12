@@ -118,9 +118,20 @@ type Config struct {
 	Log         *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// Verify checks the service account token of a subscription and returns
+	// who the pod is. nil trusts what the driver says.
+	Verify func(token string) (Identity, error)
 	// Dial returns the credentials to dial a provider or a peer that must
 	// carry one of the identities; nil dials without TLS.
 	Dial func(identities []string) credentials.TransportCredentials
+}
+
+// Identity is who a pod is, as Kubernetes vouches for it.
+type Identity struct {
+	Namespace      string
+	ServiceAccount string
+	PodName        string
+	PodUID         string
 }
 
 // Hub serves ConfigDiscoveryService and watches providers.
@@ -138,6 +149,7 @@ type Hub struct {
 	cacheDir    string
 	store       *cas.Store
 	dial        func(identities []string) credentials.TransportCredentials
+	verify      func(token string) (Identity, error)
 
 	// mu guards everything below, and the fields of every upstream, resource,
 	// entry and subscription. Nothing blocks on the network while holding it:
@@ -169,6 +181,7 @@ func New(cfg Config) (*Hub, error) {
 		now:         cfg.Now,
 		cacheDir:    cfg.CacheDir,
 		dial:        cfg.Dial,
+		verify:      cfg.Verify,
 		upstreams:   make(map[string]*upstream),
 		resources:   make(map[string]*resource),
 		entries:     make(map[entryKey]*entry),
@@ -375,6 +388,30 @@ func (s *session) fail(id string, code codes.Code, msg string) {
 // subscribe registers a subscription and sends its initial answer if one is
 // already known.
 func (h *Hub) subscribe(sess *session, msg *chandlerv1.Subscribe) {
+	// Who the pod is decides what it may vary on, which namespace's quota it
+	// counts against and where a rollout places it, so it is taken from the
+	// token Kubernetes signed, not from the driver's word. Verified before
+	// the lock: it may fetch the cluster's keys.
+	msg = proto.CloneOf(msg)
+	workload := msg.GetWorkload()
+	if workload == nil {
+		workload = &chandlerv1.Workload{}
+		msg.SetWorkload(workload)
+	}
+	if h.verify != nil {
+		who, err := h.verify(workload.GetServiceAccountToken())
+		if err != nil {
+			sess.fail(msg.GetSubscriptionId(), codes.Unauthenticated, err.Error())
+			return
+		}
+		workload.SetNamespace(who.Namespace)
+		workload.SetServiceAccount(who.ServiceAccount)
+		workload.SetPodName(who.PodName)
+		workload.SetPodUid(who.PodUID)
+	}
+	// Nothing after this point needs the token; do not keep it around.
+	workload.ClearServiceAccountToken()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 

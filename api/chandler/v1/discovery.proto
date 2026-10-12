@@ -352,6 +352,9 @@ message AppReport {
 //
 // status.code is one of:
 //
+//   UNAUTHENTICATED     the pod's service account token is missing, expired
+//                       or not valid; the driver subscribes again when
+//                       kubelet supplies a new one
 //   NOT_FOUND           the provider has no such resource
 //   PERMISSION_DENIED   the workload may not read this URI
 //   INVALID_ARGUMENT    malformed URI, or parameters the provider refuses

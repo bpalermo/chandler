@@ -81,6 +81,21 @@ server:
   # The file provider below registers itself when enabled.
   providers: []
 
+  # How the server knows which pod a subscription is for. kubelet gives the
+  # driver a token for the pod's service account, and the server verifies it
+  # against the cluster's public signing keys.
+  podIdentity:
+    # false believes whatever a driver says about the pod.
+    verify: true
+    # The audience of the token. It is requested for this audience only, so
+    # the token a pod can read from its own filesystem is of no use here.
+    audience: chandler
+    # Where the cluster's signing keys are: a URL or a file in the container.
+    # Empty reads them from the API server, with the server's service
+    # account; that needs the system:service-account-issuer-discovery role,
+    # which clusters grant to every service account by default.
+    keys: ""
+
   # The cache of what the providers emitted. It lives on an emptyDir: it
   # survives a container restart, and is refilled from the providers after the
   # pod is replaced.

@@ -112,9 +112,10 @@ the file name whatever the object is called at the origin. For a directory URI
 (trailing slash) it is the directory the bundle's files are placed in.
 
 The `CSIDriver` object sets `attachRequired: false`,
-`volumeLifecycleModes: [Ephemeral]`, `podInfoOnMount: true` and a
-`tokenRequests` entry with the server's audience, so every mount carries the
-pod's namespace, name, UID, service account and a pod-bound token.
+`volumeLifecycleModes: [Ephemeral]`, `podInfoOnMount: true`, a
+`tokenRequests` entry with the server's audience and `requiresRepublish:
+true`, so every mount carries the pod's namespace, name, UID, service account
+and a pod-bound token, and kubelet renews the token before it expires.
 
 ## 3. URIs and cache keys
 
@@ -699,7 +700,15 @@ kubelet rewrites them all (the share never shrinks, so this only delays).
   cannot present a certificate.
 - The server verifies `Workload.service_account_token` (audience-bound,
   pod-bound) and takes namespace, service account and pod identity from the
-  token, not from the driver's claims.
+  token, not from the driver's claims. Verification is offline, against the
+  cluster's public signing keys, which the server fetches and caches: a mount
+  does not depend on the API server being reachable, and the server needs no
+  permission beyond reading those keys. The price is that a deleted pod's
+  token stays valid until it expires.
+- kubelet renews the token by publishing the volume again
+  (`requiresRepublish`). The driver keeps it in memory only, so after a driver
+  restart a subscription is refused `UNAUTHENTICATED` until kubelet supplies
+  the token again, a few seconds; pods keep their files meanwhile.
 - **Authorisation is needed and not designed yet.** The providers hold the
   origins' credentials, so without a check any pod can mount any URI its
   cluster's providers can read. Where the policy lives is open: see the open
@@ -768,7 +777,7 @@ What exists today, against the design above.
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again | Load timeouts: a version that is written but never reported stays `pending` and nothing reacts |
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | Max connection age to rebalance driver streams |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
-| Security | Mutual TLS on every connection, from certificate files re-read on rotation; peers authorised by identity per service; a chart-issued private authority by default, or your own Secrets | SPIFFE Workload API as a certificate source, verification of the pod's service account token, authorisation of URIs (open question 3) |
+| Security | Mutual TLS on every connection, from certificate files re-read on rotation; peers authorised by identity per service; a chart-issued private authority by default, or your own Secrets. The pod's identity verified offline from its service account token | SPIFFE Workload API as a certificate source, authorisation of URIs (open question 3) |
 | Observability | Structured logs | Metrics and events |
 
 The server's cache survives a rollout because each new replica copies it from

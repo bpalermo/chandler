@@ -12,5 +12,11 @@ spec:
     - Ephemeral
   # The driver needs the pod's identity to subscribe on its behalf.
   podInfoOnMount: true
+  # And proof of it: a token for the pod's service account that only the
+  # config server accepts, which kubelet renews by publishing the volume
+  # again before it expires.
+  tokenRequests:
+    - audience: {{ .Values.server.podIdentity.audience }}
+  requiresRepublish: true
   # Files are read-only and owned by the driver; kubelet must not chown them.
   fsGroupPolicy: None

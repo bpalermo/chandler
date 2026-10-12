@@ -25,6 +25,7 @@ import (
 	"github.com/bpalermo/chandler/common/transport"
 	"github.com/bpalermo/chandler/common/version"
 	"github.com/bpalermo/chandler/server/internal/hub"
+	"github.com/bpalermo/chandler/server/internal/identity"
 )
 
 // providerFlags collects repeated --provider name=target flags.
@@ -43,6 +44,9 @@ type security struct {
 	// providers is "<name>=<identity>": what each provider's certificate
 	// must carry, when it is not the host name of its target.
 	providers providerFlags
+	// How the pod behind a subscription is identified.
+	tokenAudience, tokenKeys string
+	trustDriver              bool
 }
 
 func main() {
@@ -52,6 +56,9 @@ func main() {
 	flag.StringVar(&sec.healthListen, "health-listen", ":9001", "address of the gRPC health service, served without TLS for kubelet's probes")
 	flag.Var(&sec.drivers, "driver-identity", "an identity (DNS name or SPIFFE ID) a CSI driver's certificate may carry. Repeatable; required with TLS")
 	flag.Var(&sec.peers, "peer-identity", "an identity another replica's certificate may carry. Repeatable; required with TLS when peer sync is on")
+	flag.StringVar(&sec.tokenAudience, "pod-token-audience", "chandler", "the audience the pods' service account tokens must have been issued for")
+	flag.StringVar(&sec.tokenKeys, "pod-token-keys", identity.InClusterJWKS, "where the cluster's token signing keys are: a URL, read with this pod's service account, or a file")
+	flag.BoolVar(&sec.trustDriver, "trust-driver-identity", false, "do not verify the pods' tokens: believe the namespace, service account and pod a driver reports")
 	flag.Var(&sec.providers, "provider-identity", "<name>=<identity>: the identity a provider's certificate must carry, when it is not the host name of its target. Repeatable")
 	var (
 		listen         = flag.String("listen", ":9000", "address the server's gRPC server listens on")
@@ -142,6 +149,26 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 		log.Warn("running without TLS: connections are neither encrypted nor authenticated")
 	}
 	peers.Identities = peerIdentities
+	if sec.trustDriver {
+		log.Warn("not verifying pod tokens: a driver is believed about which pod it speaks for")
+	} else {
+		keys := &identity.JWKS{Log: log}
+		if strings.HasPrefix(sec.tokenKeys, "https://") || strings.HasPrefix(sec.tokenKeys, "http://") {
+			keys.URL = sec.tokenKeys
+		} else {
+			keys.File = sec.tokenKeys
+		}
+		if err := keys.Load(); err != nil {
+			// Not fatal: the API server may be away for a moment, and the
+			// keys are fetched again when the first token arrives.
+			log.Warn("could not fetch the cluster's token signing keys yet", "error", err)
+		}
+		verifier := identity.Verifier{Audience: sec.tokenAudience, Keys: keys}
+		cfg.Verify = func(token string) (hub.Identity, error) {
+			who, err := verifier.Verify(token)
+			return hub.Identity(who), err
+		}
+	}
 	cfg.Dial = func(identities []string) credentials.TransportCredentials { return transport.Dial(src, identities) }
 
 	cfg.ServerID = serverID

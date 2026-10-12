@@ -40,6 +40,9 @@ server:
     digest: ""
     tag: v9.9.9
   replicas: 3
+  podIdentity:
+    verify: false
+    audience: config
   peerSync:
     interval: 5s
     warmUp: 20s

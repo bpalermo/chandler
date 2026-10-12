@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "discovery.go",
         "hub.go",
+        "persist.go",
         "upstream.go",
     ],
     importpath = "github.com/bpalermo/chandler/server/internal/hub",
@@ -12,6 +13,7 @@ go_library(
     deps = [
         "//api/chandler/v1:chandler",
         "//common/bundle",
+        "//common/cas",
         "//common/queue",
         "//common/uri",
         "@org_golang_google_genproto_googleapis_rpc//status",
@@ -20,12 +22,16 @@ go_library(
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/durationpb",
     ],
 )
 
 go_test(
     name = "hub_test",
-    srcs = ["hub_test.go"],
+    srcs = [
+        "cache_test.go",
+        "hub_test.go",
+    ],
     embed = [":hub"],
     deps = [
         "//api/chandler/v1:chandler",
@@ -35,5 +41,6 @@ go_test(
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/durationpb",
     ],
 )

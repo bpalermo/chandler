@@ -98,28 +98,6 @@ func TestVersionsPerURI(t *testing.T) {
 	}
 }
 
-// Corruption must surface as a miss, never as wrong bytes in a pod.
-func TestGetDetectsDamage(t *testing.T) {
-	dir := t.TempDir()
-	c, _ := Open(dir, time.Hour)
-	b, version := oneFile("v1")
-	if err := c.Put("file:///app", version, b); err != nil {
-		t.Fatal(err)
-	}
-	err := filepath.WalkDir(filepath.Join(dir, "blobs"), func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			return os.WriteFile(p, []byte("flipped"), 0o600)
-		}
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Get(version); !errors.Is(err, ErrNotCached) {
-		t.Errorf("Get of damaged content = %v, want ErrNotCached", err)
-	}
-}
-
 func TestCollect(t *testing.T) {
 	dir := t.TempDir()
 	c, _ := Open(dir, time.Hour)

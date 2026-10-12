@@ -6,8 +6,8 @@ read-only and replaces them atomically when they change.
 
 > **Status: early development.** Configuration is delivered end to end from
 > the file and S3 providers, and updated in place. There is no security yet:
-> connections are plaintext and any pod can read any URI. Caching and staged
-> rollouts are not built. See
+> connections are plaintext and any pod can read any URI. Staged rollouts are
+> not built. See
 > [What works today](#what-works-today).
 
 ## How it is meant to work
@@ -63,12 +63,12 @@ in [api/chandler/v1](api/chandler/v1).
 |---|---|
 | Protocol definitions | Written, for all three protocols |
 | CSI driver | Mounts a volume once every source is delivered, replaces files atomically on change, and resumes after a restart. Keeps a node cache, so a pod with `failurePolicy: UseCached` can start while the server is down |
-| Config server | Shares one provider watch between subscriptions and pushes each new revision; holds content in memory only |
+| Config server | Shares one provider watch between subscriptions and pushes each new revision. Caches what providers emit, with quotas, and keeps serving it while a provider is down |
 | File provider | Serves files and directories from a volume, such as a ConfigMap |
 | S3 provider | Serves objects and prefixes from allow-listed buckets, on AWS or an S3-compatible store |
 | Helm chart | Installs the driver and the server, and optionally the file and S3 providers |
 | Security | Not built: plaintext, unauthenticated, no authorisation |
-| Caching, staged rollouts, application acknowledgement | Designed, not built |
+| Replicas copying each other's cache, staged rollouts, application acknowledgement | Designed, not built |
 
 The design document ends with a
 [detailed status table](docs/design.md#13-implementation-status).

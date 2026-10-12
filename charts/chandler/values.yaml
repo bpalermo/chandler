@@ -39,6 +39,18 @@ server:
   # The file provider below registers itself when enabled.
   providers: []
 
+  # The cache of what the providers emitted. It lives on an emptyDir: it
+  # survives a container restart, and is refilled from the providers after the
+  # pod is replaced.
+  cache:
+    # The emptyDir's size limit. The server holds at most 1Gi per provider.
+    sizeLimit: 2Gi
+    # How long an entry no pod uses is kept.
+    grace: 24h
+    # How long a not-found or permission-denied answer from a provider is
+    # remembered, so a crash-looping pod does not hammer it.
+    negativeTtl: 30s
+
   # Limits on what a provider may emit for one URI. A bundle travels in one
   # gRPC message, so maxBundleBytes cannot exceed 3145728.
   maxBundleBytes: 1048576

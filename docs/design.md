@@ -517,6 +517,14 @@ key index (`cache_key → current version, held versions, revision,
 CacheControl, last refresh`) and the alias table. `no_store` bundles are held
 in memory only.
 
+A subscriber attribute may enter a resource's identity only if the provider
+declared it in `vary_on` and it is one of `cluster`, `namespace` or
+`service_account`. A provider that declares anything else is refused at the
+handshake.
+
+The default quotas are 10,000 keys and 1 GiB per provider, 16 keys per
+canonical URI, and 1,000 distinct URIs per namespace.
+
 There is no persistent volume. A volume per replica is zone-bound, so it would
 keep a replica from rescheduling in exactly the failures the cache exists for,
 and it would make the config system depend on a storage driver to start. The
@@ -748,12 +756,11 @@ What exists today, against the design above.
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect | Resend after 60s without an answer, max connection age, `AppReport` |
 | Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | Hardlinking files from the cache (they are copied), `no_store` tmpfs (such content skips the cache but is written to the volume's disk), application acknowledgement |
-| Server | One watch per canonical URI shared by its subscriptions, envelope checks, provider reconnect with `known_revision`, serving the held version through a provider outage | Persistent cache and its quotas, aliases and `vary_on`, freshness, negative caching, peer sync, rollouts, authorisation |
+| Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), `onDelete: Block`, peer sync, rollouts, authorisation |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
 | Security | None: connections are plaintext and unauthenticated, and any pod may read any URI | Everything in section 9 |
 | Observability | Structured logs | Metrics and events |
 
-Two consequences of the server holding resources only in memory, and only
-while they have a subscription: a restarted server has nothing until its
-providers answer, and a resource whose last pod went away is fetched again for
-the next one.
+The server's cache survives a container restart but not the replacement of
+its pod, and replicas do not yet copy from each other: a new server pod has
+nothing until its providers answer.

@@ -6,6 +6,8 @@ module(
 bazel_dep(name = "rules_go", version = "0.64.2")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "protobuf", version = "36.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_img", version = "0.3.23")
 bazel_dep(name = "googleapis", version = "0.0.0-20260929-28769825")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
@@ -14,3 +16,18 @@ go_sdk.from_file(go_mod = "//:go.mod")
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 use_repo(go_deps, "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf")
+
+# Container image base: distroless static on Debian 13, nonroot variant (user
+# 65532), pinned by index digest so a moving tag cannot change the image.
+# Resolved from gcr.io/distroless/static-debian13:nonroot. Layers are fetched
+# lazily, only when an image is loaded, so `bazel build //...` needs no
+# registry access and no Docker daemon.
+pull = use_repo_rule("@rules_img//img:pull.bzl", "pull")
+
+pull(
+    name = "distroless_static",
+    digest = "sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3",
+    layer_handling = "lazy",
+    registry = "gcr.io",
+    repository = "distroless/static-debian13",
+)

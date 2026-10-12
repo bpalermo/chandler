@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//bazel/image:defs.bzl", "go_image")
 
 go_library(
     name = "s3_lib",
@@ -12,5 +13,15 @@ go_binary(
     name = "s3",
     basename = "chandler-provider-s3",
     embed = [":s3_lib"],
+    # Pure Go: the image binary is cross-built for linux with cgo off.
+    pure = "on",
     visibility = ["//visibility:public"],
+)
+
+go_image(
+    name = "image",
+    base = "@distroless_static",
+    binary = ":s3",
+    load_tag = "localhost/chandler-provider-s3:e2e",
+    path = "/chandler-provider-s3",
 )

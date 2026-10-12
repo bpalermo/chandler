@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "e2e_test",
+    srcs = [
+        "images_test.go",
+        "kubectl_test.go",
+    ],
+    # Needs a cluster and kubectl: excluded from `bazel test //...` by the e2e
+    # tag (see .bazelrc) and run unsandboxed by e2e/run.sh.
+    tags = [
+        "e2e",
+        "local",
+    ],
+)

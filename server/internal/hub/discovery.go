@@ -24,10 +24,10 @@ func (h *Hub) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_StreamConfi
 		return grpcstatus.Error(codes.InvalidArgument, "the first message must be a NodeHello")
 	}
 	sess := &session{
-		node: first.GetHello().GetNodeId(),
+		node:    first.GetHello().GetNodeId(),
 		cluster: first.GetHello().GetCluster(),
-		out:  queue.New[*chandlerv1.ConfigResponse](),
-		subs: make(map[string]*subscription),
+		out:     queue.New[*chandlerv1.ConfigResponse](),
+		subs:    make(map[string]*subscription),
 	}
 	log := h.log.With("node", sess.node)
 	log.Info("driver connected", "driver_version", first.GetHello().GetDriverVersion())

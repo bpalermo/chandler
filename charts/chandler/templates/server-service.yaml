@@ -15,3 +15,40 @@ spec:
       port: {{ .Values.server.port }}
       targetPort: grpc
       appProtocol: grpc
+---
+# Lists the ready replicas one by one, for peer sync. A replica appears here
+# only once it is warm, so a starting replica never copies from an empty one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chandler.name" . }}-server-peers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  clusterIP: None
+  selector:
+    {{- include "chandler.selectorLabels" $selector | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.server.port }}
+      targetPort: grpc
+      appProtocol: grpc
+{{- if gt (int .Values.server.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "chandler.name" . }}-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  # One at a time, so there is always a replica holding the cache.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "chandler.selectorLabels" $selector | nindent 6 }}
+{{- end }}

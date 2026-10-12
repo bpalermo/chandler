@@ -535,8 +535,9 @@ cache is small by construction, so replicas keep each other's copies instead.
 Replicas find each other through a headless Service and speak `PeerSync`
 ([`peer.proto`](../api/chandler/v1/peer.proto)).
 
-- **Warm-up.** A starting replica lists the keys of a ready peer and fetches
-  every bundle it lacks before it reports ready. An `emptyDir` survives
+- **Warm-up.** A starting replica lists the keys of every ready peer and
+  fetches every bundle it lacks before it reports ready (for at most a
+  minute). An `emptyDir` survives
   container restarts, so after a crash this is usually a no-op. If no peer is
   ready (first replica, or the whole fleet was lost) it becomes ready at once
   and fills from the providers on demand.
@@ -756,11 +757,13 @@ What exists today, against the design above.
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect | Resend after 60s without an answer, max connection age, `AppReport` |
 | Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | Hardlinking files from the cache (they are copied), `no_store` tmpfs (such content skips the cache but is written to the volume's disk), application acknowledgement |
-| Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), `onDelete: Block`, peer sync, rollouts, authorisation |
+| Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), `onDelete: Block`, rollouts, authorisation |
+| Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | On-demand fetch of a version named by a rollout, max connection age to rebalance driver streams, authentication of peers |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
 | Security | None: connections are plaintext and unauthenticated, and any pod may read any URI | Everything in section 9 |
 | Observability | Structured logs | Metrics and events |
 
-The server's cache survives a container restart but not the replacement of
-its pod, and replicas do not yet copy from each other: a new server pod has
-nothing until its providers answer.
+The server's cache survives a rollout because each new replica copies it from
+the ready ones before it takes traffic. If every replica is lost at once, the
+cache is gone and is refilled from the providers; nodes with a node cache
+still start pods that set `failurePolicy: UseCached`.

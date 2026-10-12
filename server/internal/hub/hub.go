@@ -115,6 +115,7 @@ type Config struct {
 // Hub serves ConfigDiscoveryService and watches providers.
 type Hub struct {
 	chandlerv1.UnimplementedConfigDiscoveryServiceServer
+	chandlerv1.UnimplementedPeerSyncServer
 
 	id          string
 	limits      bundle.Limits
@@ -187,6 +188,8 @@ type alias struct {
 	Provider string `json:"provider"`
 	CacheKey string `json:"cacheKey"`
 	URI      string `json:"uri"`
+	// Attributes is the vary attributes the alias holds for.
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 type negative struct {

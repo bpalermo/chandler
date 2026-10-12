@@ -297,7 +297,10 @@ func run(t *testing.T, cfg Config, p *fakeProvider, waitConnected bool) harness 
 		h.Run(ctx)
 		close(done)
 	}()
-	target, stopServer := serve(t, func(s *grpc.Server) { chandlerv1.RegisterConfigDiscoveryServiceServer(s, h) })
+	target, stopServer := serve(t, func(s *grpc.Server) {
+		chandlerv1.RegisterConfigDiscoveryServiceServer(s, h)
+		chandlerv1.RegisterPeerSyncServer(s, h)
+	})
 	stop := sync.OnceFunc(func() {
 		stopServer()
 		cancel()

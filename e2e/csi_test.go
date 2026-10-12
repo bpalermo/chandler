@@ -21,7 +21,25 @@ const (
 	busybox = "docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 
 	mountPath = "/etc/chandler"
+
+	// The config server's replica count in e2e/values.yaml.
+	serverReplicas = 2
 )
+
+// scaleDeployment scales a chart deployment and waits until the change has
+// taken effect: its pods are gone, or its rollout is complete.
+func scaleDeployment(ctx context.Context, name, component string, replicas int) error {
+	if _, err := kubectl(ctx, "scale", "deployment/"+name, "-n", driverNamespace, fmt.Sprintf("--replicas=%d", replicas)); err != nil {
+		return err
+	}
+	if replicas == 0 {
+		_, err := kubectl(ctx, "wait", "--for=delete", "pod", "-n", driverNamespace,
+			"-l", "app.kubernetes.io/component="+component, "--timeout=120s")
+		return err
+	}
+	_, err := kubectl(ctx, "rollout", "status", "deployment/"+name, "-n", driverNamespace, "--timeout=180s")
+	return err
+}
 
 // consumerPod is a pod that mounts a Chandler inline volume with the given
 // sources, the YAML list a pod author writes.
@@ -339,22 +357,13 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	}
 
 	scale := func(ctx context.Context, replicas int) error {
-		if _, err := kubectl(ctx, "scale", "deployment/chandler-server", "-n", driverNamespace, fmt.Sprintf("--replicas=%d", replicas)); err != nil {
-			return err
-		}
-		if replicas == 0 {
-			_, err := kubectl(ctx, "wait", "--for=delete", "pod", "-n", driverNamespace,
-				"-l", "app.kubernetes.io/component=server", "--timeout=120s")
-			return err
-		}
-		_, err := kubectl(ctx, "rollout", "status", "deployment/chandler-server", "-n", driverNamespace, "--timeout=180s")
-		return err
+		return scaleDeployment(ctx, "chandler-server", "server", replicas)
 	}
 	t.Cleanup(func() {
 		// Whatever happened, the next test needs a server.
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
-		if err := scale(ctx, 1); err != nil {
+		if err := scale(ctx, serverReplicas); err != nil {
 			t.Errorf("restoring the config server: %v", err)
 		}
 	})
@@ -394,7 +403,7 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	}
 
 	// The server returns: everything converges on what it serves.
-	if err := scale(ctx, 1); err != nil {
+	if err := scale(ctx, serverReplicas); err != nil {
 		t.Fatal(err)
 	}
 	publish(ctx, t, key, "v2")
@@ -426,16 +435,7 @@ func TestServerCacheServesThroughAProviderOutage(t *testing.T) {
 	mustKubectl(ctx, t, "delete", "pod", "first", "-n", ns, "--wait=true")
 
 	scale := func(ctx context.Context, replicas int) error {
-		if _, err := kubectl(ctx, "scale", "deployment/chandler-provider-file", "-n", driverNamespace, fmt.Sprintf("--replicas=%d", replicas)); err != nil {
-			return err
-		}
-		if replicas == 0 {
-			_, err := kubectl(ctx, "wait", "--for=delete", "pod", "-n", driverNamespace,
-				"-l", "app.kubernetes.io/component=provider-file", "--timeout=120s")
-			return err
-		}
-		_, err := kubectl(ctx, "rollout", "status", "deployment/chandler-provider-file", "-n", driverNamespace, "--timeout=180s")
-		return err
+		return scaleDeployment(ctx, "chandler-provider-file", "provider-file", replicas)
 	}
 	t.Cleanup(func() {
 		// Whatever happened, the next test needs a provider.
@@ -487,4 +487,69 @@ func TestServerCacheServesThroughAProviderOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectFile(ctx, t, ns, "unseen", "app.yaml", "now seen")
+}
+
+// Peer sync: every server pod is replaced while the provider is down, and the
+// cache is still there afterwards, because each new replica copied it from
+// the ready ones before it took traffic. Nothing here is on a persistent
+// volume.
+func TestServerCacheSurvivesARollingRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	ns := newNamespace(ctx, t)
+	key := ns + ".app.yaml"
+	sources := fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)
+
+	publish(ctx, t, key, "v1")
+	mustApply(ctx, t, ns, consumerPod("first", true, sources))
+	if _, err := waitForPodPhase(ctx, ns, "first", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	mustKubectl(ctx, t, "delete", "pod", "first", "-n", ns, "--wait=true")
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+		if err := scaleDeployment(ctx, "chandler-provider-file", "provider-file", 1); err != nil {
+			t.Errorf("restoring the file provider: %v", err)
+		}
+	})
+	if err := scaleDeployment(ctx, "chandler-provider-file", "provider-file", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	before := mustKubectl(ctx, t, "get", "pods", "-n", driverNamespace,
+		"-l", "app.kubernetes.io/component=server", "-o", "jsonpath={.items[*].metadata.uid}")
+	mustKubectl(ctx, t, "rollout", "restart", "deployment/chandler-server", "-n", driverNamespace)
+	mustKubectl(ctx, t, "rollout", "status", "deployment/chandler-server", "-n", driverNamespace, "--timeout=240s")
+	// Wait for the old pods to be gone, so nothing below is served by one.
+	err := eventually(ctx, func() error {
+		after, err := kubectl(ctx, "get", "pods", "-n", driverNamespace,
+			"-l", "app.kubernetes.io/component=server", "-o", "jsonpath={.items[*].metadata.uid}")
+		if err != nil {
+			return err
+		}
+		for _, uid := range strings.Fields(before) {
+			if strings.Contains(after, uid) {
+				return fmt.Errorf("server pod %s from before the restart is still there", uid)
+			}
+		}
+		if n := len(strings.Fields(after)); n != serverReplicas {
+			return fmt.Errorf("%d server pods, want %d", n, serverReplicas)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Default failure policy: the answer has to come from a server, and
+	// every server is new and has never spoken to the provider.
+	mustApply(ctx, t, ns, consumerPod("after", true, sources))
+	if _, err := waitForPodPhase(ctx, ns, "after", "Running"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustKubectl(ctx, t, "exec", "after", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+		t.Errorf("after the rolling restart the pod reads %q, want v1", got)
+	}
 }

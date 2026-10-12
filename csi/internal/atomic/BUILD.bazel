@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "atomic",
+    srcs = ["writer.go"],
+    importpath = "github.com/bpalermo/chandler/csi/internal/atomic",
+    visibility = ["//csi:__subpackages__"],
+    deps = ["//common/bundle"],
+)
+
+go_test(
+    name = "atomic_test",
+    srcs = ["writer_test.go"],
+    embed = [":atomic"],
+    deps = ["//common/bundle"],
+)

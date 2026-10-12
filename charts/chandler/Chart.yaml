@@ -1,0 +1,17 @@
+apiVersion: v2
+name: chandler
+description: |
+  Chandler delivers configuration files to pods through a CSI driver. A pod
+  names what it wants with URIs in an inline volume; the driver mounts the
+  files read-only and replaces them atomically when they change.
+
+  This chart installs the CSI node driver. The config server and the providers
+  are added to it as they are implemented.
+type: application
+version: 0.0.0
+appVersion: "dev"
+keywords:
+  - configuration
+  - csi
+sources:
+  - https://github.com/bpalermo/chandler

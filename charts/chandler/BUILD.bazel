@@ -1,0 +1,39 @@
+load("@rules_helm//helm:defs.bzl", "helm_chart", "helm_lint_test", "helm_template_test")
+
+# The chart package, built with the pinned helm toolchain:
+# bazel-bin/charts/chandler/chandler.tgz.
+helm_chart(
+    name = "chandler",
+    chart = "Chart.yaml",
+    templates = glob(["templates/**"]),
+    values = "values.yaml",
+    visibility = ["//visibility:public"],
+)
+
+helm_lint_test(
+    name = "chandler_lint_test",
+    size = "small",
+    chart = ":chandler",
+)
+
+helm_template_test(
+    name = "chandler_template_test",
+    size = "small",
+    chart = ":chandler",
+)
+
+# Every non-default knob: kubeletDir, stateDir, image.digest, nodeSelector,
+# resources, imagePullSecrets.
+helm_template_test(
+    name = "chandler_overrides_template_test",
+    size = "small",
+    chart = ":chandler",
+    values = ["test/overrides.yaml"],
+)
+
+helm_lint_test(
+    name = "chandler_overrides_lint_test",
+    size = "small",
+    chart = ":chandler",
+    values = ["test/overrides.yaml"],
+)

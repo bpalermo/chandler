@@ -1,0 +1,26 @@
+# Every non-default knob the chart has, so a template test renders the paths
+# the defaults leave out.
+nameOverride: custom
+imagePullSecrets:
+  - name: registry-credentials
+csi:
+  image:
+    repository: registry.example.com/chandler/csi
+    digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    pullPolicy: Always
+  kubeletDir: /var/lib/k0s/kubelet
+  stateDir: /var/lib/chandler-state
+  nodeSelector:
+    kubernetes.io/os: linux
+    node-role.example.com/storage: "true"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+  registrar:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi

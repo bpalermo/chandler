@@ -8,6 +8,7 @@ bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "protobuf", version = "36.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_img", version = "0.3.23")
+bazel_dep(name = "rules_helm", version = "0.34.0")
 bazel_dep(name = "googleapis", version = "0.0.0-20260929-28769825")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
@@ -31,3 +32,11 @@ pull(
     registry = "gcr.io",
     repository = "distroless/static-debian13",
 )
+
+# Helm's own binary, so the chart is packaged, linted and installed with a
+# pinned toolchain rather than whatever is on a developer's PATH.
+helm = use_extension("@rules_helm//helm:extensions.bzl", "helm")
+helm.host_tools()
+use_repo(helm, "helm", "helm_toolchains")
+
+register_toolchains("@helm_toolchains//:all")

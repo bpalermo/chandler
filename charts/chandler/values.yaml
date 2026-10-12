@@ -1,0 +1,42 @@
+# Overrides the name used for the chart's resources (default: the chart name).
+nameOverride: ""
+
+# Pull secrets added to every pod of the chart.
+imagePullSecrets: []
+
+# The CSI node driver, one pod per node.
+csi:
+  image:
+    repository: quay.io/shipchandler/csi
+    # Defaults to the chart's appVersion. Ignored when digest is set.
+    tag: ""
+    # Pins the image by digest, e.g. "sha256:...". Takes precedence over tag.
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  # The sidecar that registers the driver's socket with kubelet.
+  registrar:
+    image:
+      repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
+      tag: v2.16.0
+      digest: sha256:ab482308a4921e28a6df09a16ab99a457e9af9641ff44fb1be1a690d07ce8b70
+      pullPolicy: IfNotPresent
+    resources: {}
+
+  # kubelet's root directory on the nodes. /var/lib/kubelet on most
+  # distributions; some (k0s, MicroK8s, ...) use another path.
+  kubeletDir: /var/lib/kubelet
+
+  # Where the driver keeps volumes and its cache on each node. It is mounted
+  # into the driver at the same path.
+  stateDir: /var/lib/chandler
+
+  priorityClassName: system-node-critical
+
+  # Config must be mountable on every node pods can run on.
+  tolerations:
+    - operator: Exists
+
+  nodeSelector: {}
+  resources: {}
+  podAnnotations: {}

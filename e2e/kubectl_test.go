@@ -91,7 +91,7 @@ func newNamespace(ctx context.Context, t *testing.T) string {
 			for _, args := range [][]string{
 				{"get", "pods", "-n", ns, "-o", "wide"},
 				{"get", "events", "-n", ns, "--sort-by=.lastTimestamp"},
-				{"logs", "-n", "chandler-system", "-l", "app.kubernetes.io/name=chandler-csi", "--all-containers", "--tail=100"},
+				{"logs", "-n", "chandler-system", "-l", "app.kubernetes.io/component=csi", "--all-containers", "--tail=100"},
 			} {
 				out, err := kubectl(ctx, args...)
 				t.Logf("kubectl %s:\n%s%v", strings.Join(args, " "), out, errString(err))

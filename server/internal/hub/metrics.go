@@ -12,7 +12,7 @@ import (
 // metrics is what the hub counts as it goes. What can be read off its state
 // (subscriptions, cache contents, rollouts) is observed when exported instead.
 type metrics struct {
-	acks, nacks, appReports, adopted, refusedBundles metric.Int64Counter
+	acks, nacks, appReports, adopted, refusedBundles, resent metric.Int64Counter
 }
 
 func providerAttr(name string) metric.MeasurementOption {
@@ -32,6 +32,8 @@ func (h *Hub) instrument() {
 			metric.WithDescription("Verdicts of applications on versions they were given, by state."))),
 		adopted: telemetry.Must(m.Int64Counter("chandler.server.peer.adopted",
 			metric.WithDescription("Cache entries copied from another replica."))),
+		resent: telemetry.Must(m.Int64Counter("chandler.server.resent",
+			metric.WithDescription("Updates sent a second time because the driver did not answer the first."))),
 		refusedBundles: telemetry.Must(m.Int64Counter("chandler.server.provider.refused",
 			metric.WithDescription("Bundles refused to a provider, by gRPC code."))),
 	}

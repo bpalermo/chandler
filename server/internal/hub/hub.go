@@ -64,6 +64,11 @@ const (
 	retryBase = time.Second
 	retryMax  = time.Minute
 
+	// DefaultResendAfter is how long an update may go unanswered before it
+	// is sent once more. A driver answers within the time a disk write
+	// takes; silence this long means the update or its answer was lost.
+	DefaultResendAfter = time.Minute
+
 	// maxNegative bounds the remembered failures.
 	maxNegative = 4096
 )
@@ -118,6 +123,9 @@ type Config struct {
 	// NegativeTTL is how long a NOT_FOUND or PERMISSION_DENIED answer is
 	// remembered, so a crash-looping pod does not hammer a provider.
 	NegativeTTL time.Duration
+	// ResendAfter is how long an update may go without an ACK or a NACK
+	// before it is sent once more; zero means DefaultResendAfter.
+	ResendAfter time.Duration
 	Log         *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
@@ -147,6 +155,7 @@ type Hub struct {
 	quotas      Quotas
 	grace       time.Duration
 	negativeTTL time.Duration
+	resendAfter time.Duration
 	log         *slog.Logger
 	now         func() time.Time
 	cacheDir    string
@@ -181,6 +190,7 @@ func New(cfg Config) (*Hub, error) {
 		quotas:      cfg.Quotas,
 		grace:       cfg.Grace,
 		negativeTTL: cfg.NegativeTTL,
+		resendAfter: cfg.ResendAfter,
 		log:         cfg.Log,
 		now:         cfg.Now,
 		cacheDir:    cfg.CacheDir,
@@ -192,6 +202,9 @@ func New(cfg Config) (*Hub, error) {
 		aliases:     make(map[string]alias),
 		negative:    make(map[string]negative),
 		namespaces:  make(map[string]map[string]int),
+	}
+	if h.resendAfter == 0 {
+		h.resendAfter = DefaultResendAfter
 	}
 	h.instrument()
 	if h.now == nil {
@@ -358,6 +371,11 @@ type subscription struct {
 	// attempts counts sends of the current version beyond the first.
 	attempts int
 	retry    *time.Timer
+	// unanswered fires when the last update has gone too long without an
+	// ACK or a NACK; resent is the version that was sent again for that
+	// reason, so that it happens once.
+	unanswered *time.Timer
+	resent     string
 	// refused is the version the driver said it can never write; failing is
 	// the version it is failing to write for a reason on the node.
 	refused, failing string
@@ -546,6 +564,9 @@ func (h *Hub) dropLocked(sub *subscription) {
 	if sub.retry != nil {
 		sub.retry.Stop()
 	}
+	if sub.unanswered != nil {
+		sub.unanswered.Stop()
+	}
 	delete(sub.sess.subs, sub.id)
 	r := sub.res
 	if r == nil {
@@ -661,6 +682,33 @@ func (h *Hub) serveLocked(sub *subscription, force bool) {
 	}
 	sub.sent, sub.nonce, sub.answered = version, nonce, true
 	sub.sess.out.Push(chandlerv1.ConfigResponse_builder{Update: update.Build()}.Build())
+	h.expectAnswerLocked(sub)
+}
+
+// expectAnswerLocked arranges for the update just sent to be sent once more
+// if the driver neither ACKs nor NACKs it in time. Once: a driver that stays
+// silent after two sends is not going to be helped by a third, and its stream
+// breaking is what brings the subscription back.
+func (h *Hub) expectAnswerLocked(sub *subscription) {
+	if sub.unanswered != nil {
+		sub.unanswered.Stop()
+	}
+	nonce, version := sub.nonce, sub.sent
+	if sub.resent == version {
+		return
+	}
+	sub.unanswered = time.AfterFunc(h.resendAfter, func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if sub.sess.subs[sub.id] != sub || sub.nonce != nonce || sub.acked == version {
+			return // gone, superseded or answered meanwhile
+		}
+		h.log.Warn("no answer to an update; sending it again", "node", sub.sess.node,
+			"subscription", sub.id, "version", version)
+		h.metrics.resent.Add(context.Background(), 1, providerAttr(sub.res.up.name))
+		sub.resent = version
+		h.serveLocked(sub, true)
+	})
 }
 
 // serveAllLocked serves every subscription of a resource.
@@ -680,6 +728,9 @@ func (h *Hub) ack(sess *session, msg *chandlerv1.Ack) {
 		return // superseded: only the newest update counts
 	}
 	h.metrics.acks.Add(context.Background(), 1, providerAttr(sub.res.up.name))
+	if sub.unanswered != nil {
+		sub.unanswered.Stop()
+	}
 	sub.acked, sub.attempts = msg.GetVersion(), 0
 	sub.refused, sub.failing = "", ""
 	sub.nodeHas[sub.acked] = true
@@ -693,6 +744,9 @@ func (h *Hub) nack(sess *session, msg *chandlerv1.Nack) {
 	sub, ok := sess.subs[msg.GetSubscriptionId()]
 	if !ok || msg.GetNonce() != sub.nonce {
 		return
+	}
+	if sub.unanswered != nil {
+		sub.unanswered.Stop() // answered, if not as hoped
 	}
 	version := msg.GetVersion()
 	code := codes.Code(msg.GetErrorDetail().GetCode())

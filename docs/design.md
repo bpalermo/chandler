@@ -276,7 +276,9 @@ Applying an update, per subscription:
    on disk has changed.
 3. **Build a generation.** A new directory holding the *whole volume*: this
    source's new bundle plus the currently applied bundle of every other
-   source. Files are hardlinked from the node cache (the mount is read-only).
+   source. Files are copied from the node cache: a hardlink would share its
+   mode with every other bundle holding the same bytes, and bundles are
+   small.
 4. **Swap.** Create a `..data_tmp` symlink to the new generation and
    `rename(2)` it over `..data`. This is the same mechanism as Kubernetes'
    atomic writer for ConfigMap volumes: readers see the old tree or the new
@@ -502,7 +504,7 @@ its store and validate there.
 | `cache_key` | `<bucket>/<key-or-prefix>` |
 | `vary_on` | empty |
 | `revision` | Object: version id if the bucket is versioned, else ETag. Prefix: hash of the sorted `(key, ETag)` list. |
-| Change detection | Jittered poll (default 30s) using `HeadObject` / `ListObjectsV2` and conditional `GetObject`; the content is read only when the revision changed. Optional S3 event notifications through SQS to trigger an immediate check (not built). |
+| Change detection | Jittered poll (default 30s) using `HeadObject` / `ListObjectsV2` and conditional `GetObject`; the content is read only when the revision changed. S3 event notifications are deliberately not used: polling is enough, and the interval is configurable. |
 | Consistent prefix read | List, then `GetObject` each key with `If-Match` on the listed ETag; any mismatch or missing key restarts the read, so a bundle is never a mix of two uploads. Zero-byte "folder" keys are skipped. |
 | `CacheControl` | `max-age`, `stale-if-error` and `no-store` from a single object's `Cache-Control` header, else provider defaults. A prefix has none of its own. |
 | File modes | Not carried: S3 has none, so files get the default `0444`. |
@@ -781,13 +783,13 @@ What exists today, against the design above.
 
 | Area | Built | Not built yet |
 |---|---|---|
-| Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport` | Resend after 60s without an answer, max connection age |
-| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | Hardlinking files from the cache (they are copied), `no_store` tmpfs (such content skips the cache but is written to the volume's disk) |
+| Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport`, one resend of an update unanswered for 60s, keepalives, a max connection age that makes drivers reconnect and spread over replicas | |
+| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | `no_store` tmpfs (such content skips the cache but is written to the volume's disk) |
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals and rejections, and S3 metadata overrides | |
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again | Load timeouts: a version that is written but never reported stays `pending` and nothing reacts |
-| Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | Max connection age to rebalance driver streams |
-| Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
+| Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
+| Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 3) |
 | Observability | Metrics pushed over OTLP from every component (section 11), structured logs | Events on pods, traces, and the metrics section 11 lists as missing |
 

@@ -52,6 +52,7 @@ spec:
           args:
             - --listen=:{{ .Values.server.port }}
             - --health-listen=:{{ add (int .Values.server.port) 1 }}
+            - --max-connection-age={{ .Values.server.maxConnectionAge }}
             {{- include "chandler.tlsArgs" $selector | nindent 12 }}
             {{- if .Values.server.podIdentity.verify }}
             - --pod-token-audience={{ .Values.server.podIdentity.audience }}

@@ -23,6 +23,7 @@ import (
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/queue"
+	"github.com/bpalermo/chandler/common/transport"
 )
 
 const (
@@ -185,7 +186,7 @@ func (c *Client) Run(ctx context.Context) {
 	if creds == nil {
 		creds = insecure.NewCredentials()
 	}
-	conn, err := grpc.NewClient(c.cfg.Target, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(c.cfg.Target, grpc.WithTransportCredentials(creds), transport.ClientKeepalive())
 	if err != nil {
 		log.Error("invalid config server target", "error", err)
 		c.mu.Lock()

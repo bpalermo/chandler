@@ -21,6 +21,7 @@ import (
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/common/queue"
 	"github.com/bpalermo/chandler/common/rollout"
+	"github.com/bpalermo/chandler/common/transport"
 )
 
 const (
@@ -165,7 +166,7 @@ func (u *upstream) unwatchLocked(r *resource) {
 // run keeps a stream to the provider open, reconnecting with jittered backoff.
 func (u *upstream) run(ctx context.Context) {
 	log := u.hub.log.With("provider", u.name, "target", u.target)
-	conn, err := grpc.NewClient(u.target, grpc.WithTransportCredentials(u.hub.dial(u.identities)))
+	conn, err := grpc.NewClient(u.target, grpc.WithTransportCredentials(u.hub.dial(u.identities)), transport.ClientKeepalive())
 	if err != nil {
 		log.Error("invalid provider target", "error", err)
 		return

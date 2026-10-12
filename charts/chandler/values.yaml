@@ -108,6 +108,12 @@ server:
   # The gRPC port drivers connect to.
   port: 9000
 
+  # How long a driver's connection lives before the server closes it. The
+  # driver reconnects at once, through the Service, so over time drivers
+  # spread across replicas, including ones added later. Pods keep their files
+  # meanwhile. 0 never closes a connection.
+  maxConnectionAge: 30m
+
   # Providers that run outside this chart, each as
   #   - name: s3          # the scheme of the URIs it serves; lowercase
   #     target: host:port # gRPC target of its ConfigProvider service

@@ -33,6 +33,8 @@ import (
 
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
@@ -116,6 +118,9 @@ type Config struct {
 	Log         *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// Dial returns the credentials to dial a provider or a peer that must
+	// carry one of the identities; nil dials without TLS.
+	Dial func(identities []string) credentials.TransportCredentials
 }
 
 // Hub serves ConfigDiscoveryService and watches providers.
@@ -132,6 +137,7 @@ type Hub struct {
 	now         func() time.Time
 	cacheDir    string
 	store       *cas.Store
+	dial        func(identities []string) credentials.TransportCredentials
 
 	// mu guards everything below, and the fields of every upstream, resource,
 	// entry and subscription. Nothing blocks on the network while holding it:
@@ -162,6 +168,7 @@ func New(cfg Config) (*Hub, error) {
 		log:         cfg.Log,
 		now:         cfg.Now,
 		cacheDir:    cfg.CacheDir,
+		dial:        cfg.Dial,
 		upstreams:   make(map[string]*upstream),
 		resources:   make(map[string]*resource),
 		entries:     make(map[entryKey]*entry),
@@ -171,6 +178,9 @@ func New(cfg Config) (*Hub, error) {
 	}
 	if h.now == nil {
 		h.now = time.Now
+	}
+	if h.dial == nil {
+		h.dial = func([]string) credentials.TransportCredentials { return insecure.NewCredentials() }
 	}
 	if h.quotas == (Quotas{}) {
 		h.quotas = DefaultQuotas()

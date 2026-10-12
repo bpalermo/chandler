@@ -46,6 +46,9 @@ spec:
           imagePullPolicy: {{ $file.image.pullPolicy }}
           args:
             - --listen=:{{ $file.port }}
+            - --health-listen=:{{ add (int $file.port) 1 }}
+            {{- include "chandler.tlsArgs" $selector | nindent 12 }}
+            - --server-identity={{ include "chandler.identity" (dict "root" . "component" "server") }}
             - --name={{ $file.name }}
             - --root=/config
             - --poll-interval={{ $file.pollInterval }}
@@ -56,13 +59,15 @@ spec:
           ports:
             - name: grpc
               containerPort: {{ $file.port }}
+            - name: health
+              containerPort: {{ add (int $file.port) 1 }}
           readinessProbe:
             grpc:
-              port: {{ $file.port }}
+              port: {{ add (int $file.port) 1 }}
             periodSeconds: 5
           livenessProbe:
             grpc:
-              port: {{ $file.port }}
+              port: {{ add (int $file.port) 1 }}
             periodSeconds: 10
           securityContext:
             {{- include "chandler.restrictedSecurityContext" . | nindent 12 }}
@@ -74,9 +79,11 @@ spec:
             - name: config
               mountPath: /config
               readOnly: true
+            {{- include "chandler.tlsVolumeMount" $selector | nindent 12 }}
       volumes:
         - name: config
           {{- toYaml $file.source | nindent 10 }}
+        {{- include "chandler.tlsVolume" $selector | nindent 8 }}
 ---
 apiVersion: v1
 kind: Service

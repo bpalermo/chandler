@@ -689,14 +689,21 @@ kubelet rewrites them all (the share never shrinks, so this only delays).
 
 ## 9. Security
 
-- Driver ↔ server, server ↔ provider and server ↔ server use mTLS. `PeerSync`
-  accepts only the server identity.
+- Driver ↔ server, server ↔ provider and server ↔ server use mTLS. Both ends
+  present a certificate, and a peer is accepted by the identity in it, a DNS
+  name or a SPIFFE ID among its subject alternative names, never by its
+  address. Only drivers may subscribe, only servers may watch a provider, and
+  `PeerSync` accepts only the server identity. Certificates come from files
+  that are re-read when they change, or from a SPIFFE Workload API. The
+  health service is on its own port without TLS, because kubelet's probes
+  cannot present a certificate.
 - The server verifies `Workload.service_account_token` (audience-bound,
   pod-bound) and takes namespace, service account and pod identity from the
   token, not from the driver's claims.
-- **Authorisation is mandatory.** The server holds the provider credentials, so
-  without a check any pod could mount any URI the server can read. A policy
-  maps namespaces and service accounts to URI patterns; the default is deny.
+- **Authorisation is needed and not designed yet.** The providers hold the
+  origins' credentials, so without a check any pod can mount any URI its
+  cluster's providers can read. Where the policy lives is open: see the open
+  questions.
 - The acknowledgement socket is reachable only from containers that mount the
   volume, and a report can only affect that volume and the counts reported to the provider
   of the configs it holds. Request bodies are size-limited.
@@ -742,6 +749,12 @@ kubelet rewrites them all (the share never shrinks, so this only delays).
    nodes with a node cache start regardless of `failurePolicy`. Not adopted
    yet.
 
+3. **Authorisation.** Which namespaces and service accounts may read which
+   URIs. The candidates are a policy file on the server, per cluster and
+   without CRDs, or passing the verified identity to the provider and letting
+   it decide, which keeps one policy for all clusters beside the data. Until
+   this is settled, any pod can read any URI.
+
 ## 13. Implementation status
 
 What exists today, against the design above.
@@ -753,9 +766,9 @@ What exists today, against the design above.
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals and rejections, and S3 metadata overrides | |
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again | Load timeouts: a version that is written but never reported stays `pending` and nothing reacts |
-| Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | Max connection age to rebalance driver streams, authentication of peers |
+| Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | Max connection age to rebalance driver streams |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | S3 change notifications through SQS |
-| Security | None: connections are plaintext and unauthenticated, and any pod may read any URI | Everything in section 9 |
+| Security | Mutual TLS on every connection, from certificate files re-read on rotation; peers authorised by identity per service; a chart-issued private authority by default, or your own Secrets | SPIFFE Workload API as a certificate source, verification of the pod's service account token, authorisation of URIs (open question 3) |
 | Observability | Structured logs | Metrics and events |
 
 The server's cache survives a rollout because each new replica copies it from

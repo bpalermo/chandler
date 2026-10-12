@@ -16,6 +16,7 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -67,7 +68,9 @@ type Config struct {
 	NodeID string
 	// Version is the driver's version, reported to the server.
 	Version string
-	Log     *slog.Logger
+	// Credentials secures the connection; nil dials without TLS.
+	Credentials credentials.TransportCredentials
+	Log         *slog.Logger
 }
 
 // Client is the driver's connection to the config server.
@@ -166,8 +169,11 @@ func subscribeRequest(s Subscription) *chandlerv1.ConfigRequest {
 // jittered backoff.
 func (c *Client) Run(ctx context.Context) {
 	log := c.cfg.Log.With("server", c.cfg.Target)
-	// Plaintext: transport security between components is not implemented yet.
-	conn, err := grpc.NewClient(c.cfg.Target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := c.cfg.Credentials
+	if creds == nil {
+		creds = insecure.NewCredentials()
+	}
+	conn, err := grpc.NewClient(c.cfg.Target, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		log.Error("invalid config server target", "error", err)
 		c.mu.Lock()

@@ -1,4 +1,5 @@
 {{- $selector := dict "root" . "component" "csi" -}}
+{{- $server := dict "root" . "component" "server" -}}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -45,6 +46,8 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --state-dir={{ .Values.csi.stateDir }}
             - --server={{ include "chandler.name" . }}-server.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
+            - --server-identity={{ include "chandler.identity" $server }}
+            {{- include "chandler.tlsArgs" $selector | nindent 12 }}
           env:
             - name: NODE_NAME
               valueFrom:
@@ -68,6 +71,7 @@ spec:
             # same thing inside and outside the container.
             - name: state-dir
               mountPath: {{ .Values.csi.stateDir }}
+            {{- include "chandler.tlsVolumeMount" $selector | nindent 12 }}
         - name: registrar
           image: {{ include "chandler.image" (dict "root" . "image" .Values.csi.registrar.image) }}
           imagePullPolicy: {{ .Values.csi.registrar.image.pullPolicy }}
@@ -100,3 +104,4 @@ spec:
           hostPath:
             path: {{ .Values.csi.stateDir }}
             type: DirectoryOrCreate
+        {{- include "chandler.tlsVolume" $selector | nindent 8 }}

@@ -16,16 +16,16 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/common/provider"
 	"github.com/bpalermo/chandler/common/rollout"
+	"github.com/bpalermo/chandler/common/transport"
 	"github.com/bpalermo/chandler/common/version"
 	"github.com/bpalermo/chandler/providers/file/internal/source"
 )
@@ -43,8 +43,25 @@ func (r *rolloutFlags) Set(v string) error {
 	return nil
 }
 
+// identityFlags collects repeated --server-identity flags.
+type identityFlags []string
+
+func (i *identityFlags) String() string     { return strings.Join(*i, ",") }
+func (i *identityFlags) Set(v string) error { *i = append(*i, v); return nil }
+
+// security is how the provider authenticates itself and the config servers.
+type security struct {
+	tls          transport.Options
+	healthListen string
+	servers      identityFlags
+}
+
 func main() {
 	var rollouts rolloutFlags
+	var sec security
+	sec.tls.Register()
+	flag.StringVar(&sec.healthListen, "health-listen", ":9101", "address of the gRPC health service, served without TLS for kubelet's probes")
+	flag.Var(&sec.servers, "server-identity", "an identity (DNS name or SPIFFE ID) a config server's certificate may carry. Repeatable; required with TLS")
 	var (
 		listen       = flag.String("listen", ":9100", "address the provider's gRPC server listens on")
 		name         = flag.String("name", "file", "the provider's name: the scheme of the URIs it serves")
@@ -62,13 +79,13 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log, *listen, *name, *root, *pollInterval, rollouts, *maxRefused); err != nil {
+	if err := run(log, *listen, *name, *root, *pollInterval, rollouts, *maxRefused, sec); err != nil {
 		log.Error("chandler-provider-file failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration, rollouts []rollout.Rule, maxRefused int) error {
+func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration, rollouts []rollout.Rule, maxRefused int, sec security) error {
 	switch {
 	case name == "":
 		return errors.New("--name is required")
@@ -87,7 +104,22 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
-	server := grpc.NewServer()
+	src, err := sec.tls.Source()
+	if err != nil {
+		return err
+	}
+	var servers []string
+	if src != nil {
+		if len(sec.servers) == 0 {
+			return errors.New("--server-identity is required with TLS")
+		}
+		servers = sec.servers
+	} else {
+		log.Warn("running without TLS: connections are neither encrypted nor authenticated")
+	}
+	// Only config servers may watch: a provider holds the origin's
+	// credentials and serves whatever it is asked for.
+	server := grpc.NewServer(transport.Serve(src, func(string) []string { return servers })...)
 	chandlerv1.RegisterConfigProviderServer(server, &provider.Server{
 		Name:         name,
 		Origin:       source.Origin{Root: root, Rollouts: rollouts},
@@ -95,7 +127,11 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 		MaxRefused:   maxRefused,
 		Log:          log,
 	})
-	healthpb.RegisterHealthServer(server, health.NewServer())
+	_, stopHealth, err := transport.Health(sec.healthListen)
+	if err != nil {
+		return err
+	}
+	defer stopHealth()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

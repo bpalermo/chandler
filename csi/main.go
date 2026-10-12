@@ -18,7 +18,9 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
+	"github.com/bpalermo/chandler/common/transport"
 	"github.com/bpalermo/chandler/common/version"
 	"github.com/bpalermo/chandler/csi/internal/cache"
 	"github.com/bpalermo/chandler/csi/internal/client"
@@ -28,12 +30,15 @@ import (
 
 func main() {
 	var (
-		endpoint    = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint; only unix:// sockets are supported")
-		nodeID      = flag.String("node-id", os.Getenv("NODE_NAME"), "Kubernetes node name (default $NODE_NAME)")
-		stateDir    = flag.String("state-dir", "/var/lib/chandler", "directory on the host where volumes are kept")
-		server      = flag.String("server", "", "gRPC target of the config server, e.g. dns:///chandler-server.chandler-system.svc:9000")
-		showVersion = flag.Bool("version", false, "print the version and exit")
+		endpoint       = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint; only unix:// sockets are supported")
+		nodeID         = flag.String("node-id", os.Getenv("NODE_NAME"), "Kubernetes node name (default $NODE_NAME)")
+		stateDir       = flag.String("state-dir", "/var/lib/chandler", "directory on the host where volumes are kept")
+		server         = flag.String("server", "", "gRPC target of the config server, e.g. dns:///chandler-server.chandler-system.svc:9000")
+		serverIdentity = flag.String("server-identity", "", "the identity (DNS name or SPIFFE ID) the config server's certificate must carry (default: the host name in --server)")
+		showVersion    = flag.Bool("version", false, "print the version and exit")
 	)
+	var tls transport.Options
+	tls.Register()
 	flag.Parse()
 
 	if *showVersion {
@@ -42,13 +47,25 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log, *endpoint, *nodeID, *stateDir, *server); err != nil {
+	src, err := tls.Source()
+	if err != nil {
+		log.Error("chandler-csi failed", "error", err)
+		os.Exit(1)
+	}
+	if src == nil {
+		log.Warn("running without TLS: the connection to the config server is neither encrypted nor authenticated")
+	}
+	identity := *serverIdentity
+	if identity == "" {
+		identity = transport.HostIdentity(*server)
+	}
+	if err := run(log, *endpoint, *nodeID, *stateDir, *server, transport.Dial(src, []string{identity})); err != nil {
 		log.Error("chandler-csi failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string) error {
+func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, creds credentials.TransportCredentials) error {
 	socket, ok := strings.CutPrefix(endpoint, "unix://")
 	if !ok || socket == "" {
 		return fmt.Errorf("endpoint %q is not a unix:// socket", endpoint)
@@ -61,10 +78,11 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string) erro
 	defer stop()
 
 	configServer := client.New(client.Config{
-		Target:  serverTarget,
-		NodeID:  nodeID,
-		Version: version.Version,
-		Log:     log,
+		Target:      serverTarget,
+		NodeID:      nodeID,
+		Version:     version.Version,
+		Credentials: creds,
+		Log:         log,
 	})
 	nodeCache, err := cache.Open(filepath.Join(stateDir, "cache"), cache.DefaultGrace)
 	if err != nil {

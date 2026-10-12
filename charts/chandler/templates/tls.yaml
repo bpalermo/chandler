@@ -1,0 +1,64 @@
+{{- if not (has .Values.tls.mode (list "generated" "existing" "disabled")) }}
+{{- fail (printf "tls.mode must be generated, existing or disabled, not %q" .Values.tls.mode) }}
+{{- end }}
+{{- if eq .Values.tls.mode "generated" }}
+{{- /*
+A private authority and a certificate per component. Whatever is already in
+the cluster is kept: lookup finds the Secrets of an earlier install, so an
+upgrade does not replace certificates that running pods are using. Deleting a
+Secret makes the next upgrade issue a new one.
+*/ -}}
+{{- $root := . -}}
+{{- $caName := printf "%s-ca" (include "chandler.name" .) -}}
+{{- $caSecret := lookup "v1" "Secret" .Release.Namespace $caName -}}
+{{- $ca := "" -}}
+{{- if and $caSecret (index $caSecret.data "tls.crt") }}
+{{- $ca = buildCustomCert (index $caSecret.data "tls.crt") (index $caSecret.data "tls.key") -}}
+{{- else }}
+{{- $ca = genCA (printf "%s certificate authority" (include "chandler.name" .)) 3650 -}}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $caName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $ca.Cert | b64enc }}
+  tls.key: {{ $ca.Key | b64enc }}
+{{- $components := list "csi" "server" }}
+{{- if .Values.providers.file.enabled }}{{ $components = append $components "provider-file" }}{{ end }}
+{{- if .Values.providers.s3.enabled }}{{ $components = append $components "provider-s3" }}{{ end }}
+{{- range $component := $components }}
+{{- $args := dict "root" $root "component" $component }}
+{{- $name := include "chandler.tlsSecret" $args }}
+{{- $identity := include "chandler.identity" $args }}
+{{- $existing := lookup "v1" "Secret" $root.Release.Namespace $name }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+type: kubernetes.io/tls
+data:
+  {{- if and $existing (index $existing.data "tls.crt") (and $caSecret (index $caSecret.data "tls.crt")) }}
+  tls.crt: {{ index $existing.data "tls.crt" }}
+  tls.key: {{ index $existing.data "tls.key" }}
+  {{- else }}
+  {{- /* A URI identity (a SPIFFE ID) cannot be issued here: use tls.mode existing. */ -}}
+  {{- if contains "://" $identity }}
+  {{- fail (printf "tls.identities: %q is a URI, which generated certificates cannot carry; use tls.mode existing" $identity) }}
+  {{- end }}
+  {{- $cert := genSignedCert $identity nil (list $identity) 1825 $ca }}
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+  {{- end }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+{{- end }}
+{{- end }}

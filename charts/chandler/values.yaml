@@ -4,6 +4,39 @@ nameOverride: ""
 # Pull secrets added to every pod of the chart.
 imagePullSecrets: []
 
+# Mutual TLS between the CSI driver, the config server and the providers. Each
+# side presents a certificate, and a peer is accepted by the identity in it:
+# only drivers may subscribe, only config servers may watch a provider or sync
+# with each other.
+tls:
+  # generated  The chart creates a private certificate authority and one
+  #            certificate per component, in Secrets it keeps across upgrades.
+  #            Nothing rotates them: they are valid for five years, and
+  #            deleting a Secret makes the next upgrade issue a new one.
+  # existing   You provide the Secrets, each with tls.crt, tls.key and ca.crt,
+  #            for example from cert-manager. Files are re-read when they
+  #            change, so rotation needs no restart.
+  # disabled   No TLS: nothing is encrypted and nobody is authenticated.
+  mode: generated
+
+  # With mode "existing": the Secret of each component the chart deploys.
+  existingSecrets:
+    csi: ""
+    server: ""
+    providerFile: ""
+    providerS3: ""
+
+  # The identity each component's certificate carries: a DNS name or a URI
+  # among its subject alternative names. Defaults to
+  # <chart name>-<component>.<namespace>.svc, which is what the generated
+  # certificates carry. Set these when your own certificates carry other
+  # names, such as SPIFFE IDs.
+  identities:
+    csi: ""
+    server: ""
+    providerFile: ""
+    providerS3: ""
+
 # Every image of the chart is set the same way:
 #
 #   repository  Substituted at package time from the component's image_push
@@ -44,6 +77,7 @@ server:
   # Providers that run outside this chart, each as
   #   - name: s3          # the scheme of the URIs it serves; lowercase
   #     target: host:port # gRPC target of its ConfigProvider service
+  #     identity: ...     # what its certificate carries; default: the host
   # The file provider below registers itself when enabled.
   providers: []
 

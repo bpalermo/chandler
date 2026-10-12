@@ -49,6 +49,10 @@ spec:
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           args:
             - --listen=:{{ .Values.server.port }}
+            - --health-listen=:{{ add (int .Values.server.port) 1 }}
+            {{- include "chandler.tlsArgs" $selector | nindent 12 }}
+            - --driver-identity={{ include "chandler.identity" (dict "root" . "component" "csi") }}
+            - --peer-identity={{ include "chandler.identity" $selector }}
             - --peer-service={{ include "chandler.name" . }}-server-peers.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
             - --peer-sync-interval={{ .Values.server.peerSync.interval }}
             - --peer-warm-up={{ .Values.server.peerSync.warmUp }}
@@ -59,12 +63,17 @@ spec:
             - --max-bundle-files={{ int64 .Values.server.maxBundleFiles }}
             {{- if .Values.providers.file.enabled }}
             - --provider={{ .Values.providers.file.name }}={{ include "chandler.name" . }}-provider-file.{{ .Release.Namespace }}.svc:{{ .Values.providers.file.port }}
+            - --provider-identity={{ .Values.providers.file.name }}={{ include "chandler.identity" (dict "root" . "component" "provider-file") }}
             {{- end }}
             {{- if .Values.providers.s3.enabled }}
             - --provider={{ .Values.providers.s3.name }}={{ include "chandler.name" . }}-provider-s3.{{ .Release.Namespace }}.svc:{{ .Values.providers.s3.port }}
+            - --provider-identity={{ .Values.providers.s3.name }}={{ include "chandler.identity" (dict "root" . "component" "provider-s3") }}
             {{- end }}
-            {{- range .Values.server.providers }}
-            - --provider={{ required "server.providers[].name is required" .name }}={{ required "server.providers[].target is required" .target }}
+            {{- range $provider := .Values.server.providers }}
+            - --provider={{ required "server.providers[].name is required" $provider.name }}={{ required "server.providers[].target is required" $provider.target }}
+            {{- with $provider.identity }}
+            - --provider-identity={{ $provider.name }}={{ . }}
+            {{- end }}
             {{- end }}
           env:
             - name: POD_NAME
@@ -78,14 +87,18 @@ spec:
           ports:
             - name: grpc
               containerPort: {{ .Values.server.port }}
+            # The health service, without TLS: kubelet cannot present a
+            # certificate.
+            - name: health
+              containerPort: {{ add (int .Values.server.port) 1 }}
           # Ready once the cache is warm.
           readinessProbe:
             grpc:
-              port: {{ .Values.server.port }}
+              port: {{ add (int .Values.server.port) 1 }}
             periodSeconds: 2
           livenessProbe:
             grpc:
-              port: {{ .Values.server.port }}
+              port: {{ add (int .Values.server.port) 1 }}
               # Alive, as opposed to ready: see the readiness probe above.
               service: live
             periodSeconds: 10
@@ -98,6 +111,7 @@ spec:
           volumeMounts:
             - name: cache
               mountPath: /var/cache/chandler
+            {{- include "chandler.tlsVolumeMount" $selector | nindent 12 }}
       securityContext:
         # The image's user; makes the emptyDir writable by it.
         fsGroup: 65532
@@ -119,3 +133,4 @@ spec:
         - name: cache
           emptyDir:
             sizeLimit: {{ .Values.server.cache.sizeLimit }}
+        {{- include "chandler.tlsVolume" $selector | nindent 8 }}

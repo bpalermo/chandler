@@ -47,3 +47,56 @@ capabilities:
 seccompProfile:
   type: RuntimeDefault
 {{- end -}}
+
+{{/*
+The identity a component's certificate carries. Call with
+(dict "root" . "component" "server"); components are csi, server,
+provider-file and provider-s3.
+*/}}
+{{- define "chandler.identity" -}}
+{{- $key := .component | replace "provider-file" "providerFile" | replace "provider-s3" "providerS3" -}}
+{{- $override := index .root.Values.tls.identities $key -}}
+{{- if $override -}}
+{{ $override }}
+{{- else -}}
+{{ include "chandler.name" .root }}-{{ .component }}.{{ .root.Release.Namespace }}.svc
+{{- end -}}
+{{- end -}}
+
+{{/* The Secret holding a component's certificate. Same arguments. */}}
+{{- define "chandler.tlsSecret" -}}
+{{- $key := .component | replace "provider-file" "providerFile" | replace "provider-s3" "providerS3" -}}
+{{- if eq .root.Values.tls.mode "existing" -}}
+{{ required (printf "tls.existingSecrets.%s is required with tls.mode existing" $key) (index .root.Values.tls.existingSecrets $key) }}
+{{- else -}}
+{{ include "chandler.name" .root }}-{{ .component }}-tls
+{{- end -}}
+{{- end -}}
+
+{{/* The TLS arguments of a component's container. Same arguments. */}}
+{{- define "chandler.tlsArgs" -}}
+{{- if eq .root.Values.tls.mode "disabled" -}}
+- --insecure
+{{- else -}}
+- --tls-cert=/etc/chandler/tls/tls.crt
+- --tls-key=/etc/chandler/tls/tls.key
+- --tls-ca=/etc/chandler/tls/ca.crt
+{{- end -}}
+{{- end -}}
+
+{{/* The volume mount and volume of a component's certificate. */}}
+{{- define "chandler.tlsVolumeMount" -}}
+{{- if ne .root.Values.tls.mode "disabled" -}}
+- name: tls
+  mountPath: /etc/chandler/tls
+  readOnly: true
+{{- end -}}
+{{- end -}}
+
+{{- define "chandler.tlsVolume" -}}
+{{- if ne .root.Values.tls.mode "disabled" -}}
+- name: tls
+  secret:
+    secretName: {{ include "chandler.tlsSecret" . }}
+{{- end -}}
+{{- end -}}

@@ -201,7 +201,7 @@ func TestAdoptRules(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), wait)
 		defer cancel()
-		if err := h.hub.syncWith(ctx, target); err != nil {
+		if err := h.hub.syncWith(ctx, target, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

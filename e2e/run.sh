@@ -40,4 +40,7 @@ for image in "${images[@]}"; do
   kind load docker-image --name "${cluster}" "localhost/${image}:e2e"
 done
 
+# The suite expects the driver to be deployed; it checks the rollout itself.
+kubectl apply -f e2e/manifests/
+
 bazel test "$@" --config=e2e //e2e/...

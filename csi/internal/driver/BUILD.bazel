@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "driver",
+    srcs = ["driver.go"],
+    importpath = "github.com/bpalermo/chandler/csi/internal/driver",
+    visibility = ["//csi:__subpackages__"],
+    deps = [
+        "//csi/internal/atomic",
+        "//csi/internal/mount",
+        "@com_github_container_storage_interface_spec//lib/go/csi",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/wrapperspb",
+    ],
+)
+
+go_test(
+    name = "driver_test",
+    srcs = ["driver_test.go"],
+    embed = [":driver"],
+    deps = [
+        "@com_github_container_storage_interface_spec//lib/go/csi",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)

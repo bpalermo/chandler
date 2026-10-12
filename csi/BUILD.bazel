@@ -6,7 +6,13 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/bpalermo/chandler/csi",
     visibility = ["//visibility:private"],
-    deps = ["//common/version"],
+    deps = [
+        "//common/version",
+        "//csi/internal/driver",
+        "//csi/internal/mount",
+        "@com_github_container_storage_interface_spec//lib/go/csi",
+        "@org_golang_google_grpc//:grpc",
+    ],
 )
 
 go_binary(

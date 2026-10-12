@@ -149,7 +149,7 @@ message Workload {
 message Subscribe {
   // Identifier of the subscription, chosen by the driver. Required. Unique
   // within the stream and stable across reconnects, formed as
-  // "<pod-uid>/<volume-name>/<source-index>". Every later message about the
+  // "<csi-volume-id>/<source-index>". Every later message about the
   // subscription carries it.
   string subscription_id = 1;
 

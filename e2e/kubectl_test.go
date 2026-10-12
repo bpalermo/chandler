@@ -38,6 +38,32 @@ func kubectl(ctx context.Context, args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
+// mustApply applies a manifest in a namespace.
+func mustApply(ctx context.Context, t *testing.T, ns, manifest string) {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-n", ns, "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("kubectl apply: %v: %s", err, out)
+	}
+}
+
+// eventually retries check until it passes or the context ends, and then
+// returns the last failure.
+func eventually(ctx context.Context, check func() error) error {
+	for {
+		err := check()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (gave up: %v)", err, ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
 func mustKubectl(ctx context.Context, t *testing.T, args ...string) string {
 	t.Helper()
 	out, err := kubectl(ctx, args...)
@@ -65,6 +91,7 @@ func newNamespace(ctx context.Context, t *testing.T) string {
 			for _, args := range [][]string{
 				{"get", "pods", "-n", ns, "-o", "wide"},
 				{"get", "events", "-n", ns, "--sort-by=.lastTimestamp"},
+				{"logs", "-n", "chandler-system", "-l", "app.kubernetes.io/name=chandler-csi", "--all-containers", "--tail=100"},
 			} {
 				out, err := kubectl(ctx, args...)
 				t.Logf("kubectl %s:\n%s%v", strings.Join(args, " "), out, errString(err))

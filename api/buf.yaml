@@ -1,0 +1,24 @@
+# What buf checks in the protos. buf does not compile or generate anything
+# here: Bazel does. //api/chandler/v1:chandlerv1_proto_lint_test runs the lint
+# rules and scripts/proto-breaking.sh the breaking ones.
+version: v2
+lint:
+  use:
+    - STANDARD
+    # Every message, field, enum, enum value, service and RPC carries a
+    # comment: the comments are the reference documentation.
+    - COMMENTS
+  except:
+    # The services and their stream messages were named before this check
+    # existed. A service's name is part of every RPC's path, so renaming one
+    # to satisfy a style rule would break every deployed peer.
+    - SERVICE_SUFFIX
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    # What components at different versions need of each other: no field
+    # renumbered, retyped or reused, nothing deleted without its number
+    # reserved, no RPC or service renamed. Renaming a field or a message is
+    # allowed, since only the generated code sees it.
+    - WIRE

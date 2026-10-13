@@ -24,6 +24,7 @@ bazel run //:gazelle        # after adding, removing or renaming any .go file
 bazel mod tidy              # after changing go.mod or a bazel_dep
 e2e/run.sh                  # end-to-end in kind (needs kind, kubectl, helm, docker)
 E2E_TLS=spiffe e2e/run.sh   # the same on SPIRE-issued identities, transport tests only
+scripts/proto-breaking.sh   # the protos against origin/main, for wire compatibility
 E2E_FILTER=TestName e2e/run.sh        # only the tests whose name matches
 E2E_KEEP_CLUSTER=1 e2e/run.sh         # leave the cluster up to look around
 ```
@@ -46,6 +47,11 @@ in the user's Go environment). A module in a very large repository, such as the
 AWS SDK, takes many minutes to add. Let `go get` finish before running Gazelle:
 Gazelle starts its own download for imports it cannot resolve, and the two
 compete.
+
+Linting is part of the build. Every Go package is compiled with the analyzers
+of `//:nogo` (`go vet`'s and staticcheck's), and a finding is a compile error:
+fix it rather than excluding the file. The protos are linted by buf as a test,
+with the rules in `api/buf.yaml`.
 
 CI runs with `--config=ci`, which fails if `MODULE.bazel.lock` is out of date,
 and requires that Gazelle leaves no diff. Regenerate BUILD files rather than
@@ -72,7 +78,10 @@ hand-editing what Gazelle owns.
 - Every message, field, enum value, service and RPC carries a comment. The
   comments are the reference documentation, so say what a field means, when it
   is set and what happens when it is not.
-- Never reuse or renumber a field.
+- Never reuse or renumber a field, and reserve the number of one you delete.
+  CI compares the protos with the base commit (`scripts/proto-breaking.sh`)
+  and fails on a change that breaks the wire. Renaming a field or a message is
+  allowed; renaming a service or an RPC is not.
 
 ## Design rules that code must keep
 

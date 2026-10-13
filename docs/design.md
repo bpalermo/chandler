@@ -713,6 +713,18 @@ provider restarts until the next feedback arrives, and a file provider serving
 a ConfigMap restarts the clock of every key when any key changes, because
 kubelet rewrites them all (the share never shrinks, so this only delays).
 
+**Health is the ramp owner's concern.** Chandler reports what it can observe:
+whether the files were written and, with application acknowledgement, whether
+the application loaded them. For a pod without it, a configuration that is
+well-formed but makes the application crash or lose readiness is written
+successfully, and nothing in Chandler holds the ramp. Chandler does not watch
+pods to find out: the driver and the server would need to read the Kubernetes
+API, and a pod is unready for many reasons that are not its configuration.
+Whoever owns a ramp already has that signal, in their alerts and dashboards,
+and connects it to the hold: stop raising the share, or set
+`chandler-rollout-hold` on an S3 object. Workloads that need a hold without a
+person in the loop use application acknowledgement.
+
 ## 9. Security
 
 - Driver ↔ server, server ↔ provider and server ↔ server use mTLS. Both ends
@@ -801,16 +813,11 @@ Not built: traces.
 
 ## 12. Open questions
 
-1. **Health-based holding.** For pods without application acknowledgement, a
-   bad config is stopped only by someone holding the ramp at the provider.
-   Reporting pod restarts or lost readiness to the provider, which needs no
-   change to the application, is not designed.
-2. **Total cache loss.** When the server has nothing for a key, it could
+1. **Total cache loss.** When the server has nothing for a key, it could
    answer "use your newest cached version, marked stale" so that pods on
    nodes with a node cache start regardless of `failurePolicy`. Not adopted
    yet.
-
-3. **Authorisation.** Which namespaces and service accounts may read which
+2. **Authorisation.** Which namespaces and service accounts may read which
    URIs. The candidates are a policy file on the server, per cluster and
    without CRDs, or passing the verified identity to the provider and letting
    it decide, which keeps one policy for all clusters beside the data. Until
@@ -829,7 +836,7 @@ What exists today, against the design above.
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
-| Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 3) |
+| Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 2) |
 | Observability | Metrics pushed over OTLP from every component, events on pods, structured logs (section 11) | Traces |
 
 The server's cache survives a rollout because each new replica copies it from

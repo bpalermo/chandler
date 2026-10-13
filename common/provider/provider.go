@@ -112,7 +112,10 @@ type Server struct {
 	// MaxOverdue is how many applications may be late to report on a
 	// revision before its rollout is held where it is. Negative never holds.
 	MaxOverdue int
-	Log        *slog.Logger
+	// HoldGrace is how long a rollout stays held after the last report that
+	// justified holding it; zero means DefaultHoldGrace.
+	HoldGrace time.Duration
+	Log       *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 
@@ -121,8 +124,9 @@ type Server struct {
 	// revision.
 	feedback map[revisionKey]map[string]*chandlerv1.Feedback
 	// held is the share each revision was held at when too many
-	// subscriptions refused it.
-	held map[revisionKey]uint32
+	// subscriptions refused it, and heldAt when that was last so.
+	held   map[revisionKey]uint32
+	heldAt map[revisionKey]time.Time
 
 	instruments sync.Once
 	updates     metric.Int64Counter
@@ -148,6 +152,16 @@ func (s *Server) count(counter metric.Int64Counter, key, value string) {
 	counter.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("provider", s.Name), attribute.String(key, value)))
 }
+
+// DefaultHoldGrace is how long a rollout stays held after the last report
+// that justified holding it.
+//
+// The reports are a snapshot of each server replica's subscriptions, and a
+// subscription is briefly nowhere while its driver reconnects, which drivers
+// do routinely. Without a grace period such a gap would read as "nobody
+// refuses this any more" and release a rollout that was held for good
+// reason; if the ramp's time had run out meanwhile, to everyone at once.
+const DefaultHoldGrace = 30 * time.Second
 
 // revisionKey names one revision of one resource.
 type revisionKey struct{ cacheKey, revision string }
@@ -216,24 +230,38 @@ func (s *Server) share(key revisionKey, state State, last uint32) uint32 {
 		refused += int(f.GetRefused() + f.GetRejected())
 		overdue += int(f.GetOverdue())
 	}
-	if (s.MaxRefused >= 0 && refused > s.MaxRefused) || (s.MaxOverdue >= 0 && overdue > s.MaxOverdue) {
+	grace := s.HoldGrace
+	if grace == 0 {
+		grace = DefaultHoldGrace
+	}
+	now := s.now()
+	exceeded := (s.MaxRefused >= 0 && refused > s.MaxRefused) || (s.MaxOverdue >= 0 && overdue > s.MaxOverdue)
+	at, holding := s.held[key]
+	switch {
+	case exceeded && !holding:
 		// Hold where it is: the pods that have it keep it, no more get it.
-		at, ok := s.held[key]
-		if !ok {
-			at = last
-			if at == 0 {
-				at = min(share, ramp.At(0))
-			}
-			if s.held == nil {
-				s.held = make(map[revisionKey]uint32)
-			}
-			s.held[key] = at
-			s.Log.Warn("holding a rollout: pods refused the revision or did not report on it",
-				"cache_key", key.cacheKey, "revision", key.revision, "refused", refused, "overdue", overdue, "basis_points", at)
+		at = last
+		if at == 0 {
+			at = min(share, ramp.At(0))
 		}
-		share = min(share, at)
-	} else {
+		if s.held == nil {
+			s.held, s.heldAt = make(map[revisionKey]uint32), make(map[revisionKey]time.Time)
+		}
+		s.held[key], holding = at, true
+		s.Log.Warn("holding a rollout: pods refused the revision or did not report on it",
+			"cache_key", key.cacheKey, "revision", key.revision, "refused", refused, "overdue", overdue, "basis_points", at)
+	case !exceeded && holding && now.Sub(s.heldAt[key]) >= grace:
+		// Clear for long enough that it is not a gap between reports.
+		s.Log.Info("releasing a held rollout: the refusals are gone", "cache_key", key.cacheKey, "revision", key.revision)
 		delete(s.held, key)
+		delete(s.heldAt, key)
+		holding = false
+	}
+	if exceeded {
+		s.heldAt[key] = now
+	}
+	if holding {
+		share = min(share, at)
 	}
 	// A share never shrinks: a pod that has the revision keeps it.
 	return max(share, last)

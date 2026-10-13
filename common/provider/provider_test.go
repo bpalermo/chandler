@@ -405,7 +405,9 @@ func TestRampHeldWhenPodsRefuse(t *testing.T) {
 	origin := newMemory()
 	origin.put("/app.yaml", "v1")
 	origin.since["/app.yaml"] = clock.Now()
-	w := start(t, origin, 0, func(s *Server) { s.Ramp, s.Now, s.MaxOverdue = ramp, clock.Now, 1 })
+	w := start(t, origin, 0, func(s *Server) {
+		s.Ramp, s.Now, s.MaxOverdue, s.HoldGrace = ramp, clock.Now, 1, time.Minute
+	})
 
 	w.watch("1", "file:///app.yaml", "")
 	first := w.update("1")
@@ -441,9 +443,20 @@ func TestRampHeldWhenPodsRefuse(t *testing.T) {
 	w.quiet()
 	overdue = 1
 
+	// The reports clear, but a clear report may only be the gap while a
+	// driver reconnects: the hold stays for the grace period...
 	report(0, 0)
+	clock.advance(30 * time.Second)
+	w.quiet()
+	// ...and a refusal seen again within it starts the period over.
+	report(1, 0)
+	report(0, 0)
+	clock.advance(45 * time.Second)
+	w.quiet()
+
+	clock.advance(30 * time.Second)
 	if u := w.update("1"); u.HasRollout() {
-		t.Errorf("with the refusals gone got %v, want the rollout to go on to everyone", u)
+		t.Errorf("with the refusals gone for the grace period got %v, want the rollout to go on to everyone", u)
 	}
 }
 

@@ -24,6 +24,8 @@ bazel run //:gazelle        # after adding, removing or renaming any .go file
 bazel mod tidy              # after changing go.mod or a bazel_dep
 e2e/run.sh                  # end-to-end in kind (needs kind, kubectl, helm, docker)
 E2E_TLS=spiffe e2e/run.sh   # the same on SPIRE-issued identities, transport tests only
+E2E_FILTER=TestName e2e/run.sh        # only the tests whose name matches
+E2E_KEEP_CLUSTER=1 e2e/run.sh         # leave the cluster up to look around
 ```
 
 Bazel is the only build. The Go packages for the protos exist only as Bazel

@@ -26,6 +26,17 @@ server:
   maxConnectionAge: 30s
   peerSync:
     interval: 2s
+  # A second file provider, deployed by run.sh from e2e/small-provider.yaml
+  # with the chart's file provider's certificate, and allowed two cache keys:
+  # what the eviction test fills.
+  providers:
+    - name: small
+      target: chandler-provider-small.chandler-system.svc:9100
+      identity: chandler-provider-file.chandler-system.svc
+  cache:
+    providerQuotas:
+      small:
+        maxKeys: 2
 providers:
   # Serves the ConfigMap run.sh creates and the tests add keys to.
   file:

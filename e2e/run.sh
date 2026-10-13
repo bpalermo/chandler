@@ -79,6 +79,13 @@ fi
   "${values[@]}" \
   --wait --timeout 300s
 workloads=(daemonset/chandler-csi deployment/chandler-server deployment/chandler-provider-file deployment/chandler-provider-s3)
+# The provider with a small quota, for the eviction test. It runs on the
+# certificate the chart issued to the file provider, so only where the chart
+# issues certificates.
+if [[ "${E2E_TLS:-generated}" == generated ]]; then
+  kubectl apply -n chandler-system -f e2e/small-provider.yaml
+  workloads+=(deployment/chandler-provider-small)
+fi
 for workload in "${workloads[@]}"; do
   kubectl rollout restart "${workload}" -n chandler-system
 done

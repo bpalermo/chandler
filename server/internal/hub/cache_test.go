@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -486,5 +488,140 @@ func TestUnansweredUpdateIsResentOnce(t *testing.T) {
 	case msg := <-n.in:
 		t.Fatalf("an acknowledged update was sent again: %v", msg)
 	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// cacheKeys returns the cache keys a hub holds, sorted.
+func (h harness) cacheKeys() []string {
+	h.hub.mu.Lock()
+	defer h.hub.mu.Unlock()
+	var keys []string
+	for key := range h.hub.entries {
+		keys = append(keys, key.cacheKey)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// use subscribes to file:///<name>.yaml and has the provider emit content
+// for it, under the cache key /<name>.yaml.
+func (h harness) use(t *testing.T, n *node, name string, b *chandlerv1.Bundle) (admitted bool) {
+	t.Helper()
+	n.subscribe(t, name+"/0", "file:///"+name+".yaml", "")
+	watch := h.provider.expectWatch(t, "file:///"+name+".yaml")
+	h.provider.emitAs(watch.GetWatchId(), "n-"+name, "r1", "/"+name+".yaml", b, nil)
+	req := h.provider.next(t)
+	if req.HasNack() {
+		if code := codes.Code(req.GetNack().GetErrorDetail().GetCode()); code != codes.ResourceExhausted {
+			t.Fatalf("the bundle of %s was refused with %s, want RESOURCE_EXHAUSTED", name, code)
+		}
+		n.expectError(t, name+"/0", codes.ResourceExhausted)
+		return false
+	}
+	n.expectUpdate(t, name+"/0", b)
+	return true
+}
+
+// release ends the subscription use made.
+func (h harness) release(t *testing.T, n *node, name string) {
+	t.Helper()
+	n.unsubscribe(t, name+"/0")
+	if req := h.provider.next(t); !req.HasUnwatch() {
+		t.Fatalf("provider got %v, want the unwatch", req)
+	}
+}
+
+// At the key quota, a new key takes the place of the entry that has gone
+// unused the longest. Entries in use are never evicted: with nothing else to
+// evict the new key is refused.
+func TestUnusedEntriesAreEvictedToAdmitANewKey(t *testing.T) {
+	now := &clock{now: time.Unix(1_700_000_000, 0)}
+	h := startWith(t, Config{Now: now.Now, Grace: 24 * time.Hour, Quotas: Quotas{
+		MaxKeysPerProvider: 2, MaxBytesPerProvider: 1 << 20, MaxVariantsPerURI: 16, MaxURIsPerNamespace: 100,
+	}}, newFakeProvider())
+	n := h.connect(t)
+
+	for _, name := range []string{"one", "two"} {
+		if !h.use(t, n, name, oneFile(name)) {
+			t.Fatalf("%s was refused with the quota not reached", name)
+		}
+	}
+	if h.use(t, n, "three", oneFile("three")) {
+		t.Fatal("a third key was admitted while both others are in use")
+	}
+	h.release(t, n, "three")
+	if got, want := h.cacheKeys(), []string{"/one.yaml", "/two.yaml"}; !slices.Equal(got, want) {
+		t.Fatalf("keys = %v, want %v: nothing in use may be evicted", got, want)
+	}
+
+	// "two" goes unused first, so it is the one to go.
+	h.release(t, n, "two")
+	now.advance(time.Minute)
+	h.release(t, n, "one")
+	now.advance(time.Minute)
+	if !h.use(t, n, "three", oneFile("three")) {
+		t.Fatal("a new key was refused although unused entries could make room")
+	}
+	if got, want := h.cacheKeys(), []string{"/one.yaml", "/three.yaml"}; !slices.Equal(got, want) {
+		t.Fatalf("keys = %v, want %v: the least recently used entry goes", got, want)
+	}
+	// The alias went with the entry: a new subscription asks the provider.
+	h.hub.mu.Lock()
+	_, known := h.hub.aliases["file:///two.yaml"]
+	h.hub.mu.Unlock()
+	if known {
+		t.Error("the evicted entry's alias is still there")
+	}
+}
+
+// The byte quota counts content once however many keys hold it, and is kept
+// the same way: by evicting what is unused, never what is in use.
+func TestByteQuotaCountsSharedContentOnce(t *testing.T) {
+	same, other := oneFile("same"), oneFile("other")
+	h := startWith(t, Config{
+		Quotas: DefaultQuotas(),
+		// Room for one of the two bundles and not for both.
+		ProviderQuotas: map[string]ProviderQuota{"file": {MaxBytes: max(bundle.Size(same), bundle.Size(other))}},
+	}, newFakeProvider())
+	n := h.connect(t)
+
+	for _, name := range []string{"one", "two"} {
+		if !h.use(t, n, name, same) {
+			t.Fatalf("%s was refused, although its content is already held", name)
+		}
+	}
+	if h.use(t, n, "three", other) {
+		t.Fatal("more content than the quota was admitted with everything in use")
+	}
+	h.release(t, n, "three")
+	// Evicting one of the two keys frees nothing: both have to go.
+	h.release(t, n, "one")
+	h.release(t, n, "two")
+	if !h.use(t, n, "three", other) {
+		t.Fatal("content was refused although unused entries could make room")
+	}
+	if got, want := h.cacheKeys(), []string{"/three.yaml"}; !slices.Equal(got, want) {
+		t.Fatalf("keys = %v, want %v", got, want)
+	}
+}
+
+// A bundle that cannot fit even with every unused entry gone evicts nothing.
+func TestNothingIsEvictedForABundleThatCannotFit(t *testing.T) {
+	small, large := oneFile("s"), oneFile(strings.Repeat("l", 64))
+	h := startWith(t, Config{
+		Quotas:         DefaultQuotas(),
+		ProviderQuotas: map[string]ProviderQuota{"file": {MaxBytes: bundle.Size(large) - 1}},
+	}, newFakeProvider())
+	n := h.connect(t)
+
+	if !h.use(t, n, "one", small) {
+		t.Fatal("a bundle within the quota was refused")
+	}
+	h.release(t, n, "one")
+	if h.use(t, n, "two", large) {
+		t.Fatal("a bundle larger than the quota was admitted")
+	}
+	if got, want := h.cacheKeys(), []string{"/one.yaml"}; !slices.Equal(got, want) {
+		t.Fatalf("keys = %v, want %v: evicting could not have made room", got, want)
 	}
 }

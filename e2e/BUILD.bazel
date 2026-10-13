@@ -4,6 +4,7 @@ go_test(
     name = "e2e_test",
     srcs = [
         "appack_test.go",
+        "cache_test.go",
         "csi_test.go",
         "images_test.go",
         "kubectl_test.go",

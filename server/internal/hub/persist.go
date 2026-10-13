@@ -187,14 +187,14 @@ func (h *Hub) collect() {
 	defer h.mu.Unlock()
 	now := h.now()
 	var keep []string
-	for key, e := range h.entries {
+	for _, e := range h.entries {
 		if len(e.refs) > 0 {
 			e.lastReferenced = now
 			if e.live() {
 				e.lastRefreshed = now
 			}
 		} else if now.Sub(e.lastReferenced) > h.grace {
-			delete(h.entries, key)
+			h.evictLocked(e, "grace")
 			continue
 		}
 		for _, v := range e.all() {
@@ -202,11 +202,7 @@ func (h *Hub) collect() {
 		}
 		h.reportLocked(e)
 	}
-	for id, a := range h.aliases {
-		if h.entries[entryKey{a.Provider, a.CacheKey}] == nil {
-			delete(h.aliases, id)
-		}
-	}
+	h.forgetAliasesLocked()
 	for id, n := range h.negative {
 		if !now.Before(n.until) {
 			delete(h.negative, id)

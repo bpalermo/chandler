@@ -237,7 +237,9 @@ func serve(t *testing.T, register func(*grpc.Server)) (target string, stop func(
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := grpc.NewServer()
+	// Stop must not return while a handler still runs: one that outlives it
+	// could write to the test's cache directory as the test removes it.
+	server := grpc.NewServer(grpc.WaitForHandlers(true))
 	register(server)
 	go server.Serve(listener)
 	t.Cleanup(server.Stop)

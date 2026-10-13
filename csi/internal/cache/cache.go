@@ -117,6 +117,24 @@ func (c *Cache) Versions(uri string) []string {
 	return nil
 }
 
+// Stats returns how many URIs the cache holds versions for, and how many
+// bytes of file content it keeps on disk.
+func (c *Cache) Stats() (uris int, bytes int64) {
+	c.mu.Lock()
+	uris = len(c.index)
+	c.mu.Unlock()
+	_ = filepath.WalkDir(filepath.Join(c.dir, "blobs"), func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil // a blob collected meanwhile is not an error
+		}
+		if info, err := d.Info(); err == nil {
+			bytes += info.Size()
+		}
+		return nil
+	})
+	return uris, bytes
+}
+
 // Touch records that the given URIs are in use now, so that Collect keeps
 // them however old they are.
 func (c *Cache) Touch(uris ...string) {

@@ -761,16 +761,13 @@ nothing is dialled. Each reports as its own `service.name`.
 
 | Component | Metrics (`chandler.` prefix) |
 |---|---|
-| Server | `server.subscriptions`, `server.watches`, `server.provider.connected`, `server.cache.keys`, `server.cache.bytes`, `server.cache.orphaned_keys`, `server.rollouts`, all per provider; `server.acks`; `server.nacks` and `server.provider.refused` by code; `server.app_reports` by state; `server.peer.adopted` |
-| Driver | `csi.volumes`, `csi.server.connected`, `csi.publish.duration` and `csi.apply.duration` by outcome, `csi.mounts_from_cache`, `csi.app_reports` by state |
+| Server | `server.subscriptions`, `server.watches`, `server.provider.connected`, `server.cache.keys`, `server.cache.bytes`, `server.cache.orphaned_keys`, `server.rollouts`, `server.cache.uri_variants`, and the limits `server.cache.keys.limit`, `server.cache.bytes.limit` and `server.cache.uri_variants.limit`, all per provider; `server.namespace_uris` and its limit; `server.peer.sync_age`; `server.resent`; `server.acks`; `server.nacks` and `server.provider.refused` by code; `server.app_reports` by state; `server.peer.adopted` |
+| Driver | `csi.volumes`, `csi.server.connected`, `csi.publish.duration` and `csi.apply.duration` by outcome, `csi.mounts_from_cache`, `csi.app_reports` by state, `csi.cache.uris`, `csi.cache.bytes` |
 | Providers | `provider.watches`, `provider.updates` by kind, `provider.failures` by code |
 
 Logs are structured JSON on standard error.
 
-Not built: Kubernetes events on the pod for NACKs and for stale or cached
-mounts (a failed mount already produces kubelet's own event, with the reason);
-keys and variants against quota as separate metrics; node cache size; peer
-sync age; traces.
+Not built: traces.
 
 ## 12. Open questions
 
@@ -803,7 +800,7 @@ What exists today, against the design above.
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 3) |
-| Observability | Metrics pushed over OTLP from every component (section 11), structured logs | Events on pods, traces, and the metrics section 11 lists as missing |
+| Observability | Metrics pushed over OTLP from every component (section 11), structured logs | Events on pods, traces |
 
 The server's cache survives a rollout because each new replica copies it from
 the ready ones before it takes traffic. If every replica is lost at once, the

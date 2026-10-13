@@ -180,6 +180,8 @@ type Hub struct {
 	// namespaces counts the subscriptions per namespace and URI.
 	namespaces map[string]map[string]int
 	watchSeq   uint64
+	// lastSync is when the cache was last synced with a peer.
+	lastSync time.Time
 }
 
 // New returns a Hub with no providers, loading what the cache directory holds.

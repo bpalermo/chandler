@@ -207,6 +207,9 @@ func (h *Hub) syncWith(ctx context.Context, address string, identities []string)
 		ke, err := stream.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				h.mu.Lock()
+				h.lastSync = h.now()
+				h.mu.Unlock()
 				return nil
 			}
 			return err

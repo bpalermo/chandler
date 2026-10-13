@@ -63,6 +63,18 @@ func TestMetrics(t *testing.T) {
 		}
 		return true
 	})
+	got := read()
+	for name, want := range map[string]int64{
+		"chandler.server.cache.uri_variants":       1,
+		"chandler.server.cache.uri_variants.limit": 16,
+		"chandler.server.cache.keys.limit":         10000,
+		"chandler.server.namespace_uris":           1,
+		"chandler.server.namespace_uris.limit":     1000,
+	} {
+		if got[name] != want {
+			t.Errorf("%s = %d, want %d", name, got[name], want)
+		}
+	}
 	if got := read(); got["chandler.server.cache.bytes"] <= 0 {
 		t.Errorf("cache bytes = %d, want what the stable version weighs", got["chandler.server.cache.bytes"])
 	}

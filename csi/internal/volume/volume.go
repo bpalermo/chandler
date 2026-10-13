@@ -34,6 +34,9 @@ type Cache interface {
 	Get(version string) (*chandlerv1.Bundle, error)
 	// Versions returns the versions held for a URI, newest first.
 	Versions(uri string) []string
+	// Stats returns the number of URIs with held versions and the bytes of
+	// content on disk.
+	Stats() (uris int, bytes int64)
 }
 
 const (

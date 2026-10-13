@@ -688,7 +688,11 @@ any state:
   modification time, an object's `LastModified`. A restarted provider
   therefore computes the same share, with nothing stored.
 - A rollout is held where it is while more subscriptions than
-  `--rollout-max-refused` (default 0) refuse or reject the revision.
+  `--rollout-max-refused` (default 0) refuse or reject the revision, or more
+  applications than `--rollout-max-overdue` (default 5) are late to report
+  on it. A hold is released only after the reports have been clear for 30
+  seconds: they are a snapshot, and a subscription is briefly nowhere while
+  its driver reconnects.
 - An S3 object can carry its own ramp in its metadata (`chandler-rollout`) and
   be held at a share (`chandler-rollout-hold: "10"`).
 

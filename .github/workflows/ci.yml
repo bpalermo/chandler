@@ -28,6 +28,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The whole history: the protos are compared with the commit this
+          # one is based on.
+          fetch-depth: 0
 
       # No version is pinned here: bazelisk reads .bazelversion, so the
       # checkout is the single source of the Bazel version.
@@ -63,8 +66,28 @@ jobs:
             //charts/chandler:chandler //charts/chandler:chandler.push_registry \
             //bazel/cosign //bazel/cosign:verify_image
 
+      # Includes the linters: the Go analyzers of //:nogo run as part of
+      # compiling, so the build above already failed on a finding, and buf's
+      # lint rules for the protos are a test.
       - name: bazel test //...
         run: bazel test //... --config=ci
+
+      # A field renumbered, retyped or reused, or anything else that would
+      # stop components at different versions from understanding each other.
+      # A pull request is compared with the commit it branched from; a push
+      # to main with the commit before it, since merges are squashed.
+      - name: The protos keep their wire contract
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "${BASE_REF}" ]; then
+            against="origin/${BASE_REF}"
+          elif [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            against="HEAD^"
+          else
+            against="origin/main"
+          fi
+          scripts/proto-breaking.sh "${against}" --config=ci
 
       # Gazelle generates the BUILD files, so a hand-edited or stale one is a
       # real failure mode: the build keeps working against the old graph until

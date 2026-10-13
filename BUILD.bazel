@@ -1,4 +1,6 @@
 load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//go:def.bzl", "TOOLS_NOGO", "nogo")
+load("//bazel/nogo:staticcheck.bzl", "STATICCHECK")
 
 # gazelle:prefix github.com/bpalermo/chandler
 # gazelle:proto_strip_import_prefix /api
@@ -6,3 +8,12 @@ load("@gazelle//:def.bzl", "gazelle")
 # gazelle:resolve proto go google/rpc/status.proto @org_golang_google_genproto_googleapis_rpc//status
 
 gazelle(name = "gazelle")
+
+# The analyzers every Go package is compiled with (see go_sdk.nogo in
+# MODULE.bazel): the ones `go vet` runs, the rest of the x/tools set that
+# rules_go recommends, and staticcheck.
+nogo(
+    name = "nogo",
+    visibility = ["//visibility:public"],
+    deps = TOOLS_NOGO + STATICCHECK,
+)

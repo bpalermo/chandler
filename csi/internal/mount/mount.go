@@ -14,6 +14,10 @@ type Mounter interface {
 	// BindReadOnly makes source visible at target, read-only. Both must be
 	// existing directories.
 	BindReadOnly(source, target string) error
+	// Memory mounts an empty in-memory filesystem of at most size bytes at
+	// target, an existing directory. What is written there never reaches a
+	// disk.
+	Memory(target string, size uint64) error
 	// Unmount removes the mount at target. It is not an error if nothing is
 	// mounted there.
 	Unmount(target string) error

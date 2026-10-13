@@ -21,6 +21,10 @@ const (
 	failurePolicyKey = "failurePolicy"
 	appAckKey        = "appAck"
 	appAckTimeoutKey = "appAckTimeout"
+	mediumKey        = "medium"
+
+	// MediumMemory keeps a volume in memory, as it does for an emptyDir.
+	MediumMemory = "Memory"
 
 	// FailurePolicyFail fails the mount when a source has no answer.
 	FailurePolicyFail = "Fail"
@@ -60,6 +64,10 @@ type Spec struct {
 	// AppAckTimeout is how long the application has to report on a version
 	// before it is reported overdue; zero never does.
 	AppAckTimeout time.Duration `json:"appAckTimeout,omitempty"`
+	// Memory is set when the volume is kept in memory rather than on the
+	// node's disk. Content a provider marks no_store is only written to
+	// such a volume.
+	Memory bool `json:"memory,omitempty"`
 }
 
 // ParseSpec reads the volume attributes of a pod's inline volume.
@@ -74,6 +82,13 @@ func ParseSpec(attributes map[string]string) (Spec, error) {
 			failurePolicyKey, FailurePolicyFail, FailurePolicyUseCached, spec.FailurePolicy)
 	}
 
+	switch attributes[mediumKey] {
+	case "":
+	case MediumMemory:
+		spec.Memory = true
+	default:
+		return Spec{}, fmt.Errorf("%w: %s must be %s or unset, not %q", ErrInvalidSpec, mediumKey, MediumMemory, attributes[mediumKey])
+	}
 	switch attributes[appAckKey] {
 	case "", "false":
 	case "true":

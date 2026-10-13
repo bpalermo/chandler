@@ -103,6 +103,7 @@ volumes:
           - uri: s3://acme-config/shared/flags/     # trailing slash: directory bundle
             path: flags
         failurePolicy: UseCached      # or Fail (default)
+        medium: Memory                # optional: keep the volume off the node's disk
 ```
 
 Each source has a `uri`, a `path` and an optional `name` (default: the path).
@@ -423,9 +424,19 @@ server is unreachable or answers `UNAVAILABLE`:
   returns. With no cached version it fails as above.
 
 On driver restart the mounts are still in place; the driver rebuilds its
-subscriptions from the `meta.json` files and resyncs. `no_store` bundles are
-written to a per-volume tmpfs and never enter the node cache, so they do not
-survive a node reboot without the server. As with ConfigMaps, `subPath` mounts
+subscriptions from the `meta.json` files and resyncs.
+
+**Volumes in memory.** With the attribute `medium: Memory` the whole volume is
+a tmpfs: nothing of it is ever on the node's disk. That is the only kind of
+volume a `no_store` bundle is written to. On any other it is refused
+(`FAILED_PRECONDITION`), and a mount waiting for it fails at once with a
+message naming the attribute, so content a provider wants kept off persistent
+storage cannot land on disk because a pod forgot to ask. The pod declares it,
+rather than the driver deciding when the first bundle arrives, because a
+mounted volume cannot be moved if a source turns `no_store` later. `no_store`
+bundles never enter the node cache either, so they do not survive a node
+reboot without the server. The tmpfs is mounted on the host, so it outlives a
+driver restart; its memory is charged to the driver. As with ConfigMaps, `subPath` mounts
 do not see updates.
 
 ## 6. Server ↔ provider protocol
@@ -796,7 +807,7 @@ What exists today, against the design above.
 | Area | Built | Not built yet |
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport`, one resend of an update unanswered for 60s, keepalives, a max connection age that makes drivers reconnect and spread over replicas | |
-| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | `no_store` tmpfs (such content skips the cache but is written to the volume's disk) |
+| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached`, volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected, overdue), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, rejections and overdue reports, and S3 metadata overrides | |
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |

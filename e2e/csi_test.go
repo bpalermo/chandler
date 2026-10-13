@@ -55,6 +55,12 @@ func consumerPod(name string, readOnly bool, sources string) string {
 
 // consumerPodWithPolicy is consumerPod with a failurePolicy.
 func consumerPodWithPolicy(name string, readOnly bool, sources, failurePolicy string) string {
+	return consumerPodWithAttributes(name, readOnly, sources, "failurePolicy: "+failurePolicy)
+}
+
+// consumerPodWithAttributes is consumerPod with one more volume attribute,
+// written as a line of YAML.
+func consumerPodWithAttributes(name string, readOnly bool, sources, attribute string) string {
 	quoted, err := json.Marshal(sources)
 	if err != nil {
 		panic(err)
@@ -81,8 +87,8 @@ spec:
         readOnly: %t
         volumeAttributes:
           sources: %s
-          failurePolicy: %s
-`, name, busybox, mountPath, driverName, readOnly, quoted, failurePolicy)
+          %s
+`, name, busybox, mountPath, driverName, readOnly, quoted, attribute)
 }
 
 // inspectorPod looks at the driver's state directory on the node.

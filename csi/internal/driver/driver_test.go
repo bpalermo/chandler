@@ -30,6 +30,7 @@ import (
 // fakeMounter records mounts instead of performing them.
 type fakeMounter struct {
 	mounts  map[string]string // target -> source
+	memory  map[string]uint64 // in-memory filesystems: target -> size
 	failing error
 }
 
@@ -41,7 +42,17 @@ func (f *fakeMounter) BindReadOnly(source, target string) error {
 	return nil
 }
 
+func (f *fakeMounter) Memory(target string, size uint64) error {
+	if f.failing != nil {
+		return f.failing
+	}
+	f.memory[target] = size
+	f.mounts[target] = "tmpfs"
+	return nil
+}
+
 func (f *fakeMounter) Unmount(target string) error {
+	delete(f.memory, target)
 	delete(f.mounts, target)
 	return nil
 }
@@ -60,10 +71,12 @@ type fakeServer struct {
 	// unavailable answers every URI without content with UNAVAILABLE, as a
 	// server whose provider is down does.
 	unavailable bool
-	subs        map[string]client.Subscription
-	reports     []*chandlerv1.AppReport
-	applied     map[string]string // subscription ID -> applied version it subscribed with
-	down        error
+	// noStore marks what is delivered at subscribe as no_store.
+	noStore bool
+	subs    map[string]client.Subscription
+	reports []*chandlerv1.AppReport
+	applied map[string]string // subscription ID -> applied version it subscribed with
+	down    error
 }
 
 func newFakeServer() *fakeServer {
@@ -96,6 +109,8 @@ func (f *fakeServer) Subscribe(s client.Subscription) {
 	unavailable := f.unavailable
 	f.mu.Unlock()
 	switch {
+	case ok && f.noStore:
+		_ = s.Handler.Apply(noStore(update(s.ID, content)))
 	case ok:
 		if err := s.Handler.Apply(update(s.ID, content)); err != nil {
 			panic(err)
@@ -138,7 +153,7 @@ type fixture struct {
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	f := fixture{
-		mounts: &fakeMounter{mounts: map[string]string{}},
+		mounts: &fakeMounter{mounts: map[string]string{}, memory: map[string]uint64{}},
 		server: newFakeServer(),
 		state:  t.TempDir(),
 	}
@@ -535,7 +550,7 @@ func TestPublishFromTheNodeCache(t *testing.T) {
 }
 
 func TestNewValidatesConfig(t *testing.T) {
-	m, s, c := &fakeMounter{}, newFakeServer(), newFixture(t).cache
+	m, s, c := &fakeMounter{mounts: map[string]string{}, memory: map[string]uint64{}}, newFakeServer(), newFixture(t).cache
 	for name, cfg := range map[string]Config{
 		"no node ID":   {StateDir: t.TempDir(), Mounter: m, Server: s, Cache: c},
 		"no state dir": {NodeID: "n", Mounter: m, Server: s, Cache: c},
@@ -790,5 +805,79 @@ func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 	// The files were there all along.
 	if got := read(t, filepath.Join(f.mounts.mounts[target], "app.yaml")); got != "a: 1\n" {
 		t.Errorf("app.yaml = %q", got)
+	}
+}
+
+func noStore(u *chandlerv1.ConfigUpdate) *chandlerv1.ConfigUpdate {
+	u.SetCacheControl(chandlerv1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
+	return u
+}
+
+// Content a provider marks no_store never reaches the node's disk: it is
+// written only to a volume kept in memory, and refused, with the way out, to
+// one that is not.
+func TestNoStoreNeedsAVolumeInMemory(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	const sources = "- uri: file:///app.yaml\n  path: app.yaml\n"
+
+	target := filepath.Join(t.TempDir(), "memory")
+	req := publishRequest("csi-memory", target, sources)
+	req.VolumeContext["medium"] = "Memory"
+	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(f.state, "volumes", "csi-memory", "data")
+	if size := f.mounts.memory[data]; size == 0 {
+		t.Fatalf("the data directory of a memory volume is not an in-memory filesystem (mounts: %v)", f.mounts.mounts)
+	}
+	sub := f.server.subs["csi-memory/0"]
+	secret := noStore(update("csi-memory/0", "secret"))
+	if err := sub.Handler.Apply(secret); err != nil {
+		t.Fatalf("no_store content on a memory volume: %v", err)
+	}
+	if got := sub.Handler.Cached(); len(got) != 1 {
+		t.Errorf("the node cache holds %d versions; the no_store one must not be among them", len(got))
+	}
+
+	// A driver restart finds the volume only while its memory is mounted.
+	restarted := f.restart(t)
+	if err := restarted.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.server.subscribed(); n != 1 {
+		t.Fatalf("%d subscriptions after a restart, want the memory volume's", n)
+	}
+	delete(f.mounts.mounts, data) // as after a reboot
+	f.server.subs = map[string]client.Subscription{}
+	if err := f.restart(t).Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.server.subscribed(); n != 0 {
+		t.Errorf("a memory volume whose memory is gone was resumed")
+	}
+
+	// On a volume on disk the same content is refused, and a mount waiting
+	// for it fails at once and says what to do.
+	f = newFixture(t)
+	f.server.noStore = true
+	_, err := f.driver.NodePublishVolume(ctx, publishRequest("csi-disk", filepath.Join(t.TempDir(), "disk"), sources))
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "medium: Memory") {
+		t.Errorf("no_store content on a disk volume: got %v, want FailedPrecondition naming the attribute", err)
+	}
+	if len(f.mounts.mounts) != 0 {
+		t.Errorf("mounted despite the refusal: %v", f.mounts.mounts)
+	}
+
+	// Unpublishing removes the memory with the volume.
+	f = newFixture(t)
+	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.driver.NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{VolumeId: "csi-memory", TargetPath: target}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.mounts.memory) != 0 || len(f.mounts.mounts) != 0 {
+		t.Errorf("left behind: memory %v, mounts %v", f.mounts.memory, f.mounts.mounts)
 	}
 }

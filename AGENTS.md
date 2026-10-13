@@ -121,6 +121,15 @@ hand-editing what Gazelle owns.
   Never a URI, a pod, a namespace or a version.
 - List a new metric in section 11 of the design.
 
+## Kubernetes API access
+
+- The server reads the cluster's public token signing keys and nothing else.
+  The driver creates events on pods and nothing else (`csi/internal/events`).
+  The providers have no access. There are no CRDs, and no component watches
+  or lists anything.
+- Do not add client-go for a single call: both uses are one plain HTTPS
+  request with the service account token.
+
 ## Concurrency
 
 - Only one goroutine may call `Send` on a gRPC stream. Producers push to a

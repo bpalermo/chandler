@@ -778,6 +778,25 @@ nothing is dialled. Each reports as its own `service.name`.
 
 Logs are structured JSON on standard error.
 
+**Events.** The driver records a warning event on the pod when something goes
+wrong for its configuration, so that `kubectl describe pod` says what
+happened:
+
+| Reason | When |
+|---|---|
+| `ConfigRefused` | A new version can never be written to the volume, for example `no_store` content on a volume that is not in memory. It is not applied. |
+| `ConfigWriteFailed` | A new version could not be written for a reason on the node, such as a full disk. It is retried. |
+| `ConfigFromCache` | The volume was mounted from the node's cache because the server could not supply it. |
+| `ConfigStale` | The server delivered a version it could not confirm with the provider. |
+| `ConfigRejected` | The application rejected a version, with its reason. |
+| `ConfigOverdue` | The application has not reported on a version in time. |
+
+Recording is best effort and never blocks the driver; the same event for the
+same pod is recorded at most once a minute. It is the driver's only use of
+the Kubernetes API and needs one cluster-wide permission, creating events;
+`--pod-events=false` gives the driver no API access at all. A failed mount
+needs none of this: kubelet records it, with the driver's reason.
+
 Not built: traces.
 
 ## 12. Open questions
@@ -811,7 +830,7 @@ What exists today, against the design above.
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 3) |
-| Observability | Metrics pushed over OTLP from every component (section 11), structured logs | Events on pods, traces |
+| Observability | Metrics pushed over OTLP from every component, events on pods, structured logs (section 11) | Traces |
 
 The server's cache survives a rollout because each new replica copies it from
 the ready ones before it takes traffic. If every replica is lost at once, the

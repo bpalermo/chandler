@@ -31,6 +31,7 @@ import (
 	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/csi/internal/appack"
 	"github.com/bpalermo/chandler/csi/internal/client"
+	"github.com/bpalermo/chandler/csi/internal/events"
 	"github.com/bpalermo/chandler/csi/internal/mount"
 	"github.com/bpalermo/chandler/csi/internal/volume"
 )
@@ -98,6 +99,7 @@ type Driver struct {
 	server      Subscriber
 	cache       volume.Cache
 	audience    string
+	events      events.Recorder
 	metrics     metrics
 	timeout     time.Duration
 	cachedAfter time.Duration
@@ -132,6 +134,9 @@ type Config struct {
 	// PublishTimeout bounds the wait for a volume's sources; zero means
 	// DefaultPublishTimeout.
 	PublishTimeout time.Duration
+	// Events records what happens to a pod's configuration on the pod; nil
+	// records nothing.
+	Events events.Recorder
 	// TokenAudience is the audience of the pod token to pass to the server;
 	// empty means DefaultTokenAudience.
 	TokenAudience string
@@ -164,6 +169,9 @@ func New(cfg Config) (*Driver, error) {
 	if cfg.TokenAudience == "" {
 		cfg.TokenAudience = DefaultTokenAudience
 	}
+	if cfg.Events == nil {
+		cfg.Events = events.Discard{}
+	}
 	if err := os.MkdirAll(filepath.Join(cfg.StateDir, volumesDir), dirMode); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
@@ -175,6 +183,7 @@ func New(cfg Config) (*Driver, error) {
 		server:      cfg.Server,
 		cache:       cfg.Cache,
 		audience:    cfg.TokenAudience,
+		events:      cfg.Events,
 		timeout:     cfg.PublishTimeout,
 		cachedAfter: cfg.CachedAfter,
 		published:   make(map[string]*volume.Volume),
@@ -443,6 +452,9 @@ func (d *Driver) waitReady(ctx context.Context, v *volume.Volume, policy string)
 			if cacheErr := v.ApplyCached(); cacheErr != nil {
 				return cacheErr
 			}
+			d.events.Warning(podOf(v), events.ReasonFromCache, fmt.Sprintf(
+				"mounted from this node's cache, which may be behind: the config server could not supply the volume (%s)",
+				status.Convert(err).Message()))
 			d.metrics.fromCache.Add(ctx, 1)
 			return nil
 		}
@@ -492,7 +504,7 @@ func (d *Driver) subscribe(v *volume.Volume) {
 			URI:      source.URI,
 			Workload: workload,
 			AppAck:   v.AppAck(),
-			Handler:  sourceHandler{volume: v, index: i, metrics: &d.metrics},
+			Handler:  sourceHandler{volume: v, index: i, metrics: &d.metrics, events: d.events},
 		})
 	}
 }
@@ -506,6 +518,21 @@ func (d *Driver) serveAppAck(v *volume.Volume) error {
 	forward := func(outcomes []volume.Outcome) {
 		for _, o := range outcomes {
 			d.metrics.appReports.Add(context.Background(), 1, metric.WithAttributes(attribute.String("state", o.State)))
+			source := v.Meta().Spec.Sources[o.Source]
+			switch o.State {
+			case volume.StateRejected:
+				reverted := "the files stay: there is no earlier version it loaded to go back to"
+				if o.Applied != o.Version && o.Applied != "" {
+					reverted = "the source is back on the last version it loaded"
+				}
+				d.events.Warning(podOf(v), events.ReasonRejected, fmt.Sprintf(
+					"the application rejected a new version of source %q (%s): %s; %s",
+					source.Name, source.URI, o.Message, reverted))
+			case volume.StateOverdue:
+				d.events.Warning(podOf(v), events.ReasonOverdue, fmt.Sprintf(
+					"the application has not reported whether it loaded the new version of source %q (%s) within %s",
+					source.Name, source.URI, v.Meta().Spec.AppAckTimeout))
+			}
 			state := chandlerv1.AppReport_STATE_LOADED
 			switch o.State {
 			case volume.StateRejected:
@@ -570,6 +597,13 @@ type sourceHandler struct {
 	volume  *volume.Volume
 	index   int
 	metrics *metrics
+	events  events.Recorder
+}
+
+// podOf returns the pod a volume belongs to, for an event.
+func podOf(v *volume.Volume) events.Pod {
+	w := v.Meta().Workload
+	return events.Pod{Namespace: w.Namespace, Name: w.PodName, UID: w.PodUID}
 }
 
 func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
@@ -579,8 +613,23 @@ func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
 	// A version this volume can never take is an answer too: a mount that
 	// waits for the source fails at once, with the reason, instead of
 	// running out its time.
-	if code := status.Code(err); code == codes.FailedPrecondition || code == codes.InvalidArgument {
+	source := h.volume.Meta().Spec.Sources[h.index]
+	switch code := status.Code(err); code {
+	case codes.OK:
+		if update.GetStale() {
+			h.events.Warning(podOf(h.volume), events.ReasonStale, fmt.Sprintf(
+				"source %q (%s) is at a version the config server could not confirm with its provider, which is unreachable",
+				source.Name, source.URI))
+		}
+	case codes.FailedPrecondition, codes.InvalidArgument:
 		h.volume.Fail(h.index, &rpcstatus.Status{Code: int32(code), Message: status.Convert(err).Message()})
+		h.events.Warning(podOf(h.volume), events.ReasonRefused, fmt.Sprintf(
+			"a new version of source %q (%s) cannot be written to this volume and is not applied: %s",
+			source.Name, source.URI, status.Convert(err).Message()))
+	default:
+		h.events.Warning(podOf(h.volume), events.ReasonWriteFailed, fmt.Sprintf(
+			"a new version of source %q (%s) could not be written and will be retried; the previous one stays: %s",
+			source.Name, source.URI, status.Convert(err).Message()))
 	}
 	return err
 }

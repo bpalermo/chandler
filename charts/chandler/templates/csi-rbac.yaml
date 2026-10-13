@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "chandler.name" . }}-csi
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi
+automountServiceAccountToken: false
+{{- if .Values.csi.podEvents }}
+---
+# The driver records events on the pods it serves, which live in any
+# namespace. That is all it may do with the Kubernetes API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "chandler.name" . }}-csi-events
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "chandler.name" . }}-csi-events
+  labels:
+    {{- include "chandler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "chandler.name" . }}-csi-events
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "chandler.name" . }}-csi
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -14,6 +14,7 @@ go_library(
         "//csi/internal/cache",
         "//csi/internal/client",
         "//csi/internal/driver",
+        "//csi/internal/events",
         "//csi/internal/mount",
         "@com_github_container_storage_interface_spec//lib/go/csi",
         "@org_golang_google_grpc//:grpc",

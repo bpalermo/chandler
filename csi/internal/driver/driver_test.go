@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"github.com/bpalermo/chandler/common/bundle"
 	"github.com/bpalermo/chandler/csi/internal/cache"
 	"github.com/bpalermo/chandler/csi/internal/client"
+	"github.com/bpalermo/chandler/csi/internal/events"
 )
 
 // fakeMounter records mounts instead of performing them.
@@ -142,7 +144,33 @@ func (f *fakeServer) subscribed() int {
 	return len(f.subs)
 }
 
+// recorded collects the events the driver records.
+type recorded struct {
+	mu     sync.Mutex
+	events []string // "<namespace>/<pod> <reason>: <message>"
+}
+
+func (r *recorded) Warning(pod events.Pod, reason, message string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, fmt.Sprintf("%s/%s %s: %s", pod.Namespace, pod.Name, reason, message))
+}
+
+// has reports whether an event with the reason, mentioning text, was
+// recorded on the test pod.
+func (r *recorded) has(reason, text string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.events {
+		if strings.HasPrefix(e, "shop/web-0 "+reason+": ") && strings.Contains(e, text) {
+			return true
+		}
+	}
+	return false
+}
+
 type fixture struct {
+	events *recorded
 	cache  *cache.Cache
 	driver *Driver
 	mounts *fakeMounter
@@ -156,6 +184,7 @@ func newFixture(t *testing.T) fixture {
 		mounts: &fakeMounter{mounts: map[string]string{}, memory: map[string]uint64{}},
 		server: newFakeServer(),
 		state:  t.TempDir(),
+		events: &recorded{},
 	}
 	nodeCache, err := cache.Open(filepath.Join(f.state, "cache"), time.Hour)
 	if err != nil {
@@ -179,6 +208,7 @@ func (f fixture) restart(t *testing.T) *Driver {
 		Mounter:        f.mounts,
 		Server:         f.server,
 		Cache:          f.cache,
+		Events:         f.events,
 		PublishTimeout: 2 * time.Second,
 		CachedAfter:    10 * time.Millisecond,
 	})
@@ -879,5 +909,76 @@ func TestNoStoreNeedsAVolumeInMemory(t *testing.T) {
 	}
 	if len(f.mounts.memory) != 0 || len(f.mounts.mounts) != 0 {
 		t.Errorf("left behind: memory %v, mounts %v", f.mounts.memory, f.mounts.mounts)
+	}
+}
+
+// What goes wrong for a pod's configuration is recorded on the pod.
+func TestEventsOnThePod(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	target := filepath.Join(t.TempDir(), "mount")
+	req := publishRequest("csi-events", target, "- name: app\n  uri: file:///app.yaml\n  path: app.yaml\n")
+	req.VolumeContext["appAck"] = "true"
+	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	sub := f.server.subs["csi-events/0"]
+	socket := filepath.Join(f.mounts.mounts[target], "..chandler.sock")
+	generation := func() string {
+		var config struct{ Generation string }
+		_, body := call(t, socket, http.MethodGet, "/v1/config", "")
+		if err := json.Unmarshal([]byte(body), &config); err != nil {
+			t.Fatal(err)
+		}
+		return config.Generation
+	}
+
+	// A version the volume can never take.
+	bad := update("csi-events/0", "x")
+	bad.GetBundle().GetFiles()[0].SetPath("../escape")
+	bad.SetVersion(bundle.Version(bad.GetBundle()))
+	if err := sub.Handler.Apply(bad); err == nil {
+		t.Fatal("an unsafe bundle was applied")
+	}
+	if !f.events.has(events.ReasonRefused, `source "app" (file:///app.yaml)`) {
+		t.Errorf("no ConfigRefused event naming the source; recorded: %v", f.events.events)
+	}
+
+	// A version the server could not confirm.
+	stale := update("csi-events/0", "stale")
+	stale.SetStale(true)
+	if err := sub.Handler.Apply(stale); err != nil {
+		t.Fatal(err)
+	}
+	if !f.events.has(events.ReasonStale, "could not confirm") {
+		t.Errorf("no ConfigStale event; recorded: %v", f.events.events)
+	}
+
+	// A version the application rejects, with nothing loaded to go back to.
+	if code, body := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+generation()+`","state":"rejected","message":"cannot parse"}`); code != http.StatusNoContent {
+		t.Fatalf("reporting rejected = %d %s", code, body)
+	}
+	if !f.events.has(events.ReasonRejected, "cannot parse") || !f.events.has(events.ReasonRejected, "the files stay") {
+		t.Errorf("no ConfigRejected event with the application's reason; recorded: %v", f.events.events)
+	}
+}
+
+// A mount from the node cache is recorded: the pod runs on what may be old.
+func TestEventForAMountFromTheCache(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	warm := filepath.Join(t.TempDir(), "warm")
+	if _, err := f.driver.NodePublishVolume(ctx, publishRequest("csi-warm", warm, twoSources)); err != nil {
+		t.Fatal(err)
+	}
+	f.server.content = map[string]string{}
+	f.server.down = errors.New("config server is unreachable: connection refused")
+	req := publishRequest("csi-cached", filepath.Join(t.TempDir(), "cached"), twoSources)
+	req.VolumeContext["failurePolicy"] = "UseCached"
+	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if !f.events.has(events.ReasonFromCache, "node's cache") {
+		t.Errorf("no ConfigFromCache event; recorded: %v", f.events.events)
 	}
 }

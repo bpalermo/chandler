@@ -318,6 +318,13 @@ csi:
       pullPolicy: IfNotPresent
     resources: {}
 
+  # Record a Kubernetes event on a pod when its configuration is refused,
+  # rejected by the application, late to be reported on, stale, or served from
+  # the node's cache, so that `kubectl describe pod` says what happened. This
+  # is the driver's only use of the Kubernetes API, and needs one cluster-wide
+  # permission: creating events. false gives the driver no API access at all.
+  podEvents: true
+
   # kubelet's root directory on the nodes. /var/lib/kubelet on most
   # distributions; some (k0s, MicroK8s, ...) use another path.
   kubeletDir: /var/lib/kubelet

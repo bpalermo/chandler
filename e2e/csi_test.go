@@ -391,6 +391,8 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	if got := mustKubectl(ctx, t, "exec", "cached", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
 		t.Errorf("the pod started from the cache reads %q, want v1", got)
 	}
+	// The pod says so: what it runs on may be behind.
+	expectEvent(ctx, t, ns, "cached", "ConfigFromCache", "node's cache")
 	// The running pod kept its files through the outage.
 	if got := mustKubectl(ctx, t, "exec", "warm", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
 		t.Errorf("the running pod reads %q during the outage, want v1", got)

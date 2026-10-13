@@ -24,6 +24,7 @@ csi:
     repository: registry.example.com/chandler/csi
     digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     pullPolicy: Always
+  podEvents: false
   kubeletDir: /var/lib/k0s/kubelet
   stateDir: /var/lib/chandler-state
   nodeSelector:

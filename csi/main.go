@@ -26,6 +26,7 @@ import (
 	"github.com/bpalermo/chandler/csi/internal/cache"
 	"github.com/bpalermo/chandler/csi/internal/client"
 	"github.com/bpalermo/chandler/csi/internal/driver"
+	"github.com/bpalermo/chandler/csi/internal/events"
 	"github.com/bpalermo/chandler/csi/internal/mount"
 )
 
@@ -37,6 +38,7 @@ func main() {
 		server         = flag.String("server", "", "gRPC target of the config server, e.g. dns:///chandler-server.chandler-system.svc:9000")
 		serverIdentity = flag.String("server-identity", "", "the identity (DNS name or SPIFFE ID) the config server's certificate must carry (default: the host name in --server)")
 		tokenAudience  = flag.String("token-audience", driver.DefaultTokenAudience, "the audience of the pod token kubelet supplies for the config server; matches the CSIDriver object's tokenRequests")
+		podEvents      = flag.Bool("pod-events", true, "record Kubernetes events on pods when their configuration is refused, rejected, late or served from a cache; needs permission to create events")
 		showVersion    = flag.Bool("version", false, "print the version and exit")
 	)
 	var tls transport.Options
@@ -61,13 +63,13 @@ func main() {
 	if identity == "" {
 		identity = transport.HostIdentity(*server)
 	}
-	if err := run(log, *endpoint, *nodeID, *stateDir, *server, transport.Dial(src, []string{identity}), *tokenAudience); err != nil {
+	if err := run(log, *endpoint, *nodeID, *stateDir, *server, transport.Dial(src, []string{identity}), *tokenAudience, *podEvents); err != nil {
 		log.Error("chandler-csi failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, creds credentials.TransportCredentials, tokenAudience string) error {
+func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, creds credentials.TransportCredentials, tokenAudience string, podEvents bool) error {
 	socket, ok := strings.CutPrefix(endpoint, "unix://")
 	if !ok || socket == "" {
 		return fmt.Errorf("endpoint %q is not a unix:// socket", endpoint)
@@ -92,6 +94,16 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, cred
 		Credentials: creds,
 		Log:         log,
 	})
+	var recorder events.Recorder = events.Discard{}
+	if podEvents {
+		api, err := events.InCluster(nodeID, log)
+		if err != nil {
+			// The driver works without them; say so and go on.
+			log.Warn("not recording events on pods", "error", err)
+		} else {
+			recorder = api
+		}
+	}
 	nodeCache, err := cache.Open(filepath.Join(stateDir, "cache"), cache.DefaultGrace)
 	if err != nil {
 		return err
@@ -104,6 +116,7 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, cred
 		Server:        configServer,
 		Cache:         nodeCache,
 		TokenAudience: tokenAudience,
+		Events:        recorder,
 	})
 	if err != nil {
 		return err

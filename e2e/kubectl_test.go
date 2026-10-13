@@ -108,6 +108,27 @@ func newNamespace(ctx context.Context, t *testing.T) string {
 	return ns
 }
 
+// expectEvent waits for a warning event on a pod with the given reason whose
+// message mentions text.
+func expectEvent(ctx context.Context, t *testing.T, ns, pod, reason, text string) {
+	t.Helper()
+	err := eventually(ctx, func() error {
+		messages, err := kubectl(ctx, "get", "events", "-n", ns,
+			"--field-selector", fmt.Sprintf("involvedObject.name=%s,reason=%s,type=Warning", pod, reason),
+			"-o", "jsonpath={.items[*].message}")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(messages, text) {
+			return fmt.Errorf("no %s event on pod %s mentioning %q yet; found: %q", reason, pod, text, messages)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""

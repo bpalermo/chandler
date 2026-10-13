@@ -145,6 +145,8 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	if got := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
 		t.Errorf("after the rejection the file reads %q, want v1", got)
 	}
+	// And it is on the pod, for whoever looks at it with kubectl.
+	expectEvent(ctx, t, ns, "app", "ConfigRejected", "cannot parse")
 	// The server was told, and does not send the version again.
 	err = eventually(ctx, func() error {
 		logs, err := kubectl(ctx, "logs", "-n", driverNamespace, "-l", "app.kubernetes.io/component=server", "--tail=-1")

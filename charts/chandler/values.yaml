@@ -202,6 +202,9 @@ providers:
     # Pods that may refuse a version, or whose application may reject it,
     # before its rollout is held where it is. Negative never holds.
     rolloutMaxRefused: 0
+    # Applications that may be late to report on a version (volumes with
+    # appAckTimeout) before its rollout is held. Negative never holds.
+    rolloutMaxOverdue: 5
 
     port: 9100
 
@@ -257,6 +260,7 @@ providers:
     # Pods that may refuse a version, or whose application may reject it,
     # before its rollout is held where it is. Negative never holds.
     rolloutMaxRefused: 0
+    rolloutMaxOverdue: 5
     # A single object can also carry its own ramp in its metadata
     # (chandler-rollout), and be held at a share (chandler-rollout-hold: "10").
 

@@ -71,7 +71,7 @@ in [api/chandler/v1](api/chandler/v1).
 | Security | Mutual TLS between all components, with a chart-issued private authority by default, your own certificates, or identities from a SPIFFE Workload API such as SPIRE. The server verifies which pod a volume belongs to from its service account token. Not built: authorisation of which pods may read which URIs |
 | Staged rollouts | A provider releases a new version to a growing share of pods and can hold it or take it back; the file and S3 providers have a time-based ramp |
 | Metrics | Every component pushes metrics over OTLP to an OpenTelemetry collector (`telemetry.otlpEndpoint`) |
-| Application acknowledgement | A volume with `appAck: "true"` gets a manifest and an HTTP API on a Unix socket. The application reports whether it loaded each version; a rejected one is reverted at once and reported to the provider |
+| Application acknowledgement | A volume with `appAck: "true"` gets a manifest and an HTTP API on a Unix socket. The application reports whether it loaded each version; a rejected one is reverted at once and reported to the provider. With `appAckTimeout`, silence is reported too, and can hold a rollout |
 
 The design document ends with a
 [detailed status table](docs/design.md#13-implementation-status).

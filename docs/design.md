@@ -395,6 +395,14 @@ curl --unix-socket /etc/payments/..chandler.sock \
   affected. The server does not send a rejected version to that subscription
   again, and the provider is told, so that it can hold a rollout (section 8).
 
+**Silence.** A volume can also set `appAckTimeout: 2m`. A version the
+application was given and has not reported on within that time is reported
+`overdue` to the server, by the driver, once. Nothing is reverted: a pod is
+never taken back for being slow to report, and a late report still counts and
+replaces the mark. The provider is told how many are overdue and may hold a
+rollout on it (`--rollout-max-overdue`, default 5). The clock starts again
+after a driver restart.
+
 Verdicts are kept in `meta.json`, and the driver re-creates the sockets when
 it restarts. The driver binds through a directory file descriptor, so the
 socket's long host path does not hit the 108-byte limit; inside the container
@@ -786,8 +794,8 @@ What exists today, against the design above.
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport`, one resend of an update unanswered for 60s, keepalives, a max connection age that makes drivers reconnect and spread over replicas | |
 | Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached` | `no_store` tmpfs (such content skips the cache but is written to the volume's disk) |
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), authorisation |
-| Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals and rejections, and S3 metadata overrides | |
-| Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again | Load timeouts: a version that is written but never reported stays `pending` and nothing reacts |
+| Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected, overdue), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, rejections and overdue reports, and S3 metadata overrides | |
+| Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 3) |

@@ -105,9 +105,11 @@ func (h *handler) Apply(u *chandlerv1.ConfigUpdate) error {
 
 func (h *handler) Fail(st *status.Status) { h.failed <- st }
 
-func (h *handler) Cached() []string { return []string{"v0", h.Applied()} }
-func (h *handler) Loaded() string   { return "" }
-func (h *handler) Token() string    { return "pod-token" }
+func (h *handler) Cached() []string   { return []string{"v0", h.Applied()} }
+func (h *handler) Loaded() string     { return "" }
+func (h *handler) Token() string      { return "pod-token" }
+func (h *handler) Rejected() []string { return nil }
+func (h *handler) Overdue() string    { return "" }
 
 func (h *handler) Applied() string {
 	h.mu.Lock()

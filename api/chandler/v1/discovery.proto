@@ -182,6 +182,17 @@ message Subscribe {
   // reconnect it tells the server what the application is actually running,
   // which may be older than applied_version.
   string loaded_version = 7;
+
+  // The versions of this source the application rejected. After a reconnect
+  // they tell the server, which keeps this only for the life of a stream,
+  // what not to send again and what to keep counting toward the provider's
+  // feedback. Unset when app_ack is false.
+  repeated string rejected_versions = 8;
+
+  // The version the application was given and has not reported on within the
+  // time its volume allows, as last reported with STATE_OVERDUE. Unset when
+  // there is none.
+  string overdue_version = 9;
 }
 
 // Unsubscribe ends a subscription. The server stops sending updates for it and
@@ -323,6 +334,13 @@ message AppReport {
     // previous loaded version back in the volume, if there was one. The server
     // must not send this version to this subscription again.
     STATE_REJECTED = 2;
+
+    // The application was given the version and has said nothing about it
+    // within the time its volume allows. Sent by the driver, not by the
+    // application. Nothing is reverted: a pod is never taken back for being
+    // slow to report. A STATE_LOADED or STATE_REJECTED for the same version
+    // may still follow, and replaces this.
+    STATE_OVERDUE = 3;
   }
 
   // The subscription the report is about.
@@ -340,8 +358,8 @@ message AppReport {
   string message = 4;
 
   // The version in the volume once the driver has reacted to the report:
-  // equal to version after STATE_LOADED, and the version the driver reverted
-  // to after STATE_REJECTED. Unset when a rejected version was the first one
+  // equal to version after STATE_LOADED or STATE_OVERDUE, and the version
+  // the driver reverted to after STATE_REJECTED. Unset when a rejected version was the first one
   // and there was nothing to revert to.
   string applied_version = 5;
 }

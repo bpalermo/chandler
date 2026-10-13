@@ -150,10 +150,25 @@ server:
   # survives a container restart, and is refilled from the providers after the
   # pod is replaced.
   cache:
-    # The emptyDir's size limit. The server holds at most 1Gi per provider.
+    # The emptyDir's size limit. Keep it above maxBytesPerProvider times the
+    # number of providers.
     sizeLimit: 2Gi
-    # How long an entry no pod uses is kept.
+    # How long an entry no pod uses is kept, so that pods can start through a
+    # provider outage. It goes sooner if its room is needed: see the quotas.
     grace: 24h
+    # The most cache keys and bytes of content held for one provider. To stay
+    # within them the server evicts entries no pod uses, least recently used
+    # first. What pods use is never evicted: when that alone reaches a quota,
+    # new configuration is refused (RESOURCE_EXHAUSTED) and the pods asking
+    # for it do not start.
+    maxKeysPerProvider: 10000
+    maxBytesPerProvider: 1073741824
+    # The same for single providers, by name; either may be left out.
+    #   providerQuotas:
+    #     s3:
+    #       maxKeys: 50000
+    #       maxBytes: 4294967296
+    providerQuotas: {}
     # How long a not-found or permission-denied answer from a provider is
     # remembered, so a crash-looping pod does not hammer it.
     negativeTtl: 30s

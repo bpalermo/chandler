@@ -127,8 +127,12 @@ func publish(ctx context.Context, t *testing.T, key, content string) {
 		t.Fatal(err)
 	}
 	mustKubectl(ctx, t, "patch", "configmap", configMap, "-n", driverNamespace, "--type=merge", "-p", string(patch))
-	mustKubectl(ctx, t, "annotate", "pods", "-n", driverNamespace, "-l", "app.kubernetes.io/component=provider-file",
-		"--overwrite", fmt.Sprintf("e2e.chandler.dev/published=%d", time.Now().UnixNano()))
+	// Both providers that serve the ConfigMap: the chart's, and the one with
+	// a small quota (e2e/small-provider.yaml), where it is deployed.
+	for _, selector := range []string{"app.kubernetes.io/component=provider-file", "app.kubernetes.io/name=chandler-provider-small"} {
+		mustKubectl(ctx, t, "annotate", "pods", "-n", driverNamespace, "-l", selector,
+			"--overwrite", fmt.Sprintf("e2e.chandler.dev/published=%d", time.Now().UnixNano()))
+	}
 }
 
 // expectFile waits until a file in the consumer's volume has the content.

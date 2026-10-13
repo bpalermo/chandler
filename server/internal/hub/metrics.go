@@ -12,7 +12,7 @@ import (
 // metrics is what the hub counts as it goes. What can be read off its state
 // (subscriptions, cache contents, rollouts) is observed when exported instead.
 type metrics struct {
-	acks, nacks, appReports, adopted, refusedBundles, resent metric.Int64Counter
+	acks, nacks, appReports, adopted, refusedBundles, resent, evictions metric.Int64Counter
 }
 
 func providerAttr(name string) metric.MeasurementOption {
@@ -34,6 +34,8 @@ func (h *Hub) instrument() {
 			metric.WithDescription("Cache entries copied from another replica."))),
 		resent: telemetry.Must(m.Int64Counter("chandler.server.resent",
 			metric.WithDescription("Updates sent a second time because the driver did not answer the first."))),
+		evictions: telemetry.Must(m.Int64Counter("chandler.server.cache.evictions",
+			metric.WithDescription("Cache entries nothing used that were dropped, by reason: unused for the grace period, or to stay within a quota."))),
 		refusedBundles: telemetry.Must(m.Int64Counter("chandler.server.provider.refused",
 			metric.WithDescription("Bundles refused to a provider, by gRPC code."))),
 	}
@@ -47,7 +49,7 @@ func (h *Hub) instrument() {
 	keys := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.keys",
 		metric.WithDescription("Cache keys held, against the per-provider quota.")))
 	bytes := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.bytes",
-		metric.WithDescription("Bytes of the current version of every key held."), metric.WithUnit("By")))
+		metric.WithDescription("Bytes of content held, against the per-provider quota: every version of every key, shared content counted once."), metric.WithUnit("By")))
 	orphaned := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.orphaned_keys",
 		metric.WithDescription("Keys whose resource was deleted at the origin and is served from the cache.")))
 	rollouts := telemetry.Must(m.Int64ObservableGauge("chandler.server.rollouts",
@@ -101,8 +103,9 @@ func (h *Hub) instrument() {
 			attr := providerAttr(name)
 			o.ObserveInt64(variants, n, attr)
 			o.ObserveInt64(variantsLimit, int64(h.quotas.MaxVariantsPerURI), attr)
-			o.ObserveInt64(keysLimit, int64(h.quotas.MaxKeysPerProvider), attr)
-			o.ObserveInt64(bytesLimit, int64(h.quotas.MaxBytesPerProvider), attr)
+			maxKeys, maxBytes := h.quota(name)
+			o.ObserveInt64(keysLimit, int64(maxKeys), attr)
+			o.ObserveInt64(bytesLimit, int64(maxBytes), attr)
 		}
 		o.ObserveInt64(namespaceURIs, busiest)
 		o.ObserveInt64(namespaceURIsLimit, int64(h.quotas.MaxURIsPerNamespace))
@@ -133,13 +136,15 @@ func (h *Hub) instrument() {
 				c.watches++
 			}
 		}
+		for name, c := range per {
+			c.bytes = int64(h.usageLocked(name).bytes)
+		}
 		for key, e := range h.entries {
 			c := per[key.provider]
 			if c == nil {
 				continue
 			}
 			c.keys++
-			c.bytes += int64(e.current().Bytes)
 			if e.orphaned {
 				c.orphaned++
 			}

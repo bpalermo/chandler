@@ -247,3 +247,29 @@ func TestAdoptRules(t *testing.T) {
 		t.Errorf("update = %v, want the adopted bundle marked stale", u)
 	}
 }
+
+// What a peer holds is copied only into room that is free, so a replica does
+// not bring back what it evicted to stay within a quota.
+func TestAPeersEntryIsNotCopiedOverTheQuota(t *testing.T) {
+	old := startWith(t, Config{}, newFakeProvider())
+	v1 := oneFile("v1")
+	seed(t, old, "r1", v1)
+
+	full := startWith(t, Config{
+		Quotas:         DefaultQuotas(),
+		ProviderQuotas: map[string]ProviderQuota{"file": {MaxBytes: bundle.Size(v1) - 1}},
+	}, nil)
+	awaitReady(t, runPeers(t, full, peersOf(old.target)))
+	if got := full.hub.entryCount(); got != 0 {
+		t.Fatalf("%d entries copied, want none: the peer's entry does not fit", got)
+	}
+
+	roomy := startWith(t, Config{
+		Quotas:         DefaultQuotas(),
+		ProviderQuotas: map[string]ProviderQuota{"file": {MaxBytes: bundle.Size(v1)}},
+	}, nil)
+	awaitReady(t, runPeers(t, roomy, peersOf(old.target)))
+	if got := roomy.hub.entryCount(); got != 1 {
+		t.Fatalf("%d entries copied, want the peer's one, which fits exactly", got)
+	}
+}

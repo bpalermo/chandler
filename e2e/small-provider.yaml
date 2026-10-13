@@ -1,0 +1,84 @@
+# A second file provider for the end-to-end suite, registered with the config
+# server under the name "small" and given a quota of two cache keys
+# (e2e/values.yaml), so that the eviction test can fill a provider's cache
+# without starving every other test.
+#
+# It serves the same ConfigMap as the chart's file provider and presents that
+# provider's certificate, which is why the server is told to expect that
+# identity. Not part of the chart: one release has one file provider.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chandler-provider-small
+  labels:
+    app.kubernetes.io/name: chandler-provider-small
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chandler-provider-small
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chandler-provider-small
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: provider
+          image: localhost/chandler-provider-file:e2e
+          imagePullPolicy: Never
+          args:
+            - --listen=:9100
+            - --health-listen=:9101
+            - --tls-cert=/etc/chandler/tls/tls.crt
+            - --tls-key=/etc/chandler/tls/tls.key
+            - --tls-ca=/etc/chandler/tls/ca.crt
+            - --server-identity=chandler-server.chandler-system.svc
+            - --name=small
+            - --root=/config
+            - --poll-interval=500ms
+          ports:
+            - name: grpc
+              containerPort: 9100
+            - name: health
+              containerPort: 9101
+          readinessProbe:
+            grpc:
+              port: 9101
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tls
+              mountPath: /etc/chandler/tls
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: chandler-e2e-config
+        - name: tls
+          secret:
+            secretName: chandler-provider-file-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chandler-provider-small
+spec:
+  selector:
+    app.kubernetes.io/name: chandler-provider-small
+  ports:
+    - name: grpc
+      port: 9100
+      targetPort: grpc
+      appProtocol: grpc

@@ -174,10 +174,17 @@ The cache is bounded by construction rather than by eviction alone:
    canonical URI (the variant cap, default 16). Per namespace: max distinct
    URIs. Per bundle: max bytes and files. Exceeding one NACKs the provider or
    fails the subscription with `RESOURCE_EXHAUSTED`. Nothing in use is ever
-   evicted to make room.
+   evicted to make room. Bytes are what is held: every version of every key,
+   with content that several keys share counted once.
 7. **Eviction is by reference.** A key with live subscriptions is pinned. An
    unreferenced key is kept for a grace period (default 24h, so pods can
-   restart through a provider outage) and is then LRU-evictable.
+   restart through a provider outage) and then dropped. It goes sooner when
+   its room is needed: a bundle that would take a provider over its key or
+   byte quota is admitted by evicting that provider's unreferenced keys,
+   least recently referenced first, and refused only when what is in use
+   leaves no room. Nothing is evicted for a bundle that would not fit anyway.
+   Only a bundle some pod is waiting for evicts: a replica copies from its
+   peers into free room only, so it does not bring back what it evicted.
 8. **Negative results are cached briefly** (`NOT_FOUND`, `PERMISSION_DENIED`;
    default 30s, bounded count) so a crash-looping pod cannot hammer a provider.
 
@@ -546,7 +553,9 @@ declared it in `vary_on` and it is one of `cluster`, `namespace` or
 handshake.
 
 The default quotas are 10,000 keys and 1 GiB per provider, 16 keys per
-canonical URI, and 1,000 distinct URIs per namespace.
+canonical URI, and 1,000 distinct URIs per namespace. The two per-provider
+quotas can be set (`--max-keys-per-provider`, `--max-bytes-per-provider`),
+also for one provider alone (`--provider-max-keys`, `--provider-max-bytes`).
 
 There is no persistent volume. A volume per replica is zone-bound, so it would
 keep a replica from rescheduling in exactly the failures the cache exists for,
@@ -760,7 +769,7 @@ kubelet rewrites them all (the share never shrinks, so this only delays).
 | Application rejects a config (volume with `appAck`) | That pod is reverted to its last loaded version at once; the provider is told and may hold the rollout | Placed by the same hash rule |
 | Update cannot be written on a node | NACK, previous generation stays; retried per error code | n/a |
 | Origin object deleted | Keep current files | `Retain`: cached version; `Block`: `NOT_FOUND` |
-| Cache quota reached | Unaffected | New keys refused with `RESOURCE_EXHAUSTED`; existing keys unaffected |
+| Cache quota reached | Unaffected | Keys no pod uses are evicted to make room. When what is in use fills the quota, new keys are refused with `RESOURCE_EXHAUSTED`; existing keys unaffected |
 
 ## 11. Observability
 
@@ -772,7 +781,7 @@ nothing is dialled. Each reports as its own `service.name`.
 
 | Component | Metrics (`chandler.` prefix) |
 |---|---|
-| Server | `server.subscriptions`, `server.watches`, `server.provider.connected`, `server.cache.keys`, `server.cache.bytes`, `server.cache.orphaned_keys`, `server.rollouts`, `server.cache.uri_variants`, and the limits `server.cache.keys.limit`, `server.cache.bytes.limit` and `server.cache.uri_variants.limit`, all per provider; `server.namespace_uris` and its limit; `server.peer.sync_age`; `server.resent`; `server.acks`; `server.nacks` and `server.provider.refused` by code; `server.app_reports` by state; `server.peer.adopted` |
+| Server | `server.subscriptions`, `server.watches`, `server.provider.connected`, `server.cache.keys`, `server.cache.bytes`, `server.cache.evictions` by reason (`grace`, `pressure`), `server.cache.orphaned_keys`, `server.rollouts`, `server.cache.uri_variants`, and the limits `server.cache.keys.limit`, `server.cache.bytes.limit` and `server.cache.uri_variants.limit`, all per provider; `server.namespace_uris` and its limit; `server.peer.sync_age`; `server.resent`; `server.acks`; `server.nacks` and `server.provider.refused` by code; `server.app_reports` by state; `server.peer.adopted` |
 | Driver | `csi.volumes`, `csi.server.connected`, `csi.publish.duration` and `csi.apply.duration` by outcome, `csi.mounts_from_cache`, `csi.app_reports` by state, `csi.cache.uris`, `csi.cache.bytes` |
 | Providers | `provider.watches`, `provider.updates` by kind, `provider.failures` by code |
 
@@ -824,7 +833,7 @@ What exists today, against the design above.
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport`, one resend of an update unanswered for 60s, keepalives, a max connection age that makes drivers reconnect and spread over replicas | |
 | Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached`, volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
-| Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, `no_store` kept in memory only | LRU eviction under pressure (unused entries simply go after the grace period), authorisation |
+| Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, eviction of unused entries to stay within a quota, `no_store` kept in memory only | Authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected, overdue), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, rejections and overdue reports, and S3 metadata overrides | |
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |

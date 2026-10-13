@@ -70,6 +70,16 @@ spec:
             - --cache-dir=/var/cache/chandler
             - --cache-grace={{ .Values.server.cache.grace }}
             - --negative-ttl={{ .Values.server.cache.negativeTtl }}
+            - --max-keys-per-provider={{ int64 .Values.server.cache.maxKeysPerProvider }}
+            - --max-bytes-per-provider={{ int64 .Values.server.cache.maxBytesPerProvider }}
+            {{- range $name, $quota := .Values.server.cache.providerQuotas }}
+            {{- with $quota.maxKeys }}
+            - --provider-max-keys={{ $name }}={{ int64 . }}
+            {{- end }}
+            {{- with $quota.maxBytes }}
+            - --provider-max-bytes={{ $name }}={{ int64 . }}
+            {{- end }}
+            {{- end }}
             - --max-bundle-bytes={{ int64 .Values.server.maxBundleBytes }}
             - --max-bundle-files={{ int64 .Values.server.maxBundleFiles }}
             {{- if .Values.providers.file.enabled }}

@@ -440,7 +440,7 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 		b := update.GetBundle()
 		key := entryKey{u.name, update.GetCacheKey()}
 		version, size := bundle.Version(b), bundle.Size(b)
-		if err := h.admit(r, key, size); err != nil {
+		if err := h.admit(r, key, held{Version: version, Bytes: size}); err != nil {
 			refuse(codes.ResourceExhausted, err)
 			return
 		}

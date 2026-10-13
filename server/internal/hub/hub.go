@@ -82,13 +82,15 @@ var varyAllowed = map[string]bool{
 	"service_account": true,
 }
 
-// Quotas bounds the cache. Reaching one fails loudly, toward the provider or
-// the subscriber; nothing in use is evicted to make room.
+// Quotas bounds the cache. To stay within one, entries nothing uses are
+// dropped, least recently used first; nothing in use is ever evicted, so
+// reaching a quota with what is in use fails loudly, toward the provider or
+// the subscriber.
 type Quotas struct {
 	// MaxKeysPerProvider is the most cache keys one provider may issue.
 	MaxKeysPerProvider int
-	// MaxBytesPerProvider is the most content held for one provider,
-	// counting the current version of each key.
+	// MaxBytesPerProvider is the most content held for one provider: every
+	// version of every key, counting content that several share once.
 	MaxBytesPerProvider uint64
 	// MaxVariantsPerURI is the most cache keys one canonical URI may
 	// resolve to across subscriber attributes.
@@ -108,6 +110,13 @@ func DefaultQuotas() Quotas {
 	}
 }
 
+// ProviderQuota is the quota of one provider where it differs from Quotas. A
+// zero field keeps the general quota.
+type ProviderQuota struct {
+	MaxKeys  int
+	MaxBytes uint64
+}
+
 // Config configures a Hub.
 type Config struct {
 	// ServerID identifies this replica to drivers and providers.
@@ -115,6 +124,9 @@ type Config struct {
 	// Limits bounds the bundles accepted from providers.
 	Limits bundle.Limits
 	Quotas Quotas
+	// ProviderQuotas is the quota of the providers that have their own, by
+	// name.
+	ProviderQuotas map[string]ProviderQuota
 	// CacheDir is where entries and bundles are kept. Empty keeps them in
 	// memory only.
 	CacheDir string
@@ -153,6 +165,7 @@ type Hub struct {
 	id          string
 	limits      bundle.Limits
 	quotas      Quotas
+	perProvider map[string]ProviderQuota
 	grace       time.Duration
 	negativeTTL time.Duration
 	resendAfter time.Duration
@@ -190,6 +203,7 @@ func New(cfg Config) (*Hub, error) {
 		id:          cfg.ServerID,
 		limits:      cfg.Limits,
 		quotas:      cfg.Quotas,
+		perProvider: cfg.ProviderQuotas,
 		grace:       cfg.Grace,
 		negativeTTL: cfg.NegativeTTL,
 		resendAfter: cfg.ResendAfter,
@@ -941,33 +955,145 @@ func (h *Hub) accept(u *chandlerv1.ResourceUpdate) (codes.Code, error) {
 	}
 }
 
-// admit checks the quotas for a bundle about to become the current version of
-// a key, which may be new.
-func (h *Hub) admit(r *resource, key entryKey, size uint64) error {
-	keys, held, variants := 0, uint64(0), map[string]bool{key.cacheKey: true}
-	for k, e := range h.entries {
-		if k.provider != key.provider {
-			continue
-		}
-		keys++
-		if k != key {
-			held += e.current().Bytes
+// quota returns the most keys and bytes held for one provider.
+func (h *Hub) quota(provider string) (keys int, bytes uint64) {
+	keys, bytes = h.quotas.MaxKeysPerProvider, h.quotas.MaxBytesPerProvider
+	if own := h.perProvider[provider]; own.MaxKeys > 0 {
+		keys = own.MaxKeys
+	}
+	if own := h.perProvider[provider]; own.MaxBytes > 0 {
+		bytes = own.MaxBytes
+	}
+	return keys, bytes
+}
+
+// usage is what is held for one provider: its keys, and its content with
+// each version counted once however many keys hold it.
+type usage struct {
+	keys  int
+	bytes uint64
+	// holders is how many keys hold each version.
+	holders map[string]int
+}
+
+// add counts a version held by one more key.
+func (u *usage) add(v held) {
+	if u.holders[v.Version]++; u.holders[v.Version] == 1 {
+		u.bytes += v.Bytes
+	}
+}
+
+// remove is the opposite of add.
+func (u *usage) remove(v held) {
+	if u.holders[v.Version]--; u.holders[v.Version] == 0 {
+		u.bytes -= v.Bytes
+	}
+}
+
+// distinct returns the versions an entry holds, each once.
+func (e *entry) distinct() []held {
+	var out []held
+	seen := make(map[string]bool)
+	for _, v := range e.all() {
+		if !seen[v.Version] {
+			seen[v.Version] = true
+			out = append(out, v)
 		}
 	}
+	return out
+}
+
+// usageLocked returns what is held for one provider.
+func (h *Hub) usageLocked(provider string) usage {
+	u := usage{holders: make(map[string]int)}
+	for key, e := range h.entries {
+		if key.provider != provider {
+			continue
+		}
+		u.keys++
+		for _, v := range e.distinct() {
+			u.add(v)
+		}
+	}
+	return u
+}
+
+// admit makes room for a bundle about to be held under a key, which may be
+// new, or says which quota has none. Room is made by dropping the provider's
+// entries that no subscription uses, least recently used first: they are
+// kept only in case a pod asks again, which matters less than a pod asking
+// now. Nothing is dropped unless that makes the bundle fit.
+func (h *Hub) admit(r *resource, key entryKey, incoming held) error {
+	variants := map[string]bool{key.cacheKey: true}
 	for _, a := range h.aliases {
 		if a.Provider == key.provider && a.URI == r.uri {
 			variants[a.CacheKey] = true
 		}
 	}
-	switch {
-	case h.entries[key] == nil && keys >= h.quotas.MaxKeysPerProvider:
-		return fmt.Errorf("provider %s already has %d cache keys, the limit", key.provider, h.quotas.MaxKeysPerProvider)
-	case len(variants) > h.quotas.MaxVariantsPerURI:
+	if len(variants) > h.quotas.MaxVariantsPerURI {
 		return fmt.Errorf("%s would resolve to more than %d cache keys", r.uri, h.quotas.MaxVariantsPerURI)
-	case held+size > h.quotas.MaxBytesPerProvider:
-		return fmt.Errorf("provider %s would hold more than %d bytes", key.provider, h.quotas.MaxBytesPerProvider)
 	}
+
+	maxKeys, maxBytes := h.quota(key.provider)
+	u := h.usageLocked(key.provider)
+	if h.entries[key] == nil {
+		u.keys++
+	}
+	u.add(incoming)
+	fits := func() bool { return u.keys <= maxKeys && u.bytes <= maxBytes }
+	if fits() {
+		return nil
+	}
+
+	var idle []*entry
+	for k, e := range h.entries {
+		if k.provider == key.provider && k != key && len(e.refs) == 0 {
+			idle = append(idle, e)
+		}
+	}
+	sort.Slice(idle, func(i, j int) bool {
+		if !idle[i].lastReferenced.Equal(idle[j].lastReferenced) {
+			return idle[i].lastReferenced.Before(idle[j].lastReferenced)
+		}
+		return idle[i].key.cacheKey < idle[j].key.cacheKey
+	})
+	evict := 0
+	for ; evict < len(idle) && !fits(); evict++ {
+		u.keys--
+		for _, v := range idle[evict].distinct() {
+			u.remove(v)
+		}
+	}
+	switch {
+	case u.keys > maxKeys:
+		return fmt.Errorf("provider %s already has %d cache keys in use, the limit", key.provider, maxKeys)
+	case u.bytes > maxBytes:
+		return fmt.Errorf("provider %s would hold more than %d bytes in use", key.provider, maxBytes)
+	}
+	for _, e := range idle[:evict] {
+		h.log.Info("evicted an unused entry to stay within the quota", "provider", e.key.provider,
+			"cache_key", e.key.cacheKey, "last_referenced", e.lastReferenced)
+		h.evictLocked(e, "pressure")
+	}
+	h.forgetAliasesLocked()
 	return nil
+}
+
+// evictLocked forgets an entry nothing uses. Its content goes with the next
+// collection, unless another entry holds it too.
+func (h *Hub) evictLocked(e *entry, reason string) {
+	delete(h.entries, e.key)
+	h.metrics.evictions.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("provider", e.key.provider), attribute.String("reason", reason)))
+}
+
+// forgetAliasesLocked drops the aliases of entries that are gone.
+func (h *Hub) forgetAliasesLocked() {
+	for id, a := range h.aliases {
+		if h.entries[entryKey{a.Provider, a.CacheKey}] == nil {
+			delete(h.aliases, id)
+		}
+	}
 }
 
 // resourceID identifies a resource: the canonical URI and the vary attributes.

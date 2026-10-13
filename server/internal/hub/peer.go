@@ -244,8 +244,11 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 	case up == nil || up.target == "":
 		// A provider this replica is not configured for.
 	case e == nil:
-		// Not something every replica already let go of.
-		wanted = now.Sub(referenced) <= h.grace && h.providerKeysLocked(key.provider) < h.quotas.MaxKeysPerProvider
+		// Not something every replica already let go of, and only into
+		// room that is free: what a peer holds never evicts anything here,
+		// or a replica would bring back what it has just evicted.
+		maxKeys, _ := h.quota(key.provider)
+		wanted = now.Sub(referenced) <= h.grace && h.usageLocked(key.provider).keys < maxKeys
 	default:
 		if referenced.After(e.lastReferenced) {
 			e.lastReferenced = referenced
@@ -330,6 +333,21 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 	if len(versions) == 0 || versions[0].Version != stable {
 		return nil
 	}
+	if h.entries[key] == nil {
+		// The sizes are known only now that the content is here.
+		maxKeys, maxBytes := h.quota(key.provider)
+		u := h.usageLocked(key.provider)
+		u.keys++
+		for _, v := range versions {
+			u.add(v)
+		}
+		if candidate != nil {
+			u.add(*candidate)
+		}
+		if u.keys > maxKeys || u.bytes > maxBytes {
+			return nil
+		}
+	}
 	share := uint32(0)
 	if candidate != nil {
 		share = ke.GetCandidateBasisPoints()
@@ -360,15 +378,4 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 		h.serveAllLocked(r)
 	}
 	return nil
-}
-
-// providerKeysLocked counts the cache keys held for one provider.
-func (h *Hub) providerKeysLocked(provider string) int {
-	n := 0
-	for key := range h.entries {
-		if key.provider == provider {
-			n++
-		}
-	}
-	return n
 }

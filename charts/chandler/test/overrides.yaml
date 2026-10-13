@@ -57,6 +57,14 @@ server:
     sizeLimit: 512Mi
     grace: 1h
     negativeTtl: 5s
+    maxKeysPerProvider: 500
+    maxBytesPerProvider: 268435456
+    providerQuotas:
+      s3:
+        maxKeys: 2000
+        maxBytes: 536870912
+      file:
+        maxKeys: 10
   port: 9443
   maxConnectionAge: 5m
   providers:

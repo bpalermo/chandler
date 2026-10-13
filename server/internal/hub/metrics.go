@@ -53,6 +53,65 @@ func (h *Hub) instrument() {
 	rollouts := telemetry.Must(m.Int64ObservableGauge("chandler.server.rollouts",
 		metric.WithDescription("Keys with a version released to a share of their subscribers only.")))
 
+	keysLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.keys.limit",
+		metric.WithDescription("The most cache keys one provider may issue: the quota chandler.server.cache.keys is held against.")))
+	bytesLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.bytes.limit",
+		metric.WithDescription("The most content held for one provider: the quota chandler.server.cache.bytes is held against."), metric.WithUnit("By")))
+	variants := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.uri_variants",
+		metric.WithDescription("The most cache keys any one URI of the provider resolves to; a provider varying on too much shows here before it hits the limit.")))
+	variantsLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.uri_variants.limit",
+		metric.WithDescription("The most cache keys one URI may resolve to.")))
+	namespaceURIs := telemetry.Must(m.Int64ObservableGauge("chandler.server.namespace_uris",
+		metric.WithDescription("The most distinct URIs the pods of any one namespace are subscribed to.")))
+	namespaceURIsLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.namespace_uris.limit",
+		metric.WithDescription("The most distinct URIs the pods of one namespace may be subscribed to.")))
+	syncAge := telemetry.Must(m.Float64ObservableGauge("chandler.server.peer.sync_age",
+		metric.WithDescription("Time since this replica last synced its cache with a peer; not reported before the first sync."),
+		metric.WithUnit("s")))
+	telemetry.Must(m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		h.mu.Lock()
+		perURI := make(map[string]map[string]map[string]bool) // provider -> URI -> keys
+		for _, a := range h.aliases {
+			if perURI[a.Provider] == nil {
+				perURI[a.Provider] = make(map[string]map[string]bool)
+			}
+			if perURI[a.Provider][a.URI] == nil {
+				perURI[a.Provider][a.URI] = make(map[string]bool)
+			}
+			perURI[a.Provider][a.URI][a.CacheKey] = true
+		}
+		widest := make(map[string]int64)
+		for name := range h.upstreams {
+			widest[name] = 0
+		}
+		for provider, uris := range perURI {
+			for _, keys := range uris {
+				widest[provider] = max(widest[provider], int64(len(keys)))
+			}
+		}
+		busiest := int64(0)
+		for _, uris := range h.namespaces {
+			busiest = max(busiest, int64(len(uris)))
+		}
+		synced := h.lastSync
+		now := h.now()
+		h.mu.Unlock()
+
+		for name, n := range widest {
+			attr := providerAttr(name)
+			o.ObserveInt64(variants, n, attr)
+			o.ObserveInt64(variantsLimit, int64(h.quotas.MaxVariantsPerURI), attr)
+			o.ObserveInt64(keysLimit, int64(h.quotas.MaxKeysPerProvider), attr)
+			o.ObserveInt64(bytesLimit, int64(h.quotas.MaxBytesPerProvider), attr)
+		}
+		o.ObserveInt64(namespaceURIs, busiest)
+		o.ObserveInt64(namespaceURIsLimit, int64(h.quotas.MaxURIsPerNamespace))
+		if !synced.IsZero() {
+			o.ObserveFloat64(syncAge, now.Sub(synced).Seconds())
+		}
+		return nil
+	}, keysLimit, bytesLimit, variants, variantsLimit, namespaceURIs, namespaceURIsLimit, syncAge))
+
 	telemetry.Must(m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		type counts struct{ subscriptions, watches, connected, keys, bytes, orphaned, rollouts int64 }
 		h.mu.Lock()

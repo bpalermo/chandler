@@ -37,6 +37,16 @@ func (d *Driver) instrument() {
 		metric.WithDescription("Pod volumes this driver serves.")))
 	connected := telemetry.Must(m.Int64ObservableGauge("chandler.csi.server.connected",
 		metric.WithDescription("1 while the driver has a stream to a config server, else 0.")))
+	cacheURIs := telemetry.Must(m.Int64ObservableGauge("chandler.csi.cache.uris",
+		metric.WithDescription("URIs the node cache holds versions for.")))
+	cacheBytes := telemetry.Must(m.Int64ObservableGauge("chandler.csi.cache.bytes",
+		metric.WithDescription("Bytes of file content the node cache keeps on disk."), metric.WithUnit("By")))
+	telemetry.Must(m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		uris, bytes := d.cache.Stats()
+		o.ObserveInt64(cacheURIs, int64(uris))
+		o.ObserveInt64(cacheBytes, bytes)
+		return nil
+	}, cacheURIs, cacheBytes))
 	telemetry.Must(m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		d.mu.Lock()
 		n := len(d.published)

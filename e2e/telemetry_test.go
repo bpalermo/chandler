@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -16,9 +17,14 @@ func TestMetricsReachTheCollector(t *testing.T) {
 	ns := newNamespace(ctx, t)
 	key := ns + ".app.yaml"
 
-	// Something to measure: a pod with a volume, and an update to it.
+	// Something to measure, from both providers so that both have something
+	// to report: a pod with a volume, and an update to it.
 	publish(ctx, t, key, "v1")
-	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)))
+	endpoint := s3Endpoint(ctx, t)
+	s3Do(ctx, t, http.MethodPut, endpoint+"/"+bucket, "")
+	s3Do(ctx, t, http.MethodPut, fmt.Sprintf("%s/%s/%s/app.yaml", endpoint, bucket, ns), "from s3")
+	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf(
+		"- uri: file:///%s\n  path: app.yaml\n- uri: s3://%s/%s/app.yaml\n  path: s3.yaml\n", key, bucket, ns)))
 	if _, err := waitForPodPhase(ctx, ns, "consumer", "Running"); err != nil {
 		t.Fatal(err)
 	}
@@ -37,10 +43,15 @@ func TestMetricsReachTheCollector(t *testing.T) {
 		"chandler.server.provider.connected",
 		"chandler.server.cache.keys",
 		"chandler.server.acks",
+		"chandler.server.cache.keys.limit",
+		"chandler.server.cache.uri_variants",
+		"chandler.server.namespace_uris",
+		"chandler.server.peer.sync_age",
 		// The driver: mounts and writes.
 		"chandler.csi.volumes",
 		"chandler.csi.publish.duration",
 		"chandler.csi.apply.duration",
+		"chandler.csi.cache.bytes",
 		// The providers: watches and what they emit.
 		"chandler.provider.watches",
 		"chandler.provider.updates",

@@ -324,9 +324,28 @@ func TestNodeCache(t *testing.T) {
 }
 
 func TestNoStoreBypassesTheCache(t *testing.T) {
-	v, dir := newTestVolume(t)
 	u := bundleUpdate(file("app.yaml", "secret"))
 	u.SetCacheControl(chandlerv1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
+
+	// A volume on the node's disk does not take it at all.
+	disk, dir := newTestVolume(t)
+	if err := disk.Apply(0, u); grpcstatus.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "medium: Memory") {
+		t.Errorf("no_store on a disk volume: got %v, want FailedPrecondition naming the attribute", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data", "app.yaml")); !os.IsNotExist(err) {
+		t.Errorf("no_store content was written to a disk volume: %v", err)
+	}
+
+	// One kept in memory does, and the node cache still never sees it.
+	spec, err := ParseSpec(map[string]string{"sources": "- uri: file:///app.yaml\n  path: app.yaml\n", "medium": "Memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir = filepath.Join(t.TempDir(), "vol")
+	v, err := Create(dir, Meta{VolumeID: "vol", Spec: spec}, newTestCache(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := v.Apply(0, u); err != nil {
 		t.Fatal(err)
 	}
@@ -335,6 +354,9 @@ func TestNoStoreBypassesTheCache(t *testing.T) {
 	}
 	if got := v.CachedVersions(0); len(got) != 0 {
 		t.Errorf("a no_store bundle was cached: %v", got)
+	}
+	if _, err := ParseSpec(map[string]string{"sources": "- {uri: file:///a, path: a}", "medium": "Disk"}); !errors.Is(err, ErrInvalidSpec) {
+		t.Errorf("an unknown medium: got %v, want ErrInvalidSpec", err)
 	}
 }
 

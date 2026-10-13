@@ -322,6 +322,10 @@ csi:
   # distributions; some (k0s, MicroK8s, ...) use another path.
   kubeletDir: /var/lib/kubelet
 
+  # Volumes with `medium: Memory` are held in memory that is charged to the
+  # driver's container, up to 6 MiB per source in the worst case. A memory
+  # limit under `resources` has to leave room for them.
+
   # Where the driver keeps volumes and its cache on each node. It is mounted
   # into the driver at the same path.
   stateDir: /var/lib/chandler

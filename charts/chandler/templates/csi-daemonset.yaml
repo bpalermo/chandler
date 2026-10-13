@@ -73,6 +73,10 @@ spec:
             # same thing inside and outside the container.
             - name: state-dir
               mountPath: {{ .Values.csi.stateDir }}
+              # A volume kept in memory is a tmpfs mounted here. It has to
+              # exist on the host, not only in this container, to outlive a
+              # restart of the driver.
+              mountPropagation: Bidirectional
             {{- include "chandler.tlsVolumeMount" $selector | nindent 12 }}
         - name: registrar
           image: {{ include "chandler.image" (dict "root" . "image" .Values.csi.registrar.image) }}

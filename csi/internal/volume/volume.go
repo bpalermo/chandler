@@ -290,6 +290,16 @@ func (v *Volume) Meta() Meta {
 	return meta
 }
 
+// Memory reports whether the volume is kept in memory.
+func (v *Volume) Memory() bool { return v.meta.Spec.Memory }
+
+// MemorySize returns how large the in-memory filesystem of a volume with the
+// given spec has to be: every source at its largest, in the current
+// generation and the one kept before it.
+func MemorySize(spec Spec) uint64 {
+	return uint64(len(spec.Sources))*2*bundle.HardMaxBytes + 1<<20
+}
+
 // DataDir is the directory that is mounted into the pod.
 func (v *Volume) DataDir() string { return filepath.Join(v.dir, dataDir) }
 
@@ -337,6 +347,13 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 		}
 	} else if !bundle.Verify(b, version) {
 		return grpcstatus.Errorf(codes.DataLoss, "the bundle does not match its version %s", version)
+	}
+	if update.GetCacheControl().GetNoStore() && !v.meta.Spec.Memory {
+		// The provider says this content must never be written to
+		// persistent storage, and this volume is on the node's disk.
+		return grpcstatus.Errorf(codes.FailedPrecondition,
+			"%s is marked no_store and is only written to a volume kept in memory: set the volume attribute %s: %s",
+			source.URI, mediumKey, MediumMemory)
 	}
 	if slices.Contains(v.meta.Rejected[i], version) {
 		return grpcstatus.Errorf(codes.FailedPrecondition, "the application rejected version %s", version)

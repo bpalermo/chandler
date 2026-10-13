@@ -283,6 +283,18 @@ func (d *Driver) publish(ctx context.Context, req *csi.NodePublishVolumeRequest)
 	// Whatever an earlier attempt left is discarded: a volume is mounted
 	// complete or not at all.
 	d.discard(volumeID)
+	if spec.Memory {
+		// The data directory becomes a filesystem in memory before anything
+		// is written to it, so that nothing of the volume ever is on disk.
+		data := filepath.Join(d.volumePath(volumeID), "data")
+		if err := os.MkdirAll(data, dirMode); err != nil {
+			return nil, false, status.Errorf(codes.Internal, "create volume directory: %v", err)
+		}
+		if err := d.mounter.Memory(data, volume.MemorySize(spec)); err != nil {
+			d.discard(volumeID)
+			return nil, false, status.Errorf(codes.Internal, "%v", err)
+		}
+	}
 	v, err := volume.Create(d.volumePath(volumeID), volume.Meta{
 		VolumeID:   volumeID,
 		TargetPath: target,
@@ -379,6 +391,11 @@ func (d *Driver) Restore() error {
 		mounted := false
 		if err == nil {
 			mounted, err = d.mounter.IsMountPoint(v.Meta().TargetPath)
+		}
+		if err == nil && mounted && v.Memory() {
+			// Its content is the mount on the data directory. Without it,
+			// what is on disk under that name is an empty directory.
+			mounted, err = d.mounter.IsMountPoint(v.DataDir())
 		}
 		if err != nil || !mounted {
 			if err := d.discard(volumeID); err != nil {
@@ -540,6 +557,11 @@ func (d *Driver) discard(volumeID string) error {
 		}
 		v.Close()
 	}
+	// A volume kept in memory has a filesystem mounted on its data
+	// directory; removing the directory first would only empty it.
+	if err := d.mounter.Unmount(filepath.Join(d.volumePath(volumeID), "data")); err != nil {
+		return err
+	}
 	return os.RemoveAll(d.volumePath(volumeID))
 }
 
@@ -554,6 +576,12 @@ func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
 	start := time.Now()
 	err := h.volume.Apply(h.index, update)
 	h.metrics.applies.Record(context.Background(), since(start), outcome(err))
+	// A version this volume can never take is an answer too: a mount that
+	// waits for the source fails at once, with the reason, instead of
+	// running out its time.
+	if code := status.Code(err); code == codes.FailedPrecondition || code == codes.InvalidArgument {
+		h.volume.Fail(h.index, &rpcstatus.Status{Code: int32(code), Message: status.Convert(err).Message()})
+	}
 	return err
 }
 func (h sourceHandler) Fail(st *rpcstatus.Status) { h.volume.Fail(h.index, st) }

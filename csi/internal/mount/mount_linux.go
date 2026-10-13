@@ -29,6 +29,15 @@ func (System) BindReadOnly(source, target string) error {
 	return nil
 }
 
+// Memory implements Mounter with a tmpfs.
+func (System) Memory(target string, size uint64) error {
+	flags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
+	if err := unix.Mount("tmpfs", target, "tmpfs", flags, fmt.Sprintf("size=%d,mode=0755", size)); err != nil {
+		return fmt.Errorf("mount tmpfs on %s: %w", target, err)
+	}
+	return nil
+}
+
 // Unmount implements Mounter.
 func (System) Unmount(target string) error {
 	err := unix.Unmount(target, 0)

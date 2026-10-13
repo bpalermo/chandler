@@ -11,8 +11,11 @@ imagePullSecrets: []
 tls:
   # generated  The chart creates a private certificate authority and one
   #            certificate per component, in Secrets it keeps across upgrades.
-  #            Nothing rotates them: they are valid for five years, and
-  #            deleting a Secret makes the next upgrade issue a new one.
+  #            A certificate close to expiring is replaced by the next
+  #            `helm upgrade` (see generated, below), and the components pick
+  #            the new one up without restarting. Nothing renews them between
+  #            upgrades, and the authority, valid for ten years, is never
+  #            renewed: for hands-off rotation use "existing" or "spiffe".
   # existing   You provide the Secrets, each with tls.crt, tls.key and ca.crt,
   #            for example from cert-manager. Files are re-read when they
   #            change, so rotation needs no restart.
@@ -22,6 +25,13 @@ tls:
   #            identities.
   # disabled   No TLS: nothing is encrypted and nobody is authenticated.
   mode: generated
+
+  # With mode "generated": how long a component's certificate is valid, and
+  # how close to its expiry an upgrade replaces it. With these defaults, any
+  # upgrade in a certificate's last year renews it.
+  generated:
+    validityDays: 1825
+    renewBeforeDays: 365
 
   # With mode "spiffe": where the Workload API socket is.
   spiffe:

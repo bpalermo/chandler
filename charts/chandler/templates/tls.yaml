@@ -5,10 +5,16 @@
 {{- /*
 A private authority and a certificate per component. Whatever is already in
 the cluster is kept: lookup finds the Secrets of an earlier install, so an
-upgrade does not replace certificates that running pods are using. Deleting a
-Secret makes the next upgrade issue a new one.
+upgrade does not replace certificates that running pods are using, until
+one comes within tls.generated.renewBeforeDays of expiring: then the upgrade
+issues a new one, and the components pick it up without restarting. Deleting
+a Secret also makes the next upgrade issue a new one. The authority itself is
+never renewed here.
 */ -}}
 {{- $root := . -}}
+{{- $now := now | unixEpoch -}}
+{{- $validity := mul (int .Values.tls.generated.validityDays) 86400 -}}
+{{- $renewBefore := mul (int .Values.tls.generated.renewBeforeDays) 86400 -}}
 {{- $caName := printf "%s-ca" (include "chandler.name" .) -}}
 {{- $caSecret := lookup "v1" "Secret" .Release.Namespace $caName -}}
 {{- $ca := "" -}}
@@ -36,6 +42,25 @@ data:
 {{- $name := include "chandler.tlsSecret" $args }}
 {{- $identity := include "chandler.identity" $args }}
 {{- $existing := lookup "v1" "Secret" $root.Release.Namespace $name }}
+{{- /*
+Keep the certificate that is there if it was issued by the authority that is
+there, for the identity wanted, and is not close to expiring. When it was
+issued is not in the certificate in a form a template can read, so the expiry
+is recorded on the Secret; one without the record is from before renewal
+existed and is replaced.
+*/ -}}
+{{- $keep := false }}
+{{- $notAfter := add $now $validity }}
+{{- if and $existing (index $existing.data "tls.crt") $caSecret (index $caSecret.data "tls.crt") }}
+{{- $annotations := $existing.metadata.annotations | default dict }}
+{{- $recorded := index $annotations "chandler.dev/tls-not-after" }}
+{{- if and $recorded (eq (index $annotations "chandler.dev/tls-identity") $identity) }}
+{{- if gt (sub (int64 $recorded) $now) (int64 $renewBefore) }}
+{{- $keep = true }}
+{{- $notAfter = int64 $recorded }}
+{{- end }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Secret
@@ -45,9 +70,14 @@ metadata:
   labels:
     {{- include "chandler.labels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ $component }}
+  annotations:
+    # When the certificate expires, in seconds since 1970, and for whom it
+    # was issued: what the next upgrade decides renewal on.
+    chandler.dev/tls-not-after: {{ $notAfter | quote }}
+    chandler.dev/tls-identity: {{ $identity | quote }}
 type: kubernetes.io/tls
 data:
-  {{- if and $existing (index $existing.data "tls.crt") (and $caSecret (index $caSecret.data "tls.crt")) }}
+  {{- if $keep }}
   tls.crt: {{ index $existing.data "tls.crt" }}
   tls.key: {{ index $existing.data "tls.key" }}
   {{- else }}
@@ -55,7 +85,7 @@ data:
   {{- if contains "://" $identity }}
   {{- fail (printf "tls.identities: %q is a URI, which generated certificates cannot carry; use tls.mode existing" $identity) }}
   {{- end }}
-  {{- $cert := genSignedCert $identity nil (list $identity) 1825 $ca }}
+  {{- $cert := genSignedCert $identity nil (list $identity) (int $root.Values.tls.generated.validityDays) $ca }}
   tls.crt: {{ $cert.Cert | b64enc }}
   tls.key: {{ $cert.Key | b64enc }}
   {{- end }}

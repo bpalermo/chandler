@@ -64,6 +64,10 @@ kubectl apply -n chandler-system -f e2e/otel-collector.yaml
 # works: everything else does not depend on where a certificate comes from.
 values=(--values e2e/values.yaml)
 tests=()
+# E2E_FILTER runs only the tests whose name matches, for working on one.
+if [[ -n "${E2E_FILTER:-}" ]]; then
+  tests=(--test_filter="${E2E_FILTER}")
+fi
 if [[ "${E2E_TLS:-generated}" == spiffe ]]; then
   e2e/spire.sh
   values+=(--values e2e/values-spiffe.yaml)
@@ -84,3 +88,8 @@ for workload in "${workloads[@]}"; do
 done
 
 bazel test "$@" --config=e2e "${tests[@]}" //e2e/...
+
+# The chart's own certificates: renewal on upgrade, picked up with no restart.
+if [[ "${E2E_TLS:-generated}" == generated ]]; then
+  e2e/rotate.sh "${helm}" "${bin}/charts/chandler/chandler.tgz" "$@"
+fi

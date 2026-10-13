@@ -25,7 +25,17 @@ test:e2e --test_env=KUBECONFIG
 test:e2e --test_env=PATH
 test:e2e --test_timeout=1500
 
-# CI: the lockfile must already be up to date.
+# rules_lint reports its use to Aspect unless told not to.
+common --repo_env=ASPECT_TOOLS_TELEMETRY=-all
+
+# The linters that run as aspects (bazel/lint/linters.bzl). Alone,
+# `--config=lint` only reports; with fail_on_violation, as in CI, a finding
+# fails the build.
+build:lint --aspects=//bazel/lint:linters.bzl%shellcheck
+
+# CI: the lockfile must already be up to date, and a lint finding fails.
 common:ci --lockfile_mode=error
+build:ci --config=lint
+build:ci --@aspect_rules_lint//lint:fail_on_violation
 
 try-import %workspace%/user.bazelrc

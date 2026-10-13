@@ -46,7 +46,22 @@ jobs:
       - name: The registry is spelled out in one place
         run: scripts/check-registry-config.sh
 
-      # --config=ci refuses lockfile drift.
+      # Starlark (with buildifier's lint warnings), Go, shell and protos. The
+      # loop is there because a language whose formatter did not run reports
+      # nothing, which looks the same as clean.
+      - name: Everything is formatted
+        run: |
+          out="$(bazel run --config=ci //:format.check 2>&1)" || { echo "${out}"; echo "::error::run 'bazel run //:format'" >&2; exit 1; }
+          echo "${out}"
+          for language in Starlark Go Shell "Protocol Buffer"; do
+            if ! grep -q "^Formatted ${language} " <<<"${out}"; then
+              echo "::error::the formatter did not run for ${language}" >&2
+              exit 1
+            fi
+          done
+
+      # --config=ci refuses lockfile drift, and runs shellcheck on every
+      # script as part of the build (bazel/lint/linters.bzl).
       - name: bazel build //...
         run: bazel build //... --config=ci
 

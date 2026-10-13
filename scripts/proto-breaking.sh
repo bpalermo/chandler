@@ -21,8 +21,8 @@ cd "$(git rev-parse --show-toplevel)"
 
 ref="origin/main"
 if [[ $# -gt 0 && "$1" != -* ]]; then
-  ref="$1"
-  shift
+	ref="$1"
+	shift
 fi
 base="$(git merge-base HEAD "${ref}")"
 
@@ -35,15 +35,20 @@ protos="config(kind(proto_library, deps(//api/chandler/v1:chandlerv1_proto)), ta
 # and of everything they import, as one FileDescriptorSet: buf resolves the
 # imports from its input.
 image() {
-  local tree="$1" output="$2"
-  shift 2
-  (
-    cd "${tree}"
-    bazel build "$@" -- $(bazel cquery "$@" "${protos}" --output=label 2>/dev/null | cut -d' ' -f1)
-    # A serialized message with one repeated field: concatenating merges.
-    bazel cquery "$@" "${protos}" --output=files 2>/dev/null | xargs cat >"${output}"
-  )
-  [[ -s "${output}" ]] || { echo "proto-breaking: no descriptors were built in ${tree}" >&2; exit 2; }
+	local tree="$1" output="$2"
+	shift 2
+	(
+		cd "${tree}"
+		local targets
+		mapfile -t targets < <(bazel cquery "$@" "${protos}" --output=label 2>/dev/null | cut -d' ' -f1)
+		bazel build "$@" -- "${targets[@]}"
+		# A serialized message with one repeated field: concatenating merges.
+		bazel cquery "$@" "${protos}" --output=files 2>/dev/null | xargs cat >"${output}"
+	)
+	[[ -s "${output}" ]] || {
+		echo "proto-breaking: no descriptors were built in ${tree}" >&2
+		exit 2
+	}
 }
 
 work="$(mktemp -d)"
@@ -51,11 +56,11 @@ trap 'rm -rf "${work}"' EXIT
 
 baseline="${XDG_CACHE_HOME:-${HOME}/.cache}/chandler/proto-baseline"
 if [[ -e "${baseline}/.git" ]]; then
-  git -C "${baseline}" checkout --quiet --detach "${base}"
+	git -C "${baseline}" checkout --quiet --detach "${base}"
 else
-  mkdir -p "$(dirname "${baseline}")"
-  git worktree prune
-  git worktree add --quiet --detach "${baseline}" "${base}"
+	mkdir -p "$(dirname "${baseline}")"
+	git worktree prune
+	git worktree add --quiet --detach "${baseline}" "${base}"
 fi
 
 image "${baseline}" "${work}/base.binpb" "$@"
@@ -64,5 +69,5 @@ image "${PWD}" "${work}/head.binpb" "$@"
 # --path keeps the check to Chandler's own files: the images also hold what
 # they import, and a dependency's change is not ours to refuse.
 bazel run "$@" @rules_buf_toolchains//:buf -- breaking "${work}/head.binpb" \
-  --against "${work}/base.binpb" --config "${PWD}/api/buf.yaml" --path chandler
+	--against "${work}/base.binpb" --config "${PWD}/api/buf.yaml" --path chandler
 echo "proto-breaking: no breaking change since ${base:0:12}"

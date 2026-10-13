@@ -1,3 +1,5 @@
+load("@rules_shell//shell:sh_library.bzl", "sh_library")
+
 # Read by //bazel/cosign:verify_image, which runs the verifier with the pinned
 # cosign. registry.sh parses //bazel:registry.bzl from the checkout, not from
 # runfiles, so the verifier takes its expected layout from the environment
@@ -10,3 +12,10 @@ exports_files([
     "registry-lib.sh",
     "verify-image-signatures.sh",
 ])
+
+# Nothing depends on this: it is how the scripts, most of which only people
+# and workflows run, are seen by the shellcheck aspect (--config=lint).
+sh_library(
+    name = "scripts",
+    srcs = glob(["*.sh"]),
+)

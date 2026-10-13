@@ -21,6 +21,7 @@ section true in the same pull request that changes it.
 ```bash
 bazel test //...            # builds and runs the unit tests
 bazel run //:gazelle        # after adding, removing or renaming any .go file
+bazel run //:format         # format Starlark, Go, shell and protos; CI runs //:format.check
 bazel mod tidy              # after changing go.mod or a bazel_dep
 e2e/run.sh                  # end-to-end in kind (needs kind, kubectl, helm, docker)
 E2E_TLS=spiffe e2e/run.sh   # the same on SPIRE-issued identities, transport tests only
@@ -51,7 +52,14 @@ compete.
 Linting is part of the build. Every Go package is compiled with the analyzers
 of `//:nogo` (`go vet`'s and staticcheck's), and a finding is a compile error:
 fix it rather than excluding the file. The protos are linted by buf as a test,
-with the rules in `api/buf.yaml`.
+with the rules in `api/buf.yaml`. Shell scripts are checked by shellcheck, an
+aspect that `--config=ci` turns on (`bazel build --config=ci //...`); a script
+is only seen through a Bazel target, so a new directory of scripts needs an
+`sh_library` like `//scripts:scripts`.
+
+`bazel run //:format` formats Starlark (buildifier), Go (gofumpt), shell
+(shfmt, tabs) and protos (buf), and applies buildifier's lint fixes. CI fails
+if it would change anything.
 
 CI runs with `--config=ci`, which fails if `MODULE.bazel.lock` is out of date,
 and requires that Gazelle leaves no diff. Regenerate BUILD files rather than

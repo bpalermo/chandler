@@ -19,10 +19,16 @@ set -e
 # --- end runfiles.bash initialization v3 ---
 chart="$(rlocation "${CHART_RLOCATIONPATH:?set by the BUILD target}")"
 chart_pin="$(rlocation "${CHART_PIN_RLOCATIONPATH:?set by the BUILD target}")"
-[ -r "$chart" ] || { echo "no chart at ${CHART_RLOCATIONPATH}" >&2; exit 1; }
+[ -r "$chart" ] || {
+	echo "no chart at ${CHART_RLOCATIONPATH}" >&2
+	exit 1
+}
 
 fail=0
-bad() { echo "FAIL: $*" >&2; fail=1; }
+bad() {
+	echo "FAIL: $*" >&2
+	fail=1
+}
 
 chartyaml="$(tar -xzOf "$chart" chandler/Chart.yaml)"
 name="$(printf '%s\n' "$chartyaml" | sed -nE 's/^name:[[:space:]]*(.*)$/\1/p')"

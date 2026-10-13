@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_shell//shell:sh_library.bzl", "sh_library")
 
 go_test(
     name = "e2e_test",
@@ -24,4 +25,10 @@ go_test(
         "//common/rollout",
         "@org_golang_google_protobuf//proto",
     ],
+)
+
+# For the shellcheck aspect (--config=lint); nothing depends on it.
+sh_library(
+    name = "scripts",
+    srcs = glob(["*.sh"]),
 )

@@ -1,6 +1,15 @@
+load("@rules_shell//shell:sh_library.bzl", "sh_library")
+
 # The publishing coordinates (registry.bzl) and the git state that stamps the
 # images' tags and the chart's versions (workspace_status.sh).
 exports_files([
     "registry.bzl",
     "workspace_status.sh",
 ])
+
+# For the shellcheck aspect (--config=lint): the workspace status script is
+# run by Bazel itself, so no target would otherwise show it to the aspect.
+sh_library(
+    name = "scripts",
+    srcs = glob(["*.sh"]),
+)

@@ -1,0 +1,3 @@
+# shellcheck reads this from the root; //bazel/lint:linters.bzl hands it over.
+# Follow `source` to files given on the command line.
+external-sources=true

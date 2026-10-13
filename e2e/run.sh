@@ -17,27 +17,27 @@ load_targets=(//server:image_load //csi:image_load //providers/s3:image_load //p
 created=0
 kubeconfig="$(mktemp)"
 cleanup() {
-  rm -f "${kubeconfig}"
-  if [[ "${created}" == 1 && "${E2E_KEEP_CLUSTER:-0}" != 1 ]]; then
-    kind delete cluster --name "${cluster}"
-  fi
+	rm -f "${kubeconfig}"
+	if [[ "${created}" == 1 && "${E2E_KEEP_CLUSTER:-0}" != 1 ]]; then
+		kind delete cluster --name "${cluster}"
+	fi
 }
 trap cleanup EXIT
 
 if ! kind get clusters | grep -qx "${cluster}"; then
-  kind create cluster --name "${cluster}" --wait 120s
-  created=1
+	kind create cluster --name "${cluster}" --wait 120s
+	created=1
 fi
 
 # The tests use the ambient kubeconfig; point it at this cluster only.
-kind get kubeconfig --name "${cluster}" > "${kubeconfig}"
+kind get kubeconfig --name "${cluster}" >"${kubeconfig}"
 export KUBECONFIG="${kubeconfig}"
 
 for target in "${load_targets[@]}"; do
-  bazel run "$@" "${target}"
+	bazel run "$@" "${target}"
 done
 for image in "${images[@]}"; do
-  kind load docker-image --name "${cluster}" "localhost/${image}:e2e"
+	kind load docker-image --name "${cluster}" "localhost/${image}:e2e"
 done
 
 # Install the chart Bazel builds, with Bazel's pinned helm (no helm on PATH
@@ -66,37 +66,37 @@ values=(--values e2e/values.yaml)
 tests=()
 # E2E_FILTER runs only the tests whose name matches, for working on one.
 if [[ -n "${E2E_FILTER:-}" ]]; then
-  tests=(--test_filter="${E2E_FILTER}")
+	tests=(--test_filter="${E2E_FILTER}")
 fi
 if [[ "${E2E_TLS:-generated}" == spiffe ]]; then
-  e2e/spire.sh
-  values+=(--values e2e/values-spiffe.yaml)
-  tests=(--test_filter='TestDriverRegistersWithKubelet|TestConfigIsDeliveredAndUpdated|TestS3Provider|TestServerCacheSurvivesARollingRestart|TestServerRefusesClientsWithoutACertificate')
+	e2e/spire.sh
+	values+=(--values e2e/values-spiffe.yaml)
+	tests=(--test_filter='TestDriverRegistersWithKubelet|TestConfigIsDeliveredAndUpdated|TestS3Provider|TestServerCacheSurvivesARollingRestart|TestServerRefusesClientsWithoutACertificate')
 fi
 
 "${helm}" upgrade --install chandler "${bin}/charts/chandler/chandler.tgz" \
-  --namespace chandler-system \
-  "${values[@]}" \
-  --wait --timeout 300s
+	--namespace chandler-system \
+	"${values[@]}" \
+	--wait --timeout 300s
 workloads=(daemonset/chandler-csi deployment/chandler-server deployment/chandler-provider-file deployment/chandler-provider-s3)
 # The provider with a small quota, for the eviction test. It runs on the
 # certificate the chart issued to the file provider, so only where the chart
 # issues certificates.
 if [[ "${E2E_TLS:-generated}" == generated ]]; then
-  kubectl apply -n chandler-system -f e2e/small-provider.yaml
-  workloads+=(deployment/chandler-provider-small)
+	kubectl apply -n chandler-system -f e2e/small-provider.yaml
+	workloads+=(deployment/chandler-provider-small)
 fi
 for workload in "${workloads[@]}"; do
-  kubectl rollout restart "${workload}" -n chandler-system
+	kubectl rollout restart "${workload}" -n chandler-system
 done
 # The suite checks the driver's rollout itself too.
 for workload in "${workloads[@]}"; do
-  kubectl rollout status "${workload}" -n chandler-system --timeout=300s
+	kubectl rollout status "${workload}" -n chandler-system --timeout=300s
 done
 
 bazel test "$@" --config=e2e "${tests[@]}" //e2e/...
 
 # The chart's own certificates: renewal on upgrade, picked up with no restart.
 if [[ "${E2E_TLS:-generated}" == generated ]]; then
-  e2e/rotate.sh "${helm}" "${bin}/charts/chandler/chandler.tgz" "$@"
+	e2e/rotate.sh "${helm}" "${bin}/charts/chandler/chandler.tgz" "$@"
 fi

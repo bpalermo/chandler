@@ -1,0 +1,30 @@
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+
+package(default_visibility = ["//:__subpackages__"])
+
+# buildifier's default warnings. `all` only adds the opt-in ones, such as
+# unsorted-dict-items, which fires on dicts ordered on purpose.
+_BUILDIFIER_WARNINGS = "-warnings=default"
+
+# `bazel run //:format` rewrites every tracked file of these languages;
+# `bazel run //:format.check` fails if one would change, and is what CI runs.
+# For Starlark the check also runs buildifier's linter, which is the only
+# place it runs: rules_lint's buildifier aspect visits bzl_library targets,
+# and there are none here.
+format_multirun(
+    name = "format",
+    go = "@aspect_rules_lint//format:gofumpt",
+    protocol_buffer = "@rules_buf_toolchains//:buf",
+    shell = "@aspect_rules_lint//format:shfmt",
+    starlark = "@buildifier_prebuilt//:buildifier",
+    starlark_check_args = [
+        "-mode=check",
+        "-lint=warn",
+        _BUILDIFIER_WARNINGS,
+    ],
+    starlark_fix_args = [
+        "-mode=fix",
+        "-lint=fix",
+        _BUILDIFIER_WARNINGS,
+    ],
+)

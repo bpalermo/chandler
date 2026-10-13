@@ -17,3 +17,15 @@ nogo(
     visibility = ["//visibility:public"],
     deps = TOOLS_NOGO + STATICCHECK,
 )
+
+exports_files([".shellcheckrc"])
+
+alias(
+    name = "format",
+    actual = "//bazel/format",
+)
+
+alias(
+    name = "format.check",
+    actual = "//bazel/format:format.check",
+)

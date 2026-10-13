@@ -1,19 +1,25 @@
-// Package appack serves the application acknowledgement API of one volume: a
-// plain HTTP/1.1 API with JSON bodies, on a Unix socket inside the volume.
+// Package appack serves the application acknowledgement API of one volume,
+// chandler.v1.ApplicationService, on a Unix socket inside the volume.
+//
+// The socket answers the same service in two ways, told apart by the
+// Content-Type of the request:
 //
 //	GET  /v1/config    the current generation, and the state of each source
 //	POST /v1/reports   whether the application loaded or rejected a generation
 //
-// There is no gRPC and no client library: any HTTP client that can use a Unix
-// socket will do, curl included. Each volume has its own socket, so the
-// driver knows which pod is speaking without authentication; any container
-// that mounts the volume may report, which lets a sidecar report on behalf of
-// an application that cannot be changed.
+// as plain HTTP with JSON bodies, so that an application needs no client
+// library and curl will do; and gRPC, for one that prefers a generated
+// client. The HTTP paths come from the google.api.http options in the proto.
+//
+// Each volume has its own socket, so the driver knows which pod is speaking
+// without authentication; any container that mounts the volume may report,
+// which lets a sidecar report on behalf of an application that cannot be
+// changed. That is also why this is the one place that serves without
+// common/transport: there is no peer to identify and no network to cross.
 package appack
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,25 +27,34 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"golang.org/x/sys/unix"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
+	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 	"github.com/bpalermo/chandler/csi/internal/volume"
 )
 
-// maxReportBytes bounds a report's body.
+// maxReportBytes bounds a request.
 const maxReportBytes = 64 << 10
 
 // Volume is what the API serves.
 type Volume interface {
-	Config() volume.Manifest
-	Report(volume.Report) ([]volume.Outcome, volume.Manifest, error)
+	Config() *chandlerv1.Manifest
+	Report(*chandlerv1.ReportRequest) ([]volume.Outcome, *chandlerv1.Manifest, error)
 }
 
 // Server is the API of one volume.
 type Server struct {
 	http     *http.Server
+	grpc     *grpc.Server
 	listener net.Listener
 	socket   string
 }
@@ -47,6 +62,39 @@ type Server struct {
 // Serve starts the API on the socket in dir, the volume's data directory.
 // forward is called with the verdicts of every accepted report.
 func Serve(dir string, v Volume, forward func([]volume.Outcome)) (*Server, error) {
+	api := &service{volume: v, forward: forward}
+
+	// gRPC, served through the HTTP server below rather than on a listener
+	// of its own.
+	grpcServer := grpc.NewServer(grpc.MaxRecvMsgSize(maxReportBytes))
+	chandlerv1.RegisterApplicationServiceServer(grpcServer, api)
+
+	// HTTP with JSON. The gateway calls the service in this process. Unknown
+	// fields are refused, so that a misspelt one is not silently ignored.
+	gateway := runtime.NewServeMux(
+		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{
+			MarshalOptions:   protojson.MarshalOptions{},
+			UnmarshalOptions: protojson.UnmarshalOptions{},
+		}),
+		runtime.WithForwardResponseOption(noContent),
+	)
+	if err := chandlerv1.RegisterApplicationServiceHandlerServer(context.Background(), gateway, api); err != nil {
+		return nil, fmt.Errorf("register the HTTP API: %w", err)
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+			grpcServer.ServeHTTP(w, r)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxReportBytes)
+		gateway.ServeHTTP(&bodiless{ResponseWriter: w}, r)
+	})
+	// HTTP/1.1 for curl and the like, and HTTP/2 without TLS for gRPC.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+
 	socket := filepath.Join(dir, volume.SocketName)
 	if err := os.Remove(socket); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("remove stale socket: %w", err)
@@ -73,39 +121,9 @@ func Serve(dir string, v Volume, forward func([]volume.Outcome)) (*Server, error
 		return nil, fmt.Errorf("chmod %s: %w", volume.SocketName, err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/config", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, v.Config())
-	})
-	mux.HandleFunc("POST /v1/reports", func(w http.ResponseWriter, r *http.Request) {
-		var report volume.Report
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxReportBytes))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&report); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("malformed report: %v", err))
-			return
-		}
-		outcomes, current, err := v.Report(report)
-		switch {
-		case errors.Is(err, volume.ErrMalformedReport):
-			writeError(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, volume.ErrUnknownSource):
-			writeError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, volume.ErrStaleGeneration):
-			// The current configuration, to reload and report on.
-			writeJSON(w, http.StatusConflict, current)
-		case err != nil:
-			writeError(w, http.StatusInternalServerError, err.Error())
-		default:
-			if len(outcomes) > 0 {
-				forward(outcomes)
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}
-	})
-
 	s := &Server{
-		http:     &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second},
+		http:     &http.Server{Handler: handler, Protocols: protocols, ReadHeaderTimeout: 10 * time.Second},
+		grpc:     grpcServer,
 		listener: listener,
 		socket:   socket,
 	}
@@ -119,15 +137,71 @@ func (s *Server) Close() {
 	defer cancel()
 	_ = s.http.Shutdown(ctx)
 	_ = s.http.Close()
+	s.grpc.Stop()
 	_ = os.Remove(s.socket)
 }
 
-func writeJSON(w http.ResponseWriter, code int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(body)
+// service is chandler.v1.ApplicationService for one volume.
+type service struct {
+	chandlerv1.UnimplementedApplicationServiceServer
+
+	volume  Volume
+	forward func([]volume.Outcome)
 }
 
-func writeError(w http.ResponseWriter, code int, message string) {
-	writeJSON(w, code, map[string]string{"error": message})
+func (s *service) GetConfig(context.Context, *chandlerv1.GetConfigRequest) (*chandlerv1.GetConfigResponse, error) {
+	return chandlerv1.GetConfigResponse_builder{Config: s.volume.Config()}.Build(), nil
+}
+
+func (s *service) Report(_ context.Context, r *chandlerv1.ReportRequest) (*chandlerv1.ReportResponse, error) {
+	outcomes, current, err := s.volume.Report(r)
+	switch {
+	case errors.Is(err, volume.ErrMalformedReport):
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, volume.ErrUnknownSource):
+		return nil, status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, volume.ErrStaleGeneration):
+		st := status.New(codes.Aborted, err.Error())
+		if current != nil {
+			// The current configuration, to reload and report on.
+			if detailed, derr := st.WithDetails(current); derr == nil {
+				st = detailed
+			}
+		}
+		return nil, st.Err()
+	case err != nil:
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if len(outcomes) > 0 {
+		s.forward(outcomes)
+	}
+	return &chandlerv1.ReportResponse{}, nil
+}
+
+// noContent answers an accepted report over HTTP with 204: there is nothing
+// to say, and a client need not read a body to know it.
+func noContent(_ context.Context, w http.ResponseWriter, m proto.Message) error {
+	if _, ok := m.(*chandlerv1.ReportResponse); ok {
+		w.WriteHeader(http.StatusNoContent)
+	}
+	return nil
+}
+
+// bodiless drops the body the gateway writes after noContent: a 204 has
+// none, and net/http reports an error for the attempt.
+type bodiless struct {
+	http.ResponseWriter
+	empty bool
+}
+
+func (b *bodiless) WriteHeader(code int) {
+	b.empty = code == http.StatusNoContent
+	b.ResponseWriter.WriteHeader(code)
+}
+
+func (b *bodiless) Write(p []byte) (int, error) {
+	if b.empty {
+		return len(p), nil
+	}
+	return b.ResponseWriter.Write(p)
 }

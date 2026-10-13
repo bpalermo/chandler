@@ -6,6 +6,7 @@ load("@rules_go//proto:def.bzl", "go_proto_library")
 proto_library(
     name = "chandlerv1_proto",
     srcs = [
+        "app.proto",
         "common.proto",
         "discovery.proto",
         "peer.proto",
@@ -14,6 +15,7 @@ proto_library(
     strip_import_prefix = "/api",
     visibility = ["//visibility:public"],
     deps = [
+        "@googleapis//google/api:annotations_proto",
         "@googleapis//google/rpc:status_proto",
         "@protobuf//:duration_proto",
         "@protobuf//:timestamp_proto",
@@ -25,11 +27,15 @@ go_proto_library(
     compilers = [
         "@rules_go//proto:go_proto",
         "@rules_go//proto:go_grpc_v2",
+        "//bazel/proto:go_grpc_gateway",
     ],
     importpath = "github.com/bpalermo/chandler/api/chandler/v1",
     proto = ":chandlerv1_proto",
     visibility = ["//visibility:public"],
-    deps = ["@org_golang_google_genproto_googleapis_rpc//status"],
+    deps = [
+        "@org_golang_google_genproto_googleapis_api//annotations",
+        "@org_golang_google_genproto_googleapis_rpc//status",
+    ],
 )
 
 go_library(

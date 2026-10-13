@@ -8,6 +8,11 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+
+	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
 )
 
 // Application acknowledgement: the application says whether it could load
@@ -21,8 +26,7 @@ const (
 	// SocketName is the Unix socket in the volume the application reports on.
 	SocketName = "..chandler.sock"
 
-	// The states of a source, as the application sees and reports them.
-	StatePending  = "pending"
+	// The states of an Outcome. The first two are the application's verdicts.
 	StateLoaded   = "loaded"
 	StateRejected = "rejected"
 	// StateOverdue is not something an application reports: the driver says
@@ -42,43 +46,6 @@ var (
 	ErrStaleGeneration = errors.New("stale generation")
 )
 
-// Manifest describes one generation of a volume: which version of each source
-// it holds. A volume can combine sources from several providers, so each is
-// listed with its own version.
-type Manifest struct {
-	// Generation identifies this exact combination of source versions.
-	Generation string           `json:"generation"`
-	Sources    []ManifestSource `json:"sources"`
-}
-
-// ManifestSource is one source in a Manifest.
-type ManifestSource struct {
-	Name    string `json:"name"`
-	URI     string `json:"uri"`
-	Path    string `json:"path"`
-	Version string `json:"version"`
-	// State is what the application has said about this version. It is not
-	// in the manifest file, which is written before the application reads
-	// it; the driver adds it when asked for the configuration.
-	State string `json:"state,omitempty"`
-}
-
-// Report is what an application says about a generation it read.
-type Report struct {
-	Generation string `json:"generation"`
-	// State applies to every source when Sources is empty.
-	State   string         `json:"state,omitempty"`
-	Message string         `json:"message,omitempty"`
-	Sources []SourceReport `json:"sources,omitempty"`
-}
-
-// SourceReport is a Report about one source.
-type SourceReport struct {
-	Name    string `json:"name"`
-	State   string `json:"state"`
-	Message string `json:"message,omitempty"`
-}
-
 // Outcome is one source's verdict, to be forwarded to the config server.
 type Outcome struct {
 	// Source is the index of the source in the volume.
@@ -97,13 +64,29 @@ func generationID(versions []string) string {
 	return "g-" + hex.EncodeToString(sum[:8])
 }
 
-// manifest describes a generation. The caller holds v.mu.
-func (v *Volume) manifest(g Generation) Manifest {
-	m := Manifest{Generation: g.ID, Sources: make([]ManifestSource, len(v.meta.Spec.Sources))}
+// manifest describes a generation: which version of each source it holds. A
+// volume can combine sources from several providers, so each is listed with
+// its own version. The caller holds v.mu.
+func (v *Volume) manifest(g Generation) *chandlerv1.Manifest {
+	sources := make([]*chandlerv1.ManifestSource, len(v.meta.Spec.Sources))
 	for i, source := range v.meta.Spec.Sources {
-		m.Sources[i] = ManifestSource{Name: source.Name, URI: source.URI, Path: source.Path, Version: g.Versions[i]}
+		s := chandlerv1.ManifestSource_builder{
+			Name: proto.String(source.Name),
+			Uri:  proto.String(source.URI),
+			Path: proto.String(source.Path),
+		}
+		if g.Versions[i] != "" {
+			s.Version = proto.String(g.Versions[i])
+		}
+		sources[i] = s.Build()
 	}
-	return m
+	return chandlerv1.Manifest_builder{Generation: proto.String(g.ID), Sources: sources}.Build()
+}
+
+// manifestFile is the content of the manifest file of a generation: the
+// Manifest in protobuf's JSON mapping, as the API returns it.
+func (v *Volume) manifestFile(g Generation) ([]byte, error) {
+	return protojson.Marshal(v.manifest(g))
 }
 
 // OnOverdue sets what is called when the application has not reported on a
@@ -182,23 +165,23 @@ func (v *Volume) OverdueVersion(i int) string {
 
 // Config returns the manifest of the current generation with the state the
 // application has reported for each source.
-func (v *Volume) Config() Manifest {
+func (v *Volume) Config() *chandlerv1.Manifest {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.configLocked()
 }
 
-func (v *Volume) configLocked() Manifest {
+func (v *Volume) configLocked() *chandlerv1.Manifest {
 	versions := append([]string(nil), v.meta.Applied...)
 	m := v.manifest(Generation{ID: generationID(versions), Versions: versions})
-	for i := range m.Sources {
-		switch version := m.Sources[i].Version; {
+	for i, source := range m.GetSources() {
+		switch version := source.GetVersion(); {
 		case version != "" && version == v.meta.Loaded[i]:
-			m.Sources[i].State = StateLoaded
+			source.SetState(chandlerv1.Manifest_STATE_LOADED)
 		case slices.Contains(v.meta.Rejected[i], version):
-			m.Sources[i].State = StateRejected
+			source.SetState(chandlerv1.Manifest_STATE_REJECTED)
 		default:
-			m.Sources[i].State = StatePending
+			source.SetState(chandlerv1.Manifest_STATE_PENDING)
 		}
 	}
 	return m
@@ -218,39 +201,46 @@ func (v *Volume) configLocked() Manifest {
 //
 // The error wraps ErrMalformedReport, ErrUnknownSource or ErrStaleGeneration;
 // with the last, the current configuration is returned to reload from.
-func (v *Volume) Report(r Report) ([]Outcome, Manifest, error) {
+func (v *Volume) Report(r *chandlerv1.ReportRequest) ([]Outcome, *chandlerv1.Manifest, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
-		return nil, Manifest{}, fmt.Errorf("%w: the volume is being removed", ErrStaleGeneration)
+		return nil, nil, fmt.Errorf("%w: the volume is being removed", ErrStaleGeneration)
 	}
 
 	// Which sources, and what about each.
 	type verdict struct{ state, message string }
 	verdicts := make(map[int]verdict)
-	valid := func(state string) bool { return state == StateLoaded || state == StateRejected }
-	if len(r.Sources) == 0 {
-		if !valid(r.State) {
-			return nil, Manifest{}, fmt.Errorf("%w: state must be %q or %q", ErrMalformedReport, StateLoaded, StateRejected)
+	// The states an application may report, as an Outcome names them.
+	states := map[chandlerv1.Manifest_State]string{
+		chandlerv1.Manifest_STATE_LOADED:   StateLoaded,
+		chandlerv1.Manifest_STATE_REJECTED: StateRejected,
+	}
+	const want = "STATE_LOADED or STATE_REJECTED"
+	if len(r.GetSources()) == 0 {
+		state, ok := states[r.GetState()]
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: state must be %s", ErrMalformedReport, want)
 		}
 		for i := range v.meta.Spec.Sources {
-			verdicts[i] = verdict{r.State, r.Message}
+			verdicts[i] = verdict{state, r.GetMessage()}
 		}
 	}
-	for _, sr := range r.Sources {
-		i := slices.IndexFunc(v.meta.Spec.Sources, func(s Source) bool { return s.Name == sr.Name })
+	for _, sr := range r.GetSources() {
+		i := slices.IndexFunc(v.meta.Spec.Sources, func(s Source) bool { return s.Name == sr.GetName() })
+		state, ok := states[sr.GetState()]
 		switch {
 		case i < 0:
-			return nil, Manifest{}, fmt.Errorf("%w: %q", ErrUnknownSource, sr.Name)
-		case !valid(sr.State):
-			return nil, Manifest{}, fmt.Errorf("%w: the state of %q must be %q or %q", ErrMalformedReport, sr.Name, StateLoaded, StateRejected)
+			return nil, nil, fmt.Errorf("%w: %q", ErrUnknownSource, sr.GetName())
+		case !ok:
+			return nil, nil, fmt.Errorf("%w: the state of %q must be %s", ErrMalformedReport, sr.GetName(), want)
 		}
-		verdicts[i] = verdict{sr.State, sr.Message}
+		verdicts[i] = verdict{state, sr.GetMessage()}
 	}
 
-	g := slices.IndexFunc(v.meta.Generations, func(g Generation) bool { return g.ID == r.Generation })
+	g := slices.IndexFunc(v.meta.Generations, func(g Generation) bool { return g.ID == r.GetGeneration() })
 	if g < 0 {
-		return nil, v.configLocked(), fmt.Errorf("%w: %q", ErrStaleGeneration, r.Generation)
+		return nil, v.configLocked(), fmt.Errorf("%w: %q", ErrStaleGeneration, r.GetGeneration())
 	}
 	versions := v.meta.Generations[g].Versions
 
@@ -262,7 +252,9 @@ func (v *Volume) Report(r Report) ([]Outcome, Manifest, error) {
 			continue
 		}
 		if len(vd.message) > maxMessageBytes {
-			vd.message = vd.message[:maxMessageBytes]
+			// Not in the middle of a character: the message goes on in a
+			// protobuf string, which has to be valid UTF-8.
+			vd.message = strings.ToValidUTF8(vd.message[:maxMessageBytes], "")
 		}
 		switch vd.state {
 		case StateLoaded:
@@ -282,7 +274,7 @@ func (v *Volume) Report(r Report) ([]Outcome, Manifest, error) {
 		outcomes = append(outcomes, Outcome{Source: i, Version: version, State: vd.state, Message: vd.message, Applied: v.meta.Applied[i]})
 	}
 	_ = v.saveLocked()
-	return outcomes, Manifest{}, nil
+	return outcomes, nil, nil
 }
 
 // revertLocked puts source i back on its last loaded version, if the rejected

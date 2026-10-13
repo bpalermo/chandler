@@ -427,7 +427,7 @@ func (v *Volume) writeLocked(i int, version string, contribution map[string]atom
 	if v.meta.Spec.AppAck {
 		// The manifest travels in the generation it describes, so the
 		// application never reads one that is about other files.
-		raw, err := json.Marshal(v.manifest(next))
+		raw, err := v.manifestFile(next)
 		if err != nil {
 			return grpcstatus.Errorf(codes.Internal, "%v", err)
 		}

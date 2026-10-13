@@ -19,6 +19,18 @@ breaking:
   use:
     # What components at different versions need of each other: no field
     # renumbered, retyped or reused, nothing deleted without its number
-    # reserved, no RPC or service renamed. Renaming a field or a message is
-    # allowed, since only the generated code sees it.
-    - WIRE
+    # reserved, no RPC or service renamed. For JSON as well as for the binary
+    # encoding, because applications use app.proto as JSON.
+    - WIRE_JSON
+  ignore_only:
+    # Between Chandler's own components only the binary encoding is used, so
+    # there a field or an enum value may be renamed: only the generated code
+    # sees its name. In app.proto the names are the JSON an application
+    # writes, and stay checked.
+    FIELD_SAME_JSON_NAME: &internal
+      - chandler/v1/common.proto
+      - chandler/v1/discovery.proto
+      - chandler/v1/peer.proto
+      - chandler/v1/provider.proto
+    FIELD_SAME_NAME: *internal
+    ENUM_VALUE_SAME_NAME: *internal

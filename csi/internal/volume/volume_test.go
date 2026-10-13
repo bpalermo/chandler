@@ -405,7 +405,10 @@ func TestOverdueReports(t *testing.T) {
 	if err := v.Apply(0, second); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := v.Report(Report{Generation: v.Config().Generation, State: StateLoaded}); err != nil {
+	if _, _, err := v.Report(chandlerv1.ReportRequest_builder{
+		Generation: proto.String(v.Config().GetGeneration()),
+		State:      chandlerv1.Manifest_STATE_LOADED.Enum(),
+	}.Build()); err != nil {
 		t.Fatal(err)
 	}
 	select {

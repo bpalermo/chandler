@@ -313,7 +313,7 @@ message Nack {
 
 // AppReport relays what the application said about a version, for a
 // subscription that set Subscribe.app_ack. The application reports to the
-// driver over the HTTP API on the Unix socket in its volume; the driver
+// driver with ApplicationService on the Unix socket in its volume; the driver
 // forwards one AppReport per source affected. It needs no answer.
 //
 // This is a later, separate stage from Ack. Ack means the driver wrote the

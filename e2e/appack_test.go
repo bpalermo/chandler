@@ -16,7 +16,8 @@ import (
 )
 
 // curl 8.16.0, pinned: the application side of the acknowledgement API is any
-// HTTP client that can use a Unix socket.
+// HTTP client that can use a Unix socket. It also speaks HTTP/2 without TLS,
+// which is all gRPC needs of it here.
 const curlImage = "docker.io/curlimages/curl@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6"
 
 // ackPod mounts a volume with application acknowledgement, in a container
@@ -113,14 +114,26 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	}
 	first := ackGet(ctx, t, ns, "app")
 	if first.Generation == "" || first.Generation != manifest.Generation || len(first.Sources) != 1 ||
-		first.Sources[0].Name != "app" || first.Sources[0].State != "pending" {
+		first.Sources[0].Name != "app" || first.Sources[0].State != "STATE_PENDING" {
 		t.Fatalf("config = %+v, manifest = %+v; want one pending source and the same generation", first, manifest)
 	}
-	if code := ackReport(ctx, t, ns, "app", fmt.Sprintf(`{"generation":%q,"state":"loaded"}`, first.Generation)); code != "204" {
+	if code := ackReport(ctx, t, ns, "app", fmt.Sprintf(`{"generation":%q,"state":"STATE_LOADED"}`, first.Generation)); code != "204" {
 		t.Fatalf("reporting loaded returned %s, want 204", code)
 	}
-	if got := ackGet(ctx, t, ns, "app"); got.Sources[0].State != "loaded" {
+	if got := ackGet(ctx, t, ns, "app"); got.Sources[0].State != "STATE_LOADED" {
 		t.Errorf("after reporting loaded the state is %q", got.Sources[0].State)
+	}
+
+	// The same socket answers gRPC, told apart by the Content-Type: an empty
+	// GetConfigRequest, framed by hand, comes back with the generation and a
+	// status of OK in the trailers.
+	out := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "sh", "-c", fmt.Sprintf(
+		`printf '\000\000\000\000\000' | curl -sS --http2-prior-knowledge --unix-socket %s/..chandler.sock `+
+			`-H 'Content-Type: application/grpc' -H 'TE: trailers' --data-binary @- -D /tmp/headers -o /tmp/body `+
+			`http://chandler/chandler.v1.ApplicationService/GetConfig && cat /tmp/headers && grep -c %s /tmp/body`,
+		mountPath, first.Generation))
+	if !strings.Contains(out, "application/grpc") || !strings.Contains(out, "grpc-status: 0") || !strings.HasSuffix(strings.TrimSpace(out), "1") {
+		t.Errorf("GetConfig over gRPC returned %q, want a gRPC response with status 0 and the generation", out)
 	}
 
 	// A new version arrives; the application cannot use it.
@@ -137,7 +150,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := fmt.Sprintf(`{"generation":%q,"sources":[{"name":"app","state":"rejected","message":"cannot parse"}]}`, second.Generation)
+	body := fmt.Sprintf(`{"generation":%q,"sources":[{"name":"app","state":"STATE_REJECTED","message":"cannot parse"}]}`, second.Generation)
 	if code := ackReport(ctx, t, ns, "app", body); code != "204" {
 		t.Fatalf("reporting rejected returned %s, want 204", code)
 	}
@@ -168,7 +181,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 
 	// A report about a generation that is gone is refused, with what to
 	// reload from.
-	if code := ackReport(ctx, t, ns, "app", `{"generation":"g-0000000000000000","state":"loaded"}`); code != "409" {
+	if code := ackReport(ctx, t, ns, "app", `{"generation":"g-0000000000000000","state":"STATE_LOADED"}`); code != "409" {
 		t.Errorf("a stale generation returned %s, want 409", code)
 	}
 
@@ -234,7 +247,7 @@ func TestRolloutHoldsWhileApplicationsStaySilent(t *testing.T) {
 	// They report at last: the hold lifts and the version reaches everyone.
 	for _, pod := range in {
 		config := ackGet(ctx, t, ns, pod)
-		if code := ackReport(ctx, t, ns, pod, fmt.Sprintf(`{"generation":%q,"state":"loaded"}`, config.Generation)); code != "204" {
+		if code := ackReport(ctx, t, ns, pod, fmt.Sprintf(`{"generation":%q,"state":"STATE_LOADED"}`, config.Generation)); code != "204" {
 			t.Fatalf("%s: reporting loaded returned %s", pod, code)
 		}
 	}

@@ -6,7 +6,14 @@ go_library(
     importpath = "github.com/bpalermo/chandler/csi/internal/appack",
     visibility = ["//csi:__subpackages__"],
     deps = [
+        "//api/chandler/v1:chandler",
         "//csi/internal/volume",
+        "@com_github_grpc_ecosystem_grpc_gateway_v2//runtime",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
         "@org_golang_x_sys//unix",
     ],
 )

@@ -18,7 +18,9 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -594,24 +596,32 @@ func TestNewValidatesConfig(t *testing.T) {
 	}
 }
 
-// call sends one request to a volume's acknowledgement socket.
-func call(t *testing.T, socket, method, path, body string) (int, string) {
+// shortSocket returns a path to a volume's acknowledgement socket that fits
+// in a socket address, as an application has it: from inside the volume.
+func shortSocket(t *testing.T, socket string) string {
 	t.Helper()
-	// As an application does it: by a short path, from inside the volume.
 	dir, err := os.MkdirTemp("", "v")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	link := filepath.Join(dir, "vol")
 	if err := os.Symlink(filepath.Dir(socket), link); err != nil {
 		t.Fatal(err)
 	}
+	return filepath.Join(link, filepath.Base(socket))
+}
+
+// call sends one HTTP request to a volume's acknowledgement socket.
+func call(t *testing.T, socket, method, path, body string) (int, string) {
+	t.Helper()
+	short := shortSocket(t, socket)
 	client := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(link, filepath.Base(socket)))
+			return (&net.Dialer{}).DialContext(ctx, "unix", short)
 		},
 	}}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequest(method, "http://chandler"+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -623,6 +633,25 @@ func call(t *testing.T, socket, method, path, body string) (int, string) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(raw)
+}
+
+// firstDetail returns the first detail of a status, nil if it has none.
+func firstDetail(st *status.Status) any {
+	if details := st.Details(); len(details) > 0 {
+		return details[0]
+	}
+	return nil
+}
+
+// dialApp connects to a volume's acknowledgement socket as a gRPC client.
+func dialApp(t *testing.T, socket string) chandlerv1.ApplicationServiceClient {
+	t.Helper()
+	conn, err := grpc.NewClient("unix://"+shortSocket(t, socket), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return chandlerv1.NewApplicationServiceClient(conn)
 }
 
 // A volume with appAck gets a socket the application reports on; a rejection
@@ -651,13 +680,25 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &config); err != nil || code != http.StatusOK {
 		t.Fatalf("GET /v1/config = %d %s (%v)", code, body, err)
 	}
-	if config.Generation == "" || config.Generation != manifest.Generation || config.Sources[0].State != "pending" {
-		t.Fatalf("config = %+v, manifest = %+v; want the same generation, pending", config, manifest)
+	if config.Generation == "" || config.Generation != manifest.Generation ||
+		config.Sources[0].State != "STATE_PENDING" || manifest.Sources[0].State != "" {
+		t.Fatalf("config = %+v, manifest = %+v; want the same generation, pending in the API only", config, manifest)
 	}
 	first := config.Sources[0].Version
 
-	if code, body := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+config.Generation+`","state":"loaded"}`); code != http.StatusNoContent {
-		t.Fatalf("reporting loaded = %d %s", code, body)
+	// The same service over gRPC, on the same socket.
+	app := dialApp(t, socket)
+	viaGRPC, err := app.GetConfig(ctx, &chandlerv1.GetConfigRequest{})
+	if err != nil {
+		t.Fatalf("GetConfig over gRPC: %v", err)
+	}
+	if m := viaGRPC.GetConfig(); m.GetGeneration() != config.Generation || len(m.GetSources()) != 1 ||
+		m.GetSources()[0].GetVersion() != first || m.GetSources()[0].GetState() != chandlerv1.Manifest_STATE_PENDING {
+		t.Errorf("GetConfig over gRPC = %v, want what HTTP returned", m)
+	}
+
+	if code, body := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+config.Generation+`","state":"STATE_LOADED"}`); code != http.StatusNoContent || body != "" {
+		t.Fatalf("reporting loaded = %d %q, want 204 and no body", code, body)
 	}
 
 	// A new version arrives and the application refuses it.
@@ -673,9 +714,18 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &config); err != nil {
 		t.Fatal(err)
 	}
-	report := `{"generation":"` + config.Generation + `","sources":[{"name":"app.yaml","state":"rejected","message":"cannot parse"}]}`
+	report := `{"generation":"` + config.Generation + `","sources":[{"name":"app.yaml","state":"STATE_REJECTED","message":"cannot parse"}]}`
 	if code, body := call(t, socket, http.MethodPost, "/v1/reports", report); code != http.StatusNoContent {
 		t.Fatalf("reporting rejected = %d %s", code, body)
+	}
+	// What the application sees now: the version it loaded, in a new
+	// generation.
+	reverted, err := app.GetConfig(ctx, &chandlerv1.GetConfigRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src := reverted.GetConfig().GetSources()[0]; src.GetVersion() != first || src.GetState() != chandlerv1.Manifest_STATE_LOADED {
+		t.Errorf("after the rejection the config is %v, want the first version, loaded", reverted.GetConfig())
 	}
 	if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 1\n" {
 		t.Errorf("after the rejection the file reads %q, want the last loaded version", got)
@@ -697,17 +747,44 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	}
 
 	// Errors an application can act on.
-	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"g-0000","state":"loaded"}`); code != http.StatusConflict {
-		t.Errorf("a stale generation = %d, want 409", code)
+	code, body = call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"g-0000","state":"STATE_LOADED"}`)
+	if code != http.StatusConflict || !strings.Contains(body, reverted.GetConfig().GetGeneration()) {
+		t.Errorf("a stale generation = %d %s, want 409 with the current manifest", code, body)
 	}
-	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+config.Generation+`","sources":[{"name":"nope","state":"loaded"}]}`); code != http.StatusNotFound {
-		t.Errorf("an unknown source = %d, want 404", code)
+	for name, c := range map[string]struct {
+		body string
+		want int
+	}{
+		"an unknown source":    {`{"generation":"` + config.Generation + `","sources":[{"name":"nope","state":"STATE_LOADED"}]}`, http.StatusNotFound},
+		"an unknown state":     {`{"generation":"` + config.Generation + `","state":"fine"}`, http.StatusBadRequest},
+		"a state not reported": {`{"generation":"` + config.Generation + `","state":"STATE_PENDING"}`, http.StatusBadRequest},
+		"no state":             {`{"generation":"` + config.Generation + `"}`, http.StatusBadRequest},
+		"an unknown field":     {`{"generation":"` + config.Generation + `","state":"STATE_LOADED","verdict":"fine"}`, http.StatusBadRequest},
+		"a malformed body":     {`not json`, http.StatusBadRequest},
+	} {
+		if code, body := call(t, socket, http.MethodPost, "/v1/reports", c.body); code != c.want {
+			t.Errorf("%s = %d %s, want %d", name, code, body, c.want)
+		}
 	}
-	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+config.Generation+`","state":"fine"}`); code != http.StatusBadRequest {
-		t.Errorf("an unknown state = %d, want 400", code)
+	// The same over gRPC, with the current manifest in the status.
+	_, err = app.Report(ctx, chandlerv1.ReportRequest_builder{
+		Generation: proto.String("g-0000"),
+		State:      chandlerv1.Manifest_STATE_LOADED.Enum(),
+	}.Build())
+	st := status.Convert(err)
+	current, _ := firstDetail(st).(*chandlerv1.Manifest)
+	if st.Code() != codes.Aborted || current.GetGeneration() != reverted.GetConfig().GetGeneration() {
+		t.Errorf("a stale generation over gRPC = %v with %v, want Aborted with the current manifest", err, current)
 	}
-	if code, _ := call(t, socket, http.MethodPost, "/v1/reports", `not json`); code != http.StatusBadRequest {
-		t.Errorf("a malformed body = %d, want 400", code)
+	_, err = app.Report(ctx, chandlerv1.ReportRequest_builder{
+		Generation: proto.String(config.Generation),
+		Sources: []*chandlerv1.SourceReport{chandlerv1.SourceReport_builder{
+			Name:  proto.String("nope"),
+			State: chandlerv1.Manifest_STATE_LOADED.Enum(),
+		}.Build()},
+	}.Build())
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("an unknown source over gRPC = %v, want NotFound", err)
 	}
 
 	// A restarted driver serves the socket again and remembers the verdicts.
@@ -716,7 +793,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, body = call(t, socket, http.MethodGet, "/v1/config", "")
-	if err := json.Unmarshal([]byte(body), &config); err != nil || code != http.StatusOK || config.Sources[0].State != "loaded" {
+	if err := json.Unmarshal([]byte(body), &config); err != nil || code != http.StatusOK || config.Sources[0].State != "STATE_LOADED" {
 		t.Errorf("after a restart GET /v1/config = %d %s; want the source loaded", code, body)
 	}
 
@@ -955,7 +1032,7 @@ func TestEventsOnThePod(t *testing.T) {
 	}
 
 	// A version the application rejects, with nothing loaded to go back to.
-	if code, body := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+generation()+`","state":"rejected","message":"cannot parse"}`); code != http.StatusNoContent {
+	if code, body := call(t, socket, http.MethodPost, "/v1/reports", `{"generation":"`+generation()+`","state":"STATE_REJECTED","message":"cannot parse"}`); code != http.StatusNoContent {
 		t.Fatalf("reporting rejected = %d %s", code, body)
 	}
 	if !f.events.has(events.ReasonRejected, "cannot parse") || !f.events.has(events.ReasonRejected, "the files stay") {

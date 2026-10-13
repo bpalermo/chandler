@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Application acknowledgement: the application says whether it could load
@@ -24,6 +25,9 @@ const (
 	StatePending  = "pending"
 	StateLoaded   = "loaded"
 	StateRejected = "rejected"
+	// StateOverdue is not something an application reports: the driver says
+	// it of a version the application was given and stayed silent about.
+	StateOverdue = "overdue"
 
 	maxMessageBytes = 1024
 )
@@ -102,6 +106,48 @@ func (v *Volume) manifest(g Generation) Manifest {
 	return m
 }
 
+// OnOverdue sets what is called when the application has not reported on a
+// version within the volume's timeout. It is called without the volume's lock
+// held, and at most once per source and version. It also starts the clock
+// for whatever is written and unreported now, as after a driver restart.
+func (v *Volume) OnOverdue(notify func(Outcome)) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.overdue = notify
+	for i := range v.meta.Spec.Sources {
+		v.awaitReportLocked(i)
+	}
+}
+
+// awaitReportLocked starts the clock for the application's report on what
+// source i now holds.
+func (v *Volume) awaitReportLocked(i int) {
+	timeout := v.meta.Spec.AppAckTimeout
+	version := v.meta.Applied[i]
+	if timeout <= 0 || version == "" || v.overdue == nil {
+		return
+	}
+	if v.meta.Loaded[i] == version || slices.Contains(v.meta.Rejected[i], version) {
+		return // already reported
+	}
+	if v.awaiting[i] != nil {
+		v.awaiting[i].Stop()
+	}
+	v.awaiting[i] = time.AfterFunc(timeout, func() {
+		v.mu.Lock()
+		still := !v.closed && v.meta.Applied[i] == version &&
+			v.meta.Loaded[i] != version && !slices.Contains(v.meta.Rejected[i], version)
+		if still {
+			v.late[i] = version
+		}
+		notify := v.overdue
+		v.mu.Unlock()
+		if still && notify != nil {
+			notify(Outcome{Source: i, Version: version, State: StateOverdue, Applied: version})
+		}
+	})
+}
+
 // AppAck reports whether the volume takes application reports.
 func (v *Volume) AppAck() bool { return v.meta.Spec.AppAck }
 
@@ -111,6 +157,27 @@ func (v *Volume) Loaded(i int) string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.meta.Loaded[i]
+}
+
+// RejectedVersions returns the versions of source i the application
+// rejected.
+func (v *Volume) RejectedVersions(i int) []string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([]string(nil), v.meta.Rejected[i]...)
+}
+
+// OverdueVersion returns the version of source i the application is late to
+// report on, "" for none.
+func (v *Volume) OverdueVersion(i int) string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	version := v.late[i]
+	if version == "" || version != v.meta.Applied[i] ||
+		v.meta.Loaded[i] == version || slices.Contains(v.meta.Rejected[i], version) {
+		return ""
+	}
+	return version
 }
 
 // Config returns the manifest of the current generation with the state the

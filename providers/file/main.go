@@ -69,6 +69,7 @@ func main() {
 		root         = flag.String("root", "", "directory the URIs are resolved against")
 		pollInterval = flag.Duration("poll-interval", 2*time.Second, "how often watched resources are re-read")
 		maxRefused   = flag.Int("rollout-max-refused", 0, "pods that may refuse or reject a version before its rollout is held where it is; negative never holds")
+		maxOverdue   = flag.Int("rollout-max-overdue", 5, "applications that may be late to report on a version before its rollout is held where it is; negative never holds")
 		showVersion  = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Var(&rollouts, "rollout", "how new versions are released over time, as <ramp> for every resource or <pattern>=<ramp> for those whose name matches, e.g. '/payments/*=1%:5m,10%:10m,50%:10m'. Repeatable; the first match wins. Without a match a version goes to every pod at once")
@@ -80,13 +81,13 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log, *listen, *name, *root, *pollInterval, rollouts, *maxRefused, sec); err != nil {
+	if err := run(log, *listen, *name, *root, *pollInterval, rollouts, *maxRefused, *maxOverdue, sec); err != nil {
 		log.Error("chandler-provider-file failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration, rollouts []rollout.Rule, maxRefused int, sec security) error {
+func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration, rollouts []rollout.Rule, maxRefused, maxOverdue int, sec security) error {
 	switch {
 	case name == "":
 		return errors.New("--name is required")
@@ -127,6 +128,7 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 		Origin:       source.Origin{Root: root, Rollouts: rollouts},
 		PollInterval: pollInterval,
 		MaxRefused:   maxRefused,
+		MaxOverdue:   maxOverdue,
 		Log:          log,
 	})
 	_, stopHealth, err := transport.Health(sec.healthListen)

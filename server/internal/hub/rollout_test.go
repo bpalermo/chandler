@@ -337,3 +337,94 @@ func TestApplicationReports(t *testing.T) {
 	f.provider.emit(f.watch, "n4", "r3", v3)
 	f.node.expectUpdates(t, v3, append(ids(f.in), ids(f.out)...)...)
 }
+
+// An application that is late to report is counted for the provider, until it
+// does report.
+func TestOverdueIsReportedToTheProvider(t *testing.T) {
+	f := startRollout(t, Config{})
+	f.provider.emitShare(f.watch, "n2", "r2", f.v2, half)
+	first := f.node.next(t).GetUpdate()
+	f.node.next(t)
+	say := func(state chandlerv1.AppReport_State) {
+		t.Helper()
+		f.node.send(t, chandlerv1.ConfigRequest_builder{
+			AppReport: chandlerv1.AppReport_builder{
+				SubscriptionId: proto.String(first.GetSubscriptionId()),
+				Version:        proto.String(first.GetVersion()),
+				State:          state.Enum(),
+				AppliedVersion: proto.String(first.GetVersion()),
+			}.Build(),
+		}.Build())
+	}
+	told := func(overdue, loaded uint32) {
+		t.Helper()
+		deadline := time.After(wait)
+		for {
+			select {
+			case fb := <-f.provider.feedback:
+				if fb.GetRevision() == "r2" && fb.GetOverdue() == overdue && fb.GetLoaded() == loaded {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("the provider was never told overdue=%d loaded=%d", overdue, loaded)
+			}
+		}
+	}
+	f.node.send(t, ack(first))
+	say(chandlerv1.AppReport_STATE_OVERDUE)
+	told(1, 0)
+	// Late is not never: the report replaces the overdue mark.
+	say(chandlerv1.AppReport_STATE_LOADED)
+	told(0, 1)
+	f.node.expectNothing(t) // and nothing was resent or reverted for it
+}
+
+// The server keeps what applications said only for the life of a stream, so
+// a driver restates it when it subscribes again. Otherwise a reconnect would
+// lift a rollout's hold and resend a version an application refused.
+func TestApplicationStateIsRestatedOnResubscribe(t *testing.T) {
+	f := startRollout(t, Config{})
+	f.provider.emitShare(f.watch, "n2", "r2", f.v2, half)
+	for range f.in {
+		f.node.next(t)
+	}
+	candidate := bundle.Version(f.v2)
+
+	// Both selected pods come back on a new stream: one overdue on the
+	// candidate, the other having rejected it and gone back to v1.
+	fresh := f.connect(t)
+	resubscribe := func(uid string, applied string, set func(*chandlerv1.Subscribe_builder)) {
+		t.Helper()
+		b := chandlerv1.Subscribe_builder{
+			SubscriptionId: proto.String(uid + "/1"),
+			Uri:            proto.String("file:///app.yaml"),
+			Workload:       chandlerv1.Workload_builder{PodUid: proto.String(uid)}.Build(),
+			AppliedVersion: proto.String(applied),
+			AppAck:         proto.Bool(true),
+		}
+		set(&b)
+		fresh.send(t, chandlerv1.ConfigRequest_builder{Subscribe: b.Build()}.Build())
+	}
+	resubscribe(f.in[0], candidate, func(b *chandlerv1.Subscribe_builder) { b.OverdueVersion = proto.String(candidate) })
+	resubscribe(f.in[1], bundle.Version(f.v1), func(b *chandlerv1.Subscribe_builder) { b.RejectedVersions = []string{candidate} })
+
+	// The overdue pod is told to keep what it has; the one that rejected the
+	// candidate is not sent it again.
+	if u := fresh.expectUpdate(t, f.in[0]+"/1", f.v2); !u.HasUseCached() {
+		t.Errorf("the overdue pod got %v, want UseCached of the candidate", u)
+	}
+	fresh.expectNothing(t)
+
+	deadline := time.After(wait)
+	for {
+		var fb *chandlerv1.Feedback
+		select {
+		case fb = <-f.provider.feedback:
+		case <-deadline:
+			t.Fatal("the provider was never told overdue=1 rejected=1 for the new stream")
+		}
+		if fb.GetRevision() == "r2" && fb.GetOverdue() == 1 && fb.GetRejected() == 1 {
+			return
+		}
+	}
+}

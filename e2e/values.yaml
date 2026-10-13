@@ -42,6 +42,8 @@ providers:
     rollouts:
       - match: "/*.staged.yaml"
         ramp: "50%:45s"
+    # One application that does not report in time holds a rollout.
+    rolloutMaxOverdue: 0
 
   # Serves a bucket of the LocalStack that runs beside it, so the S3 provider
   # is exercised against an S3 API without anything outside the cluster.

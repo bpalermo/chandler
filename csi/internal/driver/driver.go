@@ -486,12 +486,15 @@ func (d *Driver) serveAppAck(v *volume.Volume) error {
 	if !v.AppAck() {
 		return nil
 	}
-	api, err := appack.Serve(v.DataDir(), v, func(outcomes []volume.Outcome) {
+	forward := func(outcomes []volume.Outcome) {
 		for _, o := range outcomes {
 			d.metrics.appReports.Add(context.Background(), 1, metric.WithAttributes(attribute.String("state", o.State)))
 			state := chandlerv1.AppReport_STATE_LOADED
-			if o.State == volume.StateRejected {
+			switch o.State {
+			case volume.StateRejected:
 				state = chandlerv1.AppReport_STATE_REJECTED
+			case volume.StateOverdue:
+				state = chandlerv1.AppReport_STATE_OVERDUE
 			}
 			report := chandlerv1.AppReport_builder{
 				SubscriptionId: proto.String(v.SubscriptionID(o.Source)),
@@ -506,10 +509,13 @@ func (d *Driver) serveAppAck(v *volume.Volume) error {
 			}
 			d.server.Report(report.Build())
 		}
-	})
+	}
+	api, err := appack.Serve(v.DataDir(), v, forward)
 	if err != nil {
 		return fmt.Errorf("serve the application acknowledgement socket: %w", err)
 	}
+	// The driver, not the application, says when a report is late.
+	v.OnOverdue(func(o volume.Outcome) { forward([]volume.Outcome{o}) })
 	d.mu.Lock()
 	d.apis[v.Meta().VolumeID] = api
 	d.mu.Unlock()
@@ -555,6 +561,8 @@ func (h sourceHandler) Applied() string           { return h.volume.Applied(h.in
 func (h sourceHandler) Cached() []string          { return h.volume.CachedVersions(h.index) }
 func (h sourceHandler) Loaded() string            { return h.volume.Loaded(h.index) }
 func (h sourceHandler) Token() string             { return h.volume.TokenForSubscribe() }
+func (h sourceHandler) Rejected() []string        { return h.volume.RejectedVersions(h.index) }
+func (h sourceHandler) Overdue() string           { return h.volume.OverdueVersion(h.index) }
 
 func (d *Driver) volumePath(volumeID string) string {
 	return filepath.Join(d.stateDir, volumesDir, volumeID)

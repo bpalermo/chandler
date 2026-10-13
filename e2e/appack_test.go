@@ -7,6 +7,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+
+	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/chandler/common/rollout"
 )
 
 // curl 8.16.0, pinned: the application side of the acknowledgement API is any
@@ -16,6 +22,15 @@ const curlImage = "docker.io/curlimages/curl@sha256:463eaf6072688fe96ac64fa623fe
 // ackPod mounts a volume with application acknowledgement, in a container
 // that runs as an ordinary user and has curl.
 func ackPod(name, sources string) string {
+	return ackPodWithTimeout(name, sources, "")
+}
+
+// ackPodWithTimeout is ackPod with an appAckTimeout, when timeout is set.
+func ackPodWithTimeout(name, sources, timeout string) string {
+	extra := ""
+	if timeout != "" {
+		extra = fmt.Sprintf("\n          appAckTimeout: %q", timeout)
+	}
 	quoted, err := json.Marshal(sources)
 	if err != nil {
 		panic(err)
@@ -42,8 +57,8 @@ spec:
         readOnly: true
         volumeAttributes:
           sources: %s
-          appAck: "true"
-`, name, curlImage, mountPath, driverName, quoted)
+          appAck: "true"%s
+`, name, curlImage, mountPath, driverName, quoted, extra)
 }
 
 type ackConfig struct {
@@ -158,4 +173,70 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	// The next version is delivered as usual.
 	publish(ctx, t, key, "v3")
 	expectFile(ctx, t, ns, "app", "app.yaml", "v3")
+}
+
+// A rollout stops when the applications that got the new version do not say
+// they loaded it, and goes on once they do. Nothing is reverted for silence.
+func TestRolloutHoldsWhileApplicationsStaySilent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+	ns := newNamespace(ctx, t)
+	// e2e/values.yaml: keys of this form go to half the pods for 45 seconds,
+	// and one overdue application holds the rollout.
+	key := ns + ".staged.yaml"
+	sources := fmt.Sprintf("- name: app\n  uri: file:///%s\n  path: app.yaml\n", key)
+
+	next := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
+		chandlerv1.File_builder{Path: proto.String(key), Mode: proto.Uint32(0o644), Content: []byte("v2")}.Build(),
+	}}.Build()
+	version := bundle.Version(next)
+
+	publish(ctx, t, key, "v1")
+	var in, out []string
+	for i := 0; i < 12 && (len(in) == 0 || len(out) == 0 || i < 3); i++ {
+		name := fmt.Sprintf("app-%d", i)
+		mustApply(ctx, t, ns, ackPodWithTimeout(name, sources, "5s"))
+		if _, err := waitForPodPhase(ctx, ns, name, "Running"); err != nil {
+			t.Fatal(err)
+		}
+		uid := mustKubectl(ctx, t, "get", "pod", name, "-n", ns, "-o", "jsonpath={.metadata.uid}")
+		if rollout.Placed(version, uid, 5000) {
+			in = append(in, name)
+		} else {
+			out = append(out, name)
+		}
+	}
+	if len(in) == 0 || len(out) == 0 {
+		t.Fatalf("12 pods all fell on one side of a 50%% rollout (%d in, %d out)", len(in), len(out))
+	}
+
+	publish(ctx, t, key, "v2")
+	for _, pod := range in {
+		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+	}
+	// The applications say nothing. Well past the 45 seconds after which the
+	// version would have gone to everyone, the rest must still be on v1, and
+	// the silent ones still on v2.
+	time.Sleep(75 * time.Second)
+	for _, pod := range out {
+		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+			t.Errorf("%s reads %q: the rollout went on although the applications never reported", pod, got)
+		}
+	}
+	for _, pod := range in {
+		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v2" {
+			t.Errorf("%s reads %q: a pod must not be taken back for being slow to report", pod, got)
+		}
+	}
+
+	// They report at last: the hold lifts and the version reaches everyone.
+	for _, pod := range in {
+		config := ackGet(ctx, t, ns, pod)
+		if code := ackReport(ctx, t, ns, pod, fmt.Sprintf(`{"generation":%q,"state":"loaded"}`, config.Generation)); code != "204" {
+			t.Fatalf("%s: reporting loaded returned %s", pod, code)
+		}
+	}
+	for _, pod := range out {
+		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+	}
 }

@@ -109,6 +109,9 @@ type Server struct {
 	// before its rollout is held at the share it has reached. Negative never
 	// holds.
 	MaxRefused int
+	// MaxOverdue is how many applications may be late to report on a
+	// revision before its rollout is held where it is. Negative never holds.
+	MaxOverdue int
 	Log        *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
@@ -208,11 +211,12 @@ func (s *Server) share(key revisionKey, state State, last uint32) uint32 {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	refused := 0
+	refused, overdue := 0, 0
 	for _, f := range s.feedback[key] {
 		refused += int(f.GetRefused() + f.GetRejected())
+		overdue += int(f.GetOverdue())
 	}
-	if s.MaxRefused >= 0 && refused > s.MaxRefused {
+	if (s.MaxRefused >= 0 && refused > s.MaxRefused) || (s.MaxOverdue >= 0 && overdue > s.MaxOverdue) {
 		// Hold where it is: the pods that have it keep it, no more get it.
 		at, ok := s.held[key]
 		if !ok {
@@ -224,8 +228,8 @@ func (s *Server) share(key revisionKey, state State, last uint32) uint32 {
 				s.held = make(map[revisionKey]uint32)
 			}
 			s.held[key] = at
-			s.Log.Warn("holding a rollout: subscriptions refused the revision",
-				"cache_key", key.cacheKey, "revision", key.revision, "refused", refused, "basis_points", at)
+			s.Log.Warn("holding a rollout: pods refused the revision or did not report on it",
+				"cache_key", key.cacheKey, "revision", key.revision, "refused", refused, "overdue", overdue, "basis_points", at)
 		}
 		share = min(share, at)
 	} else {

@@ -48,6 +48,11 @@ type Handler interface {
 	// Loaded returns the last version the application reported loaded, ""
 	// for none or when the volume has no application acknowledgement.
 	Loaded() string
+	// Rejected returns the versions the application rejected, and Overdue
+	// the version it is late to report on, "" for none. The server keeps
+	// neither across a reconnect, so every Subscribe restates them.
+	Rejected() []string
+	Overdue() string
 	// Token returns the pod's service account token, which proves to the
 	// server which pod the subscription is for; "" when there is none.
 	Token() string
@@ -173,6 +178,10 @@ func subscribeRequest(s Subscription) *chandlerv1.ConfigRequest {
 		subscribe.AppAck = proto.Bool(true)
 		if loaded := s.Handler.Loaded(); loaded != "" {
 			subscribe.LoadedVersion = proto.String(loaded)
+		}
+		subscribe.RejectedVersions = s.Handler.Rejected()
+		if overdue := s.Handler.Overdue(); overdue != "" {
+			subscribe.OverdueVersion = proto.String(overdue)
 		}
 	}
 	return chandlerv1.ConfigRequest_builder{Subscribe: subscribe.Build()}.Build()

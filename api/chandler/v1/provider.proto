@@ -321,6 +321,11 @@ message Feedback {
   // Of those, how many applications rejected it. Only the application can
   // judge the content, so this is the one signal about the content itself.
   uint32 rejected = 10;
+
+  // Of those, how many applications have not reported within the time their
+  // volume allows. An application that is slow, stuck or crash-looping on the
+  // new content looks like this; so does one that was never taught to report.
+  uint32 overdue = 11;
 }
 
 // WatchError reports that the provider cannot serve a watch. It needs no

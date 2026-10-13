@@ -337,3 +337,90 @@ func TestNoStoreBypassesTheCache(t *testing.T) {
 		t.Errorf("a no_store bundle was cached: %v", got)
 	}
 }
+
+// An application that says nothing about a version in time is reported
+// overdue, once; one that reports is not; and nothing is reverted for it.
+func TestOverdueReports(t *testing.T) {
+	spec, err := ParseSpec(map[string]string{
+		"sources":       "- uri: file:///app.yaml\n  path: app.yaml\n",
+		"appAck":        "true",
+		"appAckTimeout": "80ms",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "vol")
+	v, err := Create(dir, Meta{VolumeID: "vol", Spec: spec}, newTestCache(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	overdue := make(chan Outcome, 8)
+	v.OnOverdue(func(o Outcome) { overdue <- o })
+
+	first := bundleUpdate(file("app.yaml", "v1"))
+	if err := v.Apply(0, first); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case o := <-overdue:
+		if o.State != StateOverdue || o.Version != first.GetVersion() || o.Applied != first.GetVersion() || o.Source != 0 {
+			t.Errorf("outcome = %+v, want v1 overdue and still applied", o)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a silent application was never reported overdue")
+	}
+	if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "v1" {
+		t.Errorf("the file reads %q: nothing may be reverted for a late report", got)
+	}
+	select {
+	case o := <-overdue:
+		t.Fatalf("reported overdue twice: %+v", o)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// A version the application reports on in time is not overdue.
+	second := bundleUpdate(file("app.yaml", "v2"))
+	if err := v.Apply(0, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := v.Report(Report{Generation: v.Config().Generation, State: StateLoaded}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case o := <-overdue:
+		t.Fatalf("a version the application loaded was reported overdue: %+v", o)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// After a driver restart the clock starts again for what is unreported.
+	third := bundleUpdate(file("app.yaml", "v3"))
+	if err := v.Apply(0, third); err != nil {
+		t.Fatal(err)
+	}
+	v.Close()
+	loaded, err := Load(dir, newTestCache(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := make(chan Outcome, 8)
+	loaded.OnOverdue(func(o Outcome) { again <- o })
+	select {
+	case o := <-again:
+		if o.Version != third.GetVersion() {
+			t.Errorf("after a restart %s was reported overdue, want v3", o.Version)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("after a restart the unreported version was never reported overdue")
+	}
+
+	for name, attributes := range map[string]map[string]string{
+		"a timeout without appAck":      {"sources": "- {uri: file:///a, path: a}", "appAckTimeout": "1m"},
+		"a timeout that is no duration": {"sources": "- {uri: file:///a, path: a}", "appAck": "true", "appAckTimeout": "soon"},
+		"a negative timeout":            {"sources": "- {uri: file:///a, path: a}", "appAck": "true", "appAckTimeout": "-1m"},
+		"appAck that is not a boolean":  {"sources": "- {uri: file:///a, path: a}", "appAck": "yes"},
+	} {
+		if _, err := ParseSpec(attributes); !errors.Is(err, ErrInvalidSpec) {
+			t.Errorf("%s: got %v, want ErrInvalidSpec", name, err)
+		}
+	}
+}

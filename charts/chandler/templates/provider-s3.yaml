@@ -72,6 +72,7 @@ spec:
             - --rollout={{ with .match }}{{ . }}={{ end }}{{ required "a rollout rule needs a ramp" .ramp }}
             {{- end }}
             - --rollout-max-refused={{ $s3.rolloutMaxRefused }}
+            - --rollout-max-overdue={{ $s3.rolloutMaxOverdue }}
             {{- with $s3.endpointUrl }}
             - --endpoint-url={{ . }}
             {{- end }}

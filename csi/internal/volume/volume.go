@@ -112,6 +112,12 @@ type Volume struct {
 	// token is the pod's service account token, as kubelet last supplied
 	// it. It is kept in memory only.
 	token string
+	// overdue is called when the application is late to report on a version;
+	// awaiting is the clock running for each source.
+	overdue  func(Outcome)
+	awaiting []*time.Timer
+	// late is the version of each source the application is overdue on.
+	late []string
 	// sentToken is the token the volume's subscriptions were last made with,
 	// and sentAt when.
 	sentToken string
@@ -236,6 +242,8 @@ func newVolume(dir string, meta Meta, cache Cache) *Volume {
 		meta:     meta,
 		files:    make([]map[string]atomic.File, n),
 		failures: make([]*status.Status, n),
+		awaiting: make([]*time.Timer, n),
+		late:     make([]string, n),
 		changed:  make(chan struct{}),
 	}
 }
@@ -410,7 +418,11 @@ func (v *Volume) writeLocked(i int, version string, contribution map[string]atom
 	}
 
 	v.files[i] = contribution
+	changed := v.meta.Applied[i] != version
 	v.meta.Applied[i] = version
+	if changed {
+		v.awaitReportLocked(i)
+	}
 	if v.meta.Spec.AppAck && (len(v.meta.Generations) == 0 || v.meta.Generations[0].ID != next.ID) {
 		v.meta.Generations = append([]Generation{next}, v.meta.Generations...)
 		if len(v.meta.Generations) > 2 {
@@ -430,6 +442,11 @@ func (v *Volume) Close() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.closed = true
+	for _, timer := range v.awaiting {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
 }
 
 // writeErrorCode tells a full disk, which the server retries knowing why,

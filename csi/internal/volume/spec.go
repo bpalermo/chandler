@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -19,6 +20,7 @@ const (
 	sourcesKey       = "sources"
 	failurePolicyKey = "failurePolicy"
 	appAckKey        = "appAck"
+	appAckTimeoutKey = "appAckTimeout"
 
 	// FailurePolicyFail fails the mount when a source has no answer.
 	FailurePolicyFail = "Fail"
@@ -55,6 +57,9 @@ type Spec struct {
 	// AppAck is set when the application reports whether it could load each
 	// version, over the socket in the volume.
 	AppAck bool `json:"appAck,omitempty"`
+	// AppAckTimeout is how long the application has to report on a version
+	// before it is reported overdue; zero never does.
+	AppAckTimeout time.Duration `json:"appAckTimeout,omitempty"`
 }
 
 // ParseSpec reads the volume attributes of a pod's inline volume.
@@ -75,6 +80,17 @@ func ParseSpec(attributes map[string]string) (Spec, error) {
 		spec.AppAck = true
 	default:
 		return Spec{}, fmt.Errorf("%w: %s must be \"true\" or \"false\", not %q", ErrInvalidSpec, appAckKey, attributes[appAckKey])
+	}
+
+	if text, ok := attributes[appAckTimeoutKey]; ok {
+		timeout, err := time.ParseDuration(text)
+		switch {
+		case err != nil || timeout <= 0:
+			return Spec{}, fmt.Errorf("%w: %s must be a positive duration such as 2m, not %q", ErrInvalidSpec, appAckTimeoutKey, text)
+		case !spec.AppAck:
+			return Spec{}, fmt.Errorf("%w: %s needs %s: \"true\"", ErrInvalidSpec, appAckTimeoutKey, appAckKey)
+		}
+		spec.AppAckTimeout = timeout
 	}
 
 	raw, ok := attributes[sourcesKey]

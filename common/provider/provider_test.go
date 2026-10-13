@@ -405,10 +405,11 @@ func TestRampHeldWhenPodsRefuse(t *testing.T) {
 	origin := newMemory()
 	origin.put("/app.yaml", "v1")
 	origin.since["/app.yaml"] = clock.Now()
-	w := start(t, origin, 0, func(s *Server) { s.Ramp, s.Now = ramp, clock.Now })
+	w := start(t, origin, 0, func(s *Server) { s.Ramp, s.Now, s.MaxOverdue = ramp, clock.Now, 1 })
 
 	w.watch("1", "file:///app.yaml", "")
 	first := w.update("1")
+	overdue := uint32(0)
 	report := func(refused, rejected uint32) {
 		w.send(chandlerv1.ProviderRequest_builder{
 			Feedback: chandlerv1.Feedback_builder{
@@ -417,6 +418,7 @@ func TestRampHeldWhenPodsRefuse(t *testing.T) {
 				Assigned: proto.Uint32(5),
 				Refused:  proto.Uint32(refused),
 				Rejected: proto.Uint32(rejected),
+				Overdue:  proto.Uint32(overdue),
 			}.Build(),
 		}.Build())
 		time.Sleep(50 * time.Millisecond) // let the provider read it
@@ -430,6 +432,14 @@ func TestRampHeldWhenPodsRefuse(t *testing.T) {
 	report(0, 1)
 	clock.advance(time.Minute)
 	w.quiet()
+
+	// Applications that do not report on it at all hold it too, past the
+	// number the provider tolerates (one, here).
+	overdue = 2
+	report(0, 0)
+	clock.advance(time.Minute)
+	w.quiet()
+	overdue = 1
 
 	report(0, 0)
 	if u := w.update("1"); u.HasRollout() {

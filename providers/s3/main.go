@@ -82,6 +82,7 @@ func main() {
 		endpointURL  = flag.String("endpoint-url", "", "S3 endpoint, for an S3-compatible store; empty uses AWS")
 		pathStyle    = flag.Bool("path-style", false, "address buckets as <endpoint>/<bucket> instead of <bucket>.<endpoint>")
 		maxRefused   = flag.Int("rollout-max-refused", 0, "pods that may refuse or reject a version before its rollout is held where it is; negative never holds")
+		maxOverdue   = flag.Int("rollout-max-overdue", 5, "applications that may be late to report on a version before its rollout is held where it is; negative never holds")
 		showVersion  = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Var(&buckets, "bucket", "a bucket URIs may name; repeatable. Without it, any bucket the credentials can read")
@@ -94,13 +95,13 @@ func main() {
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log, *listen, *name, *pollInterval, *endpointURL, *pathStyle, buckets, rollouts, *maxRefused, sec); err != nil {
+	if err := run(log, *listen, *name, *pollInterval, *endpointURL, *pathStyle, buckets, rollouts, *maxRefused, *maxOverdue, sec); err != nil {
 		log.Error("chandler-provider-s3 failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, listen, name string, pollInterval time.Duration, endpointURL string, pathStyle bool, buckets []string, rollouts []rollout.Rule, maxRefused int, sec security) error {
+func run(log *slog.Logger, listen, name string, pollInterval time.Duration, endpointURL string, pathStyle bool, buckets []string, rollouts []rollout.Rule, maxRefused, maxOverdue int, sec security) error {
 	switch {
 	case name == "":
 		return errors.New("--name is required")
@@ -154,6 +155,7 @@ func run(log *slog.Logger, listen, name string, pollInterval time.Duration, endp
 		Origin:       origin.Origin{Client: client, Buckets: buckets, Rollouts: rollouts},
 		PollInterval: pollInterval,
 		MaxRefused:   maxRefused,
+		MaxOverdue:   maxOverdue,
 		Log:          log,
 	})
 	_, stopHealth, err := transport.Health(sec.healthListen)

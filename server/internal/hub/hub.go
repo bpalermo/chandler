@@ -314,8 +314,8 @@ func (e *entry) target(podUID string) (held, chandlerv1.Track) {
 
 // feedback is what a provider is told about one revision.
 type feedback struct {
-	revision                                              string
-	assigned, written, refused, failing, loaded, rejected uint32
+	revision                                                       string
+	assigned, written, refused, failing, loaded, rejected, overdue uint32
 }
 
 // live reports whether a provider watch currently vouches for the entry.
@@ -383,6 +383,9 @@ type subscription struct {
 	// is the versions it rejected, which are not sent to it again.
 	loaded   string
 	rejected map[string]bool
+	// overdue is the version the application was given and has not reported
+	// on in time.
+	overdue string
 }
 
 // session is one driver's stream.
@@ -444,7 +447,11 @@ func (h *Hub) subscribe(sess *session, msg *chandlerv1.Subscribe) {
 	sub := &subscription{
 		id: msg.GetSubscriptionId(), sess: sess, request: msg,
 		nodeHas: make(map[string]bool), rejected: make(map[string]bool),
-		loaded: msg.GetLoadedVersion(),
+		loaded: msg.GetLoadedVersion(), overdue: msg.GetOverdueVersion(),
+	}
+	// What the application said on an earlier stream still holds.
+	for _, v := range msg.GetRejectedVersions() {
+		sub.rejected[v] = true
 	}
 	if v := msg.GetAppliedVersion(); v != "" {
 		sub.nodeHas[v] = true
@@ -502,6 +509,10 @@ func (h *Hub) attachLocked(sub *subscription) {
 		r.entry.lastReferenced = h.now()
 	}
 	h.serveLocked(sub, false)
+	// A subscription arriving changes what the provider should be told,
+	// above all when it restates that its application is overdue or
+	// rejected the version.
+	h.reportLocked(r.entry)
 }
 
 // startLocked begins watching a new resource, unless a failure remembered for
@@ -584,6 +595,7 @@ func (h *Hub) dropLocked(sub *subscription) {
 		}
 	}
 	if len(r.subs) > 0 {
+		h.reportLocked(r.entry)
 		return
 	}
 	if r.delayed != nil {
@@ -812,10 +824,20 @@ func (h *Hub) appReport(sess *session, msg *chandlerv1.AppReport) {
 	case chandlerv1.AppReport_STATE_LOADED:
 		sub.loaded = msg.GetVersion()
 		delete(sub.rejected, msg.GetVersion())
+		if sub.overdue == msg.GetVersion() {
+			sub.overdue = ""
+		}
+	case chandlerv1.AppReport_STATE_OVERDUE:
+		sub.overdue = msg.GetVersion()
+		h.log.Warn("an application has not reported on a version in time", "node", sess.node,
+			"subscription", sub.id, "uri", sub.res.uri, "version", msg.GetVersion())
 	case chandlerv1.AppReport_STATE_REJECTED:
 		sub.rejected[msg.GetVersion()] = true
 		if sub.loaded == msg.GetVersion() {
 			sub.loaded = ""
+		}
+		if sub.overdue == msg.GetVersion() {
+			sub.overdue = ""
 		}
 		h.log.Warn("an application rejected a version", "node", sess.node, "subscription", sub.id,
 			"uri", sub.res.uri, "version", msg.GetVersion(), "reason", msg.GetMessage())
@@ -863,6 +885,9 @@ func (h *Hub) reportLocked(e *entry) {
 			if sub.rejected[newest.Version] {
 				now.rejected++
 			}
+			if sub.overdue == newest.Version {
+				now.overdue++
+			}
 		}
 	}
 	if now == e.reported && e.reportedOn == up.generation {
@@ -888,6 +913,7 @@ func (h *Hub) reportLocked(e *entry) {
 			Failing:  proto.Uint32(now.failing),
 			Loaded:   proto.Uint32(now.loaded),
 			Rejected: proto.Uint32(now.rejected),
+			Overdue:  proto.Uint32(now.overdue),
 		}.Build(),
 	}.Build())
 }

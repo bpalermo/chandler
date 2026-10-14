@@ -8,9 +8,9 @@ import (
 )
 
 // TestImagesRunInCluster checks the delivery pipeline itself: each image built
-// from this checkout is present on the node, starts as a pod under the
-// restricted settings it will be deployed with, and runs the binary it is
-// named after.
+// from this checkout is present on the node (or, for a published chart, can
+// be pulled), starts as a pod under the restricted settings it will be
+// deployed with, and runs the binary it is named after.
 func TestImagesRunInCluster(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -20,8 +20,8 @@ func TestImagesRunInCluster(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mustKubectl(ctx, t, "run", name, "-n", ns,
 				"--image="+image(name),
-				// Never pull: the image must be the one loaded from this build.
-				"--image-pull-policy=Never",
+				// Never pull an image loaded from this build: it must be that one.
+				"--image-pull-policy="+imagePullPolicy(),
 				"--restart=Never",
 				"--", "--version")
 

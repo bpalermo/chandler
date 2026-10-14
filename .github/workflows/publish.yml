@@ -434,12 +434,46 @@ jobs:
           REGISTRY_CREDENTIAL_HOST: ${{ env.IMAGE_REGISTRY_HOST }}
         run: bazel run --config=ci //bazel/cosign:verify_image -- --single "${{ steps.chart.outputs.ref }}"
 
+  # What was just published, as someone installing it gets it: the chart pulled
+  # from the registry by its version, running the images it pins, pulled from
+  # the registry too, through the end-to-end suite in kind. Nothing is built
+  # but the tests. A release is announced only once its artifacts pass.
+  check:
+    name: check what was published
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-check
+          repository-cache: true
+          cache-save: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Read the registry setting
+        run: scripts/registry.sh >> "${GITHUB_ENV}"
+
+      # e2e/run.sh uses a cluster of this name if one exists.
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: stevedore-e2e
+
+      - name: e2e/run.sh against the published chart
+        env:
+          E2E_CHART_VERSION: ${{ needs.publish.outputs.chart_version }}
+        run: E2E_CHART="oci://${CHART_REPOSITORY}" e2e/run.sh --config=ci
+
   # The GitHub Release of a tag: how to install it, what was published, by
   # digest, and how to verify it, then the changes since the last release. A
   # job of its own, so that the publishing job, which holds the registry
   # credential, never also holds a token that can write to the repository.
   release:
-    needs: publish
+    needs: [publish, check]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

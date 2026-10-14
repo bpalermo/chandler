@@ -23,8 +23,25 @@ const (
 	pollInterval = time.Second
 )
 
+// image returns the image of a component the suite runs: the one built from
+// this checkout and loaded into the node, or, when e2e/run.sh tests a
+// published chart, the one the chart pins (E2E_IMAGES, "name=ref" pairs).
 func image(name string) string {
+	for _, pair := range strings.Fields(os.Getenv("E2E_IMAGES")) {
+		if n, ref, ok := strings.Cut(pair, "="); ok && n == name {
+			return ref
+		}
+	}
 	return fmt.Sprintf("localhost/%s:%s", name, imageTag)
+}
+
+// imagePullPolicy is what to run image() with: never pull an image loaded
+// into the node, which is in no registry, and pull a published one.
+func imagePullPolicy() string {
+	if os.Getenv("E2E_IMAGES") != "" {
+		return "IfNotPresent"
+	}
+	return "Never"
 }
 
 // kubectl runs one kubectl command and returns its standard output.

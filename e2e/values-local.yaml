@@ -1,0 +1,23 @@
+# The images e2e/run.sh just built from this checkout and loaded into the
+# node: by tag, never pulled, with the digest the chart pins cleared (that
+# digest exists in no registry until it is published). Not used when run.sh
+# tests a published chart, which runs the images it pins.
+csi:
+  image: &local
+    repository: localhost/stevedore-csi
+    tag: e2e
+    digest: ""
+    pullPolicy: Never
+server:
+  image:
+    <<: *local
+    repository: localhost/stevedore-server
+providers:
+  file:
+    image:
+      <<: *local
+      repository: localhost/stevedore-provider-file
+  s3:
+    image:
+      <<: *local
+      repository: localhost/stevedore-provider-s3

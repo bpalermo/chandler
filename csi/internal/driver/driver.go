@@ -450,7 +450,10 @@ func (d *Driver) waitReady(ctx context.Context, v *volume.Volume, policy string)
 		refused := v.Failure() != nil
 		if unreachable || refused || ctx.Err() != nil {
 			if cacheErr := v.ApplyCached(); cacheErr != nil {
-				return cacheErr
+				// Both reasons: why the server could not, and why the node
+				// cannot either.
+				return status.Errorf(codes.Unavailable, "%s; %s",
+					status.Convert(err).Message(), status.Convert(cacheErr).Message())
 			}
 			d.events.Warning(podOf(v), events.ReasonFromCache, fmt.Sprintf(
 				"mounted from this node's cache, which may be behind: the config server could not supply the volume (%s)",

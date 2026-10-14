@@ -94,7 +94,9 @@ for workload in "${workloads[@]}"; do
 	kubectl rollout status "${workload}" -n chandler-system --timeout=300s
 done
 
-bazel test "$@" --config=e2e "${tests[@]}" //e2e/...
+# The version the images were stamped with, for the suite to look for.
+version="$(bazel/workspace_status.sh | sed -n 's/^STABLE_GIT_VERSION //p')"
+bazel test "$@" --config=e2e --test_env=E2E_VERSION="${version}" "${tests[@]}" //e2e/...
 
 # The chart's own certificates: renewal on upgrade, picked up with no restart.
 if [[ "${E2E_TLS:-generated}" == generated ]]; then

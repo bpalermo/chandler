@@ -805,7 +805,15 @@ Every component pushes metrics over OTLP to an OpenTelemetry collector,
 configured by the standard environment variables
 (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_METRIC_EXPORT_INTERVAL`,
 `OTEL_RESOURCE_ATTRIBUTES`). With no endpoint set nothing is exported and
-nothing is dialled. Each reports as its own `service.name`.
+nothing is dialled. Each reports as its own `service.name`, with the version
+it was built from as `service.version`.
+
+**Version.** Every binary is stamped at link time with `git describe --tags
+--always --dirty` of its commit, the same string as the chart's `appVersion`.
+It is printed by `--version`, logged at start, reported in metrics as
+`service.version`, and sent by the driver to the server in
+`NodeHello.driver_version`, which the server logs. A build without stamping
+reports `dev`.
 
 | Component | Metrics (`chandler.` prefix) |
 |---|---|
@@ -862,7 +870,7 @@ What exists today, against the design above.
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 2) |
-| Observability | Metrics pushed over OTLP from every component, events on pods, structured logs (section 11) | Traces |
+| Observability | Metrics pushed over OTLP from every component, events on pods, structured logs, the build version in every binary (section 11) | Traces |
 
 The server's cache survives a rollout because each new replica copies it from
 the ready ones before it takes traffic. If every replica is lost at once, the

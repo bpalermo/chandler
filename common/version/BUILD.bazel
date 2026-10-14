@@ -5,6 +5,10 @@ go_library(
     srcs = ["version.go"],
     importpath = "github.com/bpalermo/chandler/common/version",
     visibility = ["//visibility:public"],
+    # Every binary linking this package gets the version of the commit it is
+    # built from. Stamping is on by default (.bazelrc), so a binary links
+    # again on every commit; nothing else rebuilds.
+    x_defs = {"Version": "{STABLE_GIT_VERSION}"},
 )
 
 go_test(

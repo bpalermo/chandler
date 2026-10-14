@@ -1,0 +1,26 @@
+apiVersion: v2
+name: stevedore
+description: |
+  Stevedore delivers configuration files to pods through a CSI driver. A pod
+  names what it wants with URIs in an inline volume; the driver mounts the
+  files read-only and replaces them atomically when they change.
+
+  This chart installs the CSI node driver and the config server, and optionally
+  the file provider, which serves the files of a ConfigMap or any other volume.
+type: application
+# The template of the chart's Chart.yaml: :chart_yaml writes @VERSION@ and
+# @APP_VERSION@ from the workspace status (bazel/workspace_status.sh) at build
+# time. Do not write a version here.
+#
+# A release, built from a commit tagged v<VERSION>, is versioned <VERSION>
+# (or <VERSION>-rc.<n> for a candidate). Every other commit is a snapshot of
+# the release it leads up to: <VERSION>-dev.<commit time, UTC>.g<commit>. The
+# time makes snapshots order by age; the commit says what was built. The
+# version being worked towards is the VERSION file at the root.
+version: "@VERSION@"
+appVersion: "@APP_VERSION@"
+keywords:
+  - configuration
+  - csi
+sources:
+  - https://github.com/bpalermo/stevedore

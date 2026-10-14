@@ -21,7 +21,11 @@ nogo(
     deps = TOOLS_NOGO + STATICCHECK,
 )
 
-exports_files([".shellcheckrc"])
+exports_files([
+    ".shellcheckrc",
+    # The release being worked towards; see bazel/workspace_status.sh.
+    "VERSION",
+])
 
 alias(
     name = "format",

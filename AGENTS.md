@@ -200,11 +200,27 @@ hand-editing what Gazelle owns.
   `PINNED_COMPONENTS`, `scripts/check-registry-config.sh` and the pin guard in
   `publish.yml`.
 - The chart's version and image pin are stamped at package time. Do not write a
-  version or a digest into `Chart.yaml` or `values.yaml` by hand.
+  version or a digest into `Chart.yaml.in` or `values.yaml` by hand.
   `//charts/stevedore:pin_test` checks the result.
-- `.github/workflows/publish.yml` publishes and signs on every push to `main`.
-  It cannot be exercised from a pull request, so read a change to it twice and
-  watch the run after merge.
+- `.github/workflows/publish.yml` publishes and signs on every push to `main`
+  and on every release tag. It cannot be exercised from a pull request, so read
+  a change to it twice and watch the run after merge.
+
+## Releasing
+
+- `VERSION` holds the release being worked towards. Every commit to `main`
+  publishes a snapshot of it, `<VERSION>-dev.<commit time>.g<commit>`.
+- A release is a tag `v<VERSION>` on a commit of `main`, pushed by a person:
+  creating a `v*` tag is restricted to admins, and a `v*` tag can never be
+  moved or deleted (repository rulesets). Cut a candidate first,
+  `v<VERSION>-rc.<n>`, since the tag path of the publish workflow runs only on
+  a real tag.
+- The tag publishes the images under `v<VERSION>`, the chart as `<VERSION>`,
+  signs them, and creates the GitHub Release with its notes. A tag that does
+  not match `VERSION` is refused.
+- After the release, set `VERSION` to the next one in a pull request.
+- In 0.x a release may break the protocol between components or the chart's
+  values; say so in the release notes when one does.
 
 ## Pull requests
 

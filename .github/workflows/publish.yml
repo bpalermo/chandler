@@ -1,8 +1,13 @@
 name: publish
 
+# main publishes snapshots under the mutable `dev` tag; a tag v<VERSION> or
+# v<VERSION>-rc.<n> on a commit of main publishes that release, and creates
+# its GitHub Release. Who may create such a tag, and that it can never be moved
+# or deleted, is the repository's tag rulesets'.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +16,7 @@ permissions:
   # is no private key to store or rotate.
   id-token: write
 
-# Keyed by branch, so publications are serialized. The alternative -- keying by
+# Keyed by branch or tag, so publications are serialized. The alternative -- keying by
 # commit -- lets two pushes to main publish at once, and since the `dev` tag is
 # mutable, an older, slower run can finish last and leave it pointing at a stale
 # commit.
@@ -33,7 +38,7 @@ concurrency:
 # registry spelled out here.
 #
 # Credentials are a Quay robot account, secrets QUAY_USERNAME / QUAY_TOKEN of
-# the `release` environment, which only main can use. The robot can write the
+# the `release` environment, which only main and v* tags can use. The robot can write the
 # repositories and cannot create them: each one exists already.
 #
 # Third-party actions are pinned to commit SHAs, not tags. This job holds the
@@ -47,14 +52,21 @@ jobs:
     # from a feature branch would publish under the same mutable tags and sign
     # with a certificate the verification identity below accepts, making it
     # indistinguishable from a publication from main.
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     environment: release
     runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.digest.outputs.server }}
+      csi: ${{ steps.digest.outputs.csi }}
+      provider_s3: ${{ steps.digest.outputs.provider_s3 }}
+      provider_file: ${{ steps.digest.outputs.provider_file }}
+      chart: ${{ steps.chart.outputs.ref }}
+      chart_version: ${{ steps.check.outputs.chart_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Chart.yaml's appVersion comes from `git describe --tags`, which
-          # needs the tags and enough history to reach one.
+          # The versions come from the tags (bazel/workspace_status.sh), and a
+          # release tag is checked against main's history: both need all of it.
           fetch-depth: 0
           # checkout otherwise leaves GITHUB_TOKEN in .git/config, and this job
           # then runs Bazel, which executes build tooling from the dependency
@@ -66,12 +78,16 @@ jobs:
       # Re-running an old workflow run checks that old commit out again, so it
       # would republish it and move the mutable `dev` tag backwards onto a
       # superseded commit -- the same stale tag the branch-keyed concurrency
-      # above exists to prevent, reached by a different route. Publishing is
-      # only ever correct for main's current tip.
+      # above exists to prevent, reached by a different route. Publishing from
+      # main is only ever correct for main's current tip.
+      #
+      # A release is published from its tag, which never moves, so re-running
+      # one publishes the same commit again. The tag has to be on a commit of
+      # main: a release is something main has been, never a side branch.
       #
       # ls-remote rather than the API: this repository is public, so the check
       # needs no token, and a token is the thing this job is careful about.
-      - name: Refuse to publish a commit that is no longer main's tip
+      - name: Refuse to publish a commit main is not, or has not been
         run: |
           set -euo pipefail
           tip="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)"
@@ -79,11 +95,39 @@ jobs:
             echo "::error::could not read main's tip" >&2
             exit 1
           fi
-          if [ "${tip}" != "${GITHUB_SHA}" ]; then
-            echo "::error::refusing to publish ${GITHUB_SHA}: main is now ${tip}" >&2
-            exit 1
-          fi
-          echo "publishing ${GITHUB_SHA}, which is main's tip"
+          case "${GITHUB_REF}" in
+            refs/heads/main)
+              if [ "${tip}" != "${GITHUB_SHA}" ]; then
+                echo "::error::refusing to publish ${GITHUB_SHA}: main is now ${tip}" >&2
+                exit 1
+              fi
+              echo "publishing ${GITHUB_SHA}, which is main's tip"
+              ;;
+            refs/tags/v*)
+              if ! git merge-base --is-ancestor "${GITHUB_SHA}" "${tip}"; then
+                echo "::error::refusing to release ${GITHUB_REF_NAME}: ${GITHUB_SHA} is not a commit of main" >&2
+                exit 1
+              fi
+              echo "releasing ${GITHUB_REF_NAME} from ${GITHUB_SHA}, a commit of main"
+              ;;
+            *)
+              echo "::error::refusing to publish ${GITHUB_REF}" >&2
+              exit 1
+              ;;
+          esac
+
+      # A release's images are tagged with it (vX.Y.Z and vX.Y.Z-<commit>)
+      # instead of the mutable `dev`, which only main moves. The flags go into
+      # user.bazelrc under --config=ci, so that every build, run and cquery
+      # below sees one configuration and finds the same outputs.
+      - name: Tag the images with the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          for pkg in server csi providers/s3 providers/file; do
+            echo "common:ci --//${pkg}:image_tag=${GITHUB_REF_NAME}" >> user.bazelrc
+          done
+          cat user.bazelrc
 
       # No version is pinned here: bazelisk reads .bazelversion.
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
@@ -107,7 +151,8 @@ jobs:
       # `bazel run //bazel/cosign` gives a workstation.
       #
       # --config=ci refuses lockfile drift. The workspace is stamped by
-      # default (.bazelrc), so the chart's version is this commit.
+      # default (.bazelrc), so the chart's version is this commit's snapshot,
+      # or the release the tag names.
       #
       # --output_groups=+digest: the steps below read each index's digest
       # file, which is not a default output. When the action that writes it is
@@ -133,6 +178,7 @@ jobs:
       # from its image. A pin that silently is not one is worse than a failed
       # run.
       - name: Require a stamped chart that pins the images built from this commit
+        id: check
         run: |
           set -euo pipefail
           chart="$(bazel cquery --config=ci //charts/stevedore:stevedore --output=files 2>/dev/null | grep -E '\.tgz$' | head -1)"
@@ -141,14 +187,23 @@ jobs:
             exit 1
           fi
           # The same script that stamped the build says what it stamped; the
-          # commit in it must be the one this run is publishing.
-          snapshot="$(bazel/workspace_status.sh | sed -n 's/^STABLE_CHART_SNAPSHOT //p')"
+          # commit in it must be the one this run is publishing, and a tag run
+          # must be the release the tag names. A tag that VERSION does not
+          # match is a snapshot to the script, and is refused here.
+          status="$(bazel/workspace_status.sh)"
+          snapshot="$(sed -n 's/^STABLE_CHART_SNAPSHOT //p' <<<"${status}")"
+          release="$(sed -n 's/^STABLE_RELEASE_TAG //p' <<<"${status}")"
           if [[ "${snapshot}" != *".g${GITHUB_SHA:0:12}" ]]; then
             echo "::error::the workspace status reports snapshot '${snapshot}', which is not commit ${GITHUB_SHA}" >&2
             exit 1
           fi
-          want_version="0.1.0-dev.${snapshot}"
+          if [[ "${GITHUB_REF}" == refs/tags/* && "${release}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "::error::${GITHUB_REF_NAME} is not a release of VERSION $(cat VERSION) (the workspace status says '${release}')" >&2
+            exit 1
+          fi
+          want_version="$(sed -n 's/^STABLE_CHART_VERSION //p' <<<"${status}")"
           echo "CHART_VERSION=${want_version}" >> "${GITHUB_ENV}"
+          echo "chart_version=${want_version}" >> "${GITHUB_OUTPUT}"
           got_version="$(tar -xzOf "${chart}" stevedore/Chart.yaml | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
           if [ "${got_version}" != "${want_version}" ]; then
             echo "::error::the chart is version '${got_version}', want '${want_version}' (an unstamped build?)" >&2
@@ -378,3 +433,89 @@ jobs:
           REGISTRY_PASSWORD: ${{ secrets.QUAY_TOKEN }}
           REGISTRY_CREDENTIAL_HOST: ${{ env.IMAGE_REGISTRY_HOST }}
         run: bazel run --config=ci //bazel/cosign:verify_image -- --single "${{ steps.chart.outputs.ref }}"
+
+  # The GitHub Release of a tag: how to install it, what was published, by
+  # digest, and how to verify it, then the changes since the last release. A
+  # job of its own, so that the publishing job, which holds the registry
+  # credential, never also holds a token that can write to the repository.
+  release:
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the registry setting
+        run: scripts/registry.sh >> "${GITHUB_ENV}"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHART_VERSION: ${{ needs.publish.outputs.chart_version }}
+          CHART_REF: ${{ needs.publish.outputs.chart }}
+          SERVER_REF: ${{ needs.publish.outputs.server }}
+          CSI_REF: ${{ needs.publish.outputs.csi }}
+          PROVIDER_FILE_REF: ${{ needs.publish.outputs.provider_file }}
+          PROVIDER_S3_REF: ${{ needs.publish.outputs.provider_s3 }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          prerelease=()
+          if [[ "${tag}" == *-rc.* ]]; then
+            prerelease=(--prerelease)
+          fi
+          # The changes since the last release, not since the last candidate:
+          # a candidate's notes would otherwise leave the release's nearly
+          # empty. The first release has none before it, and lists everything.
+          previous="$(git tag --list 'v*' --sort=-version:refname --merged "${GITHUB_SHA}" |
+            grep -Ev -- '-rc\.' | grep -vx "${tag}" | head -1 || true)"
+          args=(-f "tag_name=${tag}")
+          if [ -n "${previous}" ]; then
+            args+=(-f "previous_tag_name=${previous}")
+          fi
+          changes="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${args[@]}" --jq .body)"
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish.yml@${GITHUB_REF}"
+          cat >notes.md <<NOTES
+          ## Install
+
+          \`\`\`bash
+          helm install stevedore oci://${CHART_REPOSITORY} --version ${CHART_VERSION} \\
+            --namespace stevedore-system --create-namespace
+          \`\`\`
+
+          The chart pins every image by digest. Every component of a release must
+          run the same version: in 0.x a release may change the protocol between
+          them.
+
+          ## Published
+
+          | Artifact | Reference |
+          |---|---|
+          | Chart ${CHART_VERSION} | \`${CHART_REF}\` |
+          | server | \`${SERVER_REF}\` |
+          | csi | \`${CSI_REF}\` |
+          | provider-file | \`${PROVIDER_FILE_REF}\` |
+          | provider-s3 | \`${PROVIDER_S3_REF}\` |
+
+          The images are also tagged \`${tag}\`.
+
+          ## Verify
+
+          Each image, its platform manifests and the chart are signed by this
+          release's workflow run:
+
+          \`\`\`bash
+          cosign verify ${CSI_REF} \\
+            --certificate-identity '${identity}' \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          \`\`\`
+
+          ${changes}
+          NOTES
+          gh release create "${tag}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+            --title "Stevedore ${tag}" --notes-file notes.md "${prerelease[@]}"

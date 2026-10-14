@@ -101,7 +101,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	key := ns + ".app.yaml"
 
 	publish(ctx, t, key, "v1")
-	mustApply(ctx, t, ns, ackPod("app", fmt.Sprintf("- name: app\n  uri: file:///%s\n  path: app.yaml\n", key)))
+	mustApply(ctx, t, ns, ackPod("app", fmt.Sprintf("- name: app\n  uri: file:///%s\n", key)))
 	if _, err := waitForPodPhase(ctx, ns, "app", "Running"); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 
 	// A new version arrives; the application cannot use it.
 	publish(ctx, t, key, "v2: broken")
-	expectFile(ctx, t, ns, "app", "app.yaml", "v2: broken")
+	expectFile(ctx, t, ns, "app", "file/"+key, "v2: broken")
 	var second ackConfig
 	err := eventually(ctx, func() error {
 		second = ackGet(ctx, t, ns, "app")
@@ -155,7 +155,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 		t.Fatalf("reporting rejected returned %s, want 204", code)
 	}
 	// At once, and locally: the driver does not wait for the server.
-	if got := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+	if got := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v1" {
 		t.Errorf("after the rejection the file reads %q, want v1", got)
 	}
 	// And it is on the pod, for whoever looks at it with kubectl.
@@ -175,7 +175,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Second) // several poll and retry intervals
-	if got := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+	if got := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v1" {
 		t.Errorf("the rejected version came back: the file reads %q", got)
 	}
 
@@ -187,7 +187,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 
 	// The next version is delivered as usual.
 	publish(ctx, t, key, "v3")
-	expectFile(ctx, t, ns, "app", "app.yaml", "v3")
+	expectFile(ctx, t, ns, "app", "file/"+key, "v3")
 }
 
 // A rollout stops when the applications that got the new version do not say
@@ -199,7 +199,7 @@ func TestRolloutHoldsWhileApplicationsStaySilent(t *testing.T) {
 	// e2e/values.yaml: keys of this form go to half the pods for 45 seconds,
 	// and one overdue application holds the rollout.
 	key := ns + ".staged.yaml"
-	sources := fmt.Sprintf("- name: app\n  uri: file:///%s\n  path: app.yaml\n", key)
+	sources := fmt.Sprintf("- name: app\n  uri: file:///%s\n", key)
 
 	next := stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
 		stevedorev1.File_builder{Path: proto.String(key), Mode: proto.Uint32(0o644), Content: []byte("v2")}.Build(),
@@ -227,19 +227,19 @@ func TestRolloutHoldsWhileApplicationsStaySilent(t *testing.T) {
 
 	publish(ctx, t, key, "v2")
 	for _, pod := range in {
-		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+		expectFile(ctx, t, ns, pod, "file/"+key, "v2")
 	}
 	// The applications say nothing. Well past the 45 seconds after which the
 	// version would have gone to everyone, the rest must still be on v1, and
 	// the silent ones still on v2.
 	time.Sleep(75 * time.Second)
 	for _, pod := range out {
-		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v1" {
 			t.Errorf("%s reads %q: the rollout went on although the applications never reported", pod, got)
 		}
 	}
 	for _, pod := range in {
-		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v2" {
+		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v2" {
 			t.Errorf("%s reads %q: a pod must not be taken back for being slow to report", pod, got)
 		}
 	}
@@ -252,6 +252,6 @@ func TestRolloutHoldsWhileApplicationsStaySilent(t *testing.T) {
 		}
 	}
 	for _, pod := range out {
-		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+		expectFile(ctx, t, ns, pod, "file/"+key, "v2")
 	}
 }

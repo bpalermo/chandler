@@ -43,14 +43,29 @@ var ErrInvalidSpec = errors.New("invalid volume attributes")
 
 // Source is one configuration resource of a volume and where it is placed.
 type Source struct {
-	// Name identifies the source within the volume; defaults to Path.
+	// Name identifies the source within the volume, in application reports;
+	// defaults to the canonical URI.
 	Name string `json:"name" yaml:"name"`
 	// URI names the resource, <provider>://...
 	URI string `json:"uri" yaml:"uri"`
-	// Path is where the resource appears, relative to the volume root. For a
-	// URI that names one object it is the file itself; for a directory URI
-	// (trailing slash) it is the directory the bundle's files are put in.
+	// Path is where the resource appears, relative to the volume root: the
+	// URI's location (uri.URI.Location), never chosen by the pod. For a URI
+	// that names one object it is the file itself; for a directory URI
+	// (trailing slash) it is the directory the provider's files are put in.
+	//
+	// A pod may not set it. It is decoded from the attributes only to refuse
+	// it with a message that says why, and kept in the volume's metadata so
+	// that a volume created by an earlier driver keeps its layout.
 	Path string `json:"path" yaml:"path"`
+}
+
+// String names the source in messages: its URI, and its name when the pod
+// gave it one.
+func (s Source) String() string {
+	if s.Name == "" || s.Name == s.URI {
+		return s.URI
+	}
+	return fmt.Sprintf("%q (%s)", s.Name, s.URI)
 }
 
 // IsDir reports whether the source is a directory bundle.
@@ -129,14 +144,22 @@ func ParseSpec(attributes map[string]string) (Spec, error) {
 	names := make(map[string]bool)
 	for i := range spec.Sources {
 		s := &spec.Sources[i]
-		if _, err := uri.Parse(s.URI); err != nil {
+		u, err := uri.Parse(s.URI)
+		if err != nil {
 			return Spec{}, fmt.Errorf("%w: source %d: %v", ErrInvalidSpec, i, err)
 		}
+		// Where a source goes is the provider's and the URI's, the same for
+		// every pod, so that a client library finds it from the URI alone.
+		if s.Path != "" {
+			return Spec{}, fmt.Errorf("%w: source %d sets path %q: a source is placed at its URI's location, %s",
+				ErrInvalidSpec, i, s.Path, u.Location())
+		}
+		s.Path = u.Location()
 		if err := bundle.ValidatePath(s.Path); err != nil {
-			return Spec{}, fmt.Errorf("%w: source %d: path %q: %v", ErrInvalidSpec, i, s.Path, err)
+			return Spec{}, fmt.Errorf("%w: source %d: %s cannot be placed at %q: %v", ErrInvalidSpec, i, s.URI, s.Path, err)
 		}
 		if s.Name == "" {
-			s.Name = s.Path
+			s.Name = u.String()
 		}
 		if names[s.Name] {
 			return Spec{}, fmt.Errorf("%w: two sources are named %q", ErrInvalidSpec, s.Name)
@@ -146,7 +169,7 @@ func ParseSpec(attributes map[string]string) (Spec, error) {
 		// collide with the files of another.
 		for _, other := range spec.Sources[:i] {
 			if within(s.Path, other.Path) || within(other.Path, s.Path) {
-				return Spec{}, fmt.Errorf("%w: the paths %q and %q overlap", ErrInvalidSpec, other.Path, s.Path)
+				return Spec{}, fmt.Errorf("%w: %s and %s overlap, at %q and %q", ErrInvalidSpec, other.URI, s.URI, other.Path, s.Path)
 			}
 		}
 	}

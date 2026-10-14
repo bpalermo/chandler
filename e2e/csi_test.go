@@ -189,26 +189,26 @@ func TestConfigIsDeliveredAndUpdated(t *testing.T) {
 	publish(ctx, t, app, "replicas: 1\n")
 	publish(ctx, t, flags, `{"beta": false}`)
 
-	// Two sources in one volume: a single file under a name of the pod's
-	// choosing, and the origin's whole directory.
+	// Two sources in one volume, each at its URI's location; and in another
+	// pod, the origin's whole directory, whose files the provider names.
 	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf(`
 - uri: file:///%s
-  path: app.yaml
-- uri: file:///
-  path: all
-`, app)))
+- uri: file:///%s
+`, app, flags)))
+	mustApply(ctx, t, ns, consumerPod("whole", true, "- uri: file:///\n"))
 	mustApply(ctx, t, ns, inspectorPod)
-	for _, pod := range []string{"consumer", "inspector"} {
+	for _, pod := range []string{"consumer", "whole", "inspector"} {
 		if _, err := waitForPodPhase(ctx, ns, pod, "Running"); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Mounting waited for the content, so it is there when the pod starts.
-	if got := mustKubectl(ctx, t, "exec", "consumer", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "replicas: 1\n" {
-		t.Errorf("app.yaml = %q on start", got)
+	if got := mustKubectl(ctx, t, "exec", "consumer", "-n", ns, "--", "cat", mountPath+"/file/"+app); got != "replicas: 1\n" {
+		t.Errorf("file/%s = %q on start", app, got)
 	}
-	expectFile(ctx, t, ns, "consumer", "all/"+flags, `{"beta": false}`)
+	expectFile(ctx, t, ns, "consumer", "file/"+flags, `{"beta": false}`)
+	expectFile(ctx, t, ns, "whole", "file/"+flags, `{"beta": false}`)
 
 	// It is mounted read-only, whatever the container runs as.
 	if out, err := kubectl(ctx, "exec", "consumer", "-n", ns, "--", "touch", mountPath+"/probe"); err == nil {
@@ -223,32 +223,46 @@ func TestConfigIsDeliveredAndUpdated(t *testing.T) {
 		t.Errorf("..data -> %q, want a generation directory", generation)
 	}
 	publish(ctx, t, app, "replicas: 3\n")
-	expectFile(ctx, t, ns, "consumer", "app.yaml", "replicas: 3\n")
-	expectFile(ctx, t, ns, "consumer", "all/"+app, "replicas: 3\n")
+	expectFile(ctx, t, ns, "consumer", "file/"+app, "replicas: 3\n")
+	expectFile(ctx, t, ns, "whole", "file/"+app, "replicas: 3\n")
 	if after := mustKubectl(ctx, t, "exec", "consumer", "-n", ns, "--", "readlink", mountPath+"/..data"); after == generation {
 		t.Errorf("the content changed but ..data still points at %q", after)
 	}
-	// The other file of the directory survived the update of its neighbour.
-	expectFile(ctx, t, ns, "consumer", "all/"+flags, `{"beta": false}`)
+	// The other file of the directory survived the update of its neighbour,
+	// and so did the other source of the volume.
+	expectFile(ctx, t, ns, "whole", "file/"+flags, `{"beta": false}`)
+	expectFile(ctx, t, ns, "consumer", "file/"+flags, `{"beta": false}`)
 	if restarts := mustKubectl(ctx, t, "get", "pod", "consumer", "-n", ns,
 		"-o", "jsonpath={.status.containerStatuses[0].restartCount}"); restarts != "0" {
 		t.Errorf("the container restarted %s times; updates must not need a restart", restarts)
 	}
 
 	// The driver keeps this pod's volume on the node...
+	mustKubectl(ctx, t, "delete", "pod", "whole", "-n", ns, "--wait=true")
 	volumesOf := func() (string, error) {
 		// grep exits 1 when nothing matches, which is an answer here.
 		out, err := kubectl(ctx, "exec", "inspector", "-n", ns, "--",
 			"sh", "-c", fmt.Sprintf("grep -ls '\"namespace\":\"%s\"' /state/volumes/*/meta.json || true", ns))
 		return strings.TrimSpace(out), err
 	}
-	if volumes, err := volumesOf(); err != nil || len(strings.Fields(volumes)) != 1 {
-		t.Fatalf("volumes of this pod on the node = %q (%v), want exactly one", volumes, err)
+	// The other pod's volume goes once its pod has: wait for that.
+	err := eventually(ctx, func() error {
+		volumes, err := volumesOf()
+		if err != nil {
+			return err
+		}
+		if n := len(strings.Fields(volumes)); n != 1 {
+			return fmt.Errorf("volumes of this namespace on the node = %q, want exactly one", volumes)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// ...and removes it when the pod goes away.
 	mustKubectl(ctx, t, "delete", "pod", "consumer", "-n", ns, "--wait=true")
-	err := eventually(ctx, func() error {
+	err = eventually(ctx, func() error {
 		left, err := volumesOf()
 		if err != nil {
 			return err
@@ -272,11 +286,11 @@ func TestUpdatesSurviveRestarts(t *testing.T) {
 	key := ns + ".app.yaml"
 
 	publish(ctx, t, key, "v1")
-	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)))
+	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf("- uri: file:///%s\n", key)))
 	if _, err := waitForPodPhase(ctx, ns, "consumer", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	expectFile(ctx, t, ns, "consumer", "app.yaml", "v1")
+	expectFile(ctx, t, ns, "consumer", "file/"+key, "v1")
 
 	for i, workload := range []string{"daemonset/stevedore-csi", "deployment/stevedore-server", "deployment/stevedore-provider-file"} {
 		mustKubectl(ctx, t, "rollout", "restart", workload, "-n", driverNamespace)
@@ -284,12 +298,12 @@ func TestUpdatesSurviveRestarts(t *testing.T) {
 
 		// The files stayed where they were while it was away.
 		want := fmt.Sprintf("v%d", i+1)
-		if got := mustKubectl(ctx, t, "exec", "consumer", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != want {
+		if got := mustKubectl(ctx, t, "exec", "consumer", "-n", ns, "--", "cat", mountPath+"/file/"+key); got != want {
 			t.Fatalf("after restarting %s the file reads %q, want %q", workload, got, want)
 		}
 		next := fmt.Sprintf("v%d", i+2)
 		publish(ctx, t, key, next)
-		expectFile(ctx, t, ns, "consumer", "app.yaml", next)
+		expectFile(ctx, t, ns, "consumer", "file/"+key, next)
 	}
 }
 
@@ -301,7 +315,7 @@ func TestPodWaitsForAMissingSource(t *testing.T) {
 	ns := newNamespace(ctx, t)
 	key := ns + ".late.yaml"
 
-	mustApply(ctx, t, ns, consumerPod("waiting", true, fmt.Sprintf("- uri: file:///%s\n  path: late.yaml\n", key)))
+	mustApply(ctx, t, ns, consumerPod("waiting", true, fmt.Sprintf("- uri: file:///%s\n", key)))
 	err := eventually(ctx, func() error {
 		events, err := kubectl(ctx, "get", "events", "-n", ns,
 			"--field-selector", "involvedObject.name=waiting,reason=FailedMount",
@@ -325,7 +339,35 @@ func TestPodWaitsForAMissingSource(t *testing.T) {
 	if _, err := waitForPodPhase(ctx, ns, "waiting", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	expectFile(ctx, t, ns, "waiting", "late.yaml", "here now")
+	expectFile(ctx, t, ns, "waiting", "file/"+key, "here now")
+}
+
+// Where a source goes follows from its URI: a pod that tries to choose is
+// refused, and told where the source would be.
+func TestAPodCannotChooseWhereASourceGoes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	ns := newNamespace(ctx, t)
+
+	mustApply(ctx, t, ns, consumerPod("chooses", true, "- uri: file:///app.yaml\n  path: app.yaml\n"))
+	err := eventually(ctx, func() error {
+		events, err := kubectl(ctx, "get", "events", "-n", ns,
+			"--field-selector", "involvedObject.name=chooses,reason=FailedMount",
+			"-o", "jsonpath={.items[*].message}")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(events, "placed at its URI's location, file/app.yaml") {
+			return fmt.Errorf("no FailedMount event naming the location yet; events: %q", events)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase := mustKubectl(ctx, t, "get", "pod", "chooses", "-n", ns, "-o", "jsonpath={.status.phase}"); phase != "Pending" {
+		t.Errorf("pod phase = %q, want Pending", phase)
+	}
 }
 
 func TestWritableVolumeIsRefused(t *testing.T) {
@@ -333,7 +375,7 @@ func TestWritableVolumeIsRefused(t *testing.T) {
 	defer cancel()
 	ns := newNamespace(ctx, t)
 
-	mustApply(ctx, t, ns, consumerPod("writable", false, "- uri: file:///app.yaml\n  path: app.yaml\n"))
+	mustApply(ctx, t, ns, consumerPod("writable", false, "- uri: file:///app.yaml\n"))
 
 	// The mount fails, so the pod never starts and kubelet says why.
 	err := eventually(ctx, func() error {
@@ -364,7 +406,7 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	defer cancel()
 	ns := newNamespace(ctx, t)
 	key := ns + ".app.yaml"
-	sources := fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)
+	sources := fmt.Sprintf("- uri: file:///%s\n", key)
 
 	// A first pod puts the version on the node.
 	publish(ctx, t, key, "v1")
@@ -393,13 +435,13 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	if _, err := waitForPodPhase(ctx, ns, "cached", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustKubectl(ctx, t, "exec", "cached", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+	if got := mustKubectl(ctx, t, "exec", "cached", "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v1" {
 		t.Errorf("the pod started from the cache reads %q, want v1", got)
 	}
 	// The pod says so: what it runs on may be behind.
 	expectEvent(ctx, t, ns, "cached", "ConfigFromCache", "node's cache")
 	// The running pod kept its files through the outage.
-	if got := mustKubectl(ctx, t, "exec", "warm", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+	if got := mustKubectl(ctx, t, "exec", "warm", "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v1" {
 		t.Errorf("the running pod reads %q during the outage, want v1", got)
 	}
 	err := eventually(ctx, func() error {
@@ -446,13 +488,13 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	}
 	publish(ctx, t, key, "v2")
 	for _, pod := range []string{"cached", "warm"} {
-		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+		expectFile(ctx, t, ns, pod, "file/"+key, "v2")
 	}
 	for _, pod := range []struct{ ns, name string }{{ns, "strict"}, {other, "elsewhere"}} {
 		if _, err := waitForPodPhase(ctx, pod.ns, pod.name, "Running"); err != nil {
 			t.Fatal(err)
 		}
-		expectFile(ctx, t, pod.ns, pod.name, "app.yaml", "v2")
+		expectFile(ctx, t, pod.ns, pod.name, "file/"+key, "v2")
 	}
 }
 
@@ -463,7 +505,7 @@ func TestServerCacheServesThroughAProviderOutage(t *testing.T) {
 	defer cancel()
 	ns := newNamespace(ctx, t)
 	held, unseen := ns+".held.yaml", ns+".unseen.yaml"
-	source := func(key string) string { return fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key) }
+	source := func(key string) string { return fmt.Sprintf("- uri: file:///%s\n", key) }
 
 	// A pod brings the file into the server's cache, then goes away, so no
 	// subscription holds it.
@@ -496,7 +538,7 @@ func TestServerCacheServesThroughAProviderOutage(t *testing.T) {
 	if _, err := waitForPodPhase(ctx, ns, "during", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustKubectl(ctx, t, "exec", "during", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+	if got := mustKubectl(ctx, t, "exec", "during", "-n", ns, "--", "cat", mountPath+"/file/"+held); got != "v1" {
 		t.Errorf("the pod started during the outage reads %q, want v1", got)
 	}
 	// What the server never held, it cannot serve.
@@ -522,11 +564,11 @@ func TestServerCacheServesThroughAProviderOutage(t *testing.T) {
 	}
 	publish(ctx, t, held, "v2")
 	publish(ctx, t, unseen, "now seen")
-	expectFile(ctx, t, ns, "during", "app.yaml", "v2")
+	expectFile(ctx, t, ns, "during", "file/"+held, "v2")
 	if _, err := waitForPodPhase(ctx, ns, "unseen", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	expectFile(ctx, t, ns, "unseen", "app.yaml", "now seen")
+	expectFile(ctx, t, ns, "unseen", "file/"+unseen, "now seen")
 }
 
 // Peer sync: every server pod is replaced while the provider is down, and the
@@ -538,7 +580,7 @@ func TestServerCacheSurvivesARollingRestart(t *testing.T) {
 	defer cancel()
 	ns := newNamespace(ctx, t)
 	key := ns + ".app.yaml"
-	sources := fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)
+	sources := fmt.Sprintf("- uri: file:///%s\n", key)
 
 	publish(ctx, t, key, "v1")
 	mustApply(ctx, t, ns, consumerPod("first", true, sources))
@@ -589,7 +631,7 @@ func TestServerCacheSurvivesARollingRestart(t *testing.T) {
 	if _, err := waitForPodPhase(ctx, ns, "after", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustKubectl(ctx, t, "exec", "after", "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+	if got := mustKubectl(ctx, t, "exec", "after", "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v1" {
 		t.Errorf("after the rolling restart the pod reads %q, want v1", got)
 	}
 }
@@ -603,7 +645,7 @@ func TestStagedRollout(t *testing.T) {
 	ns := newNamespace(ctx, t)
 	// e2e/values.yaml gives keys of this form a ramp of half the pods.
 	key := ns + ".staged.yaml"
-	sources := fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)
+	sources := fmt.Sprintf("- uri: file:///%s\n", key)
 
 	// The version of what is about to be published, as every component
 	// computes it: one file, named after the key, as kubelet writes a
@@ -650,13 +692,13 @@ func TestStagedRollout(t *testing.T) {
 	t.Logf("%d pods are selected for the new version, %d are not", in, out)
 	// The first version of a resource is not rolled out: everyone has it.
 	for _, pod := range podNames {
-		expectFile(ctx, t, ns, pod, "app.yaml", "v1")
+		expectFile(ctx, t, ns, pod, "file/"+key, "v1")
 	}
 
 	publish(ctx, t, key, "v2")
 	for _, pod := range podNames {
 		if selected[pod] {
-			expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+			expectFile(ctx, t, ns, pod, "file/"+key, "v2")
 		}
 	}
 	// The selected pods have it; the rest must still be on v1, for as long
@@ -665,14 +707,14 @@ func TestStagedRollout(t *testing.T) {
 		if selected[pod] {
 			continue
 		}
-		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/app.yaml"); got != "v1" {
+		if got := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--", "cat", mountPath+"/file/"+key); got != "v1" {
 			t.Errorf("%s is outside the share but reads %q during the hold", pod, got)
 		}
 	}
 
 	// The hold ends and the provider releases the version to everyone.
 	for _, pod := range podNames {
-		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
+		expectFile(ctx, t, ns, pod, "file/"+key, "v2")
 	}
 }
 
@@ -691,7 +733,7 @@ func TestUpdatesSurviveReconnects(t *testing.T) {
 	}
 
 	publish(ctx, t, key, "v0")
-	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf("- uri: file:///%s\n  path: app.yaml\n", key)))
+	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf("- uri: file:///%s\n", key)))
 	if _, err := waitForPodPhase(ctx, ns, "consumer", "Running"); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +748,7 @@ func TestUpdatesSurviveReconnects(t *testing.T) {
 	for i := 1; ; i++ {
 		want := fmt.Sprintf("v%d", i)
 		publish(ctx, t, key, want)
-		expectFile(ctx, t, ns, "consumer", "app.yaml", want)
+		expectFile(ctx, t, ns, "consumer", "file/"+key, want)
 		now, err := connections()
 		if err != nil {
 			t.Fatal(err)

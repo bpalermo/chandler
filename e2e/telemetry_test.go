@@ -25,12 +25,12 @@ func TestMetricsReachTheCollector(t *testing.T) {
 	s3Do(ctx, t, http.MethodPut, endpoint+"/"+bucket, "")
 	s3Do(ctx, t, http.MethodPut, fmt.Sprintf("%s/%s/%s/app.yaml", endpoint, bucket, ns), "from s3")
 	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf(
-		"- uri: file:///%s\n  path: app.yaml\n- uri: s3://%s/%s/app.yaml\n  path: s3.yaml\n", key, bucket, ns)))
+		"- uri: file:///%s\n- uri: s3://%s/%s/app.yaml\n", key, bucket, ns)))
 	if _, err := waitForPodPhase(ctx, ns, "consumer", "Running"); err != nil {
 		t.Fatal(err)
 	}
 	publish(ctx, t, key, "v2")
-	expectFile(ctx, t, ns, "consumer", "app.yaml", "v2")
+	expectFile(ctx, t, ns, "consumer", "file/"+key, "v2")
 
 	want := []string{
 		// Who sent them.

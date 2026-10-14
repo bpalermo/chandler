@@ -222,9 +222,7 @@ func (f fixture) restart(t *testing.T) *Driver {
 
 const twoSources = `
 - uri: file:///app.yaml
-  path: app.yaml
 - uri: file:///flags.json
-  path: etc/flags.json
 `
 
 func publishRequest(volumeID, target, sources string) *csi.NodePublishVolumeRequest {
@@ -291,10 +289,10 @@ func TestPublishDeliversEverySourceBeforeMounting(t *testing.T) {
 		t.Errorf("mounted %q at target, want %q", got, data)
 	}
 	// The source's path names the file, not the object's name at the origin.
-	if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 1\n" {
+	if got := read(t, filepath.Join(data, "file", "app.yaml")); got != "a: 1\n" {
 		t.Errorf("app.yaml = %q", got)
 	}
-	if got := read(t, filepath.Join(data, "etc", "flags.json")); got != "{}" {
+	if got := read(t, filepath.Join(data, "file", "flags.json")); got != "{}" {
 		t.Errorf("etc/flags.json = %q", got)
 	}
 	sub := f.server.subs["csi-abc/0"]
@@ -315,10 +313,10 @@ func TestPublishDeliversEverySourceBeforeMounting(t *testing.T) {
 	if err := sub.Handler.Apply(update("csi-abc/0", "a: 2\n")); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 2\n" {
+	if got := read(t, filepath.Join(data, "file", "app.yaml")); got != "a: 2\n" {
 		t.Errorf("app.yaml after update = %q", got)
 	}
-	if got := read(t, filepath.Join(data, "etc", "flags.json")); got != "{}" {
+	if got := read(t, filepath.Join(data, "file", "flags.json")); got != "{}" {
 		t.Errorf("etc/flags.json after the other source's update = %q", got)
 	}
 
@@ -422,7 +420,7 @@ func TestPublishRejectsBadRequests(t *testing.T) {
 		"not ephemeral": func(r *csi.NodePublishVolumeRequest) { r.VolumeContext = nil },
 		"writable":      func(r *csi.NodePublishVolumeRequest) { r.Readonly = false },
 		"no sources":    func(r *csi.NodePublishVolumeRequest) { delete(r.VolumeContext, "sources") },
-		"bad sources":   func(r *csi.NodePublishVolumeRequest) { r.VolumeContext["sources"] = "- uri: nope\n  path: x\n" },
+		"bad sources":   func(r *csi.NodePublishVolumeRequest) { r.VolumeContext["sources"] = "- uri: nope\n" },
 	}
 	for name, mutate := range tests {
 		req := publishRequest("csi-abc", target, twoSources)
@@ -507,10 +505,10 @@ func TestRestoreResumesMountedVolumes(t *testing.T) {
 	if err := f.server.subs["csi-mounted/0"].Handler.Apply(update("csi-mounted/0", "a: 3\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 3\n" {
+	if got := read(t, filepath.Join(data, "file", "app.yaml")); got != "a: 3\n" {
 		t.Errorf("app.yaml = %q", got)
 	}
-	if got := read(t, filepath.Join(data, "etc", "flags.json")); got != "{}" {
+	if got := read(t, filepath.Join(data, "file", "flags.json")); got != "{}" {
 		t.Errorf("etc/flags.json was lost across the restart: %q", got)
 	}
 }
@@ -556,7 +554,7 @@ func TestPublishFromTheNodeCache(t *testing.T) {
 				t.Fatalf("failurePolicy UseCached: %v", err)
 			}
 			data := f.mounts.mounts[target]
-			if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 1\n" {
+			if got := read(t, filepath.Join(data, "file", "app.yaml")); got != "a: 1\n" {
 				t.Errorf("app.yaml from the cache = %q", got)
 			}
 
@@ -568,7 +566,7 @@ func TestPublishFromTheNodeCache(t *testing.T) {
 			if err := sub.Handler.Apply(update("csi-cached/0", "a: 2\n")); err != nil {
 				t.Fatal(err)
 			}
-			if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 2\n" {
+			if got := read(t, filepath.Join(data, "file", "app.yaml")); got != "a: 2\n" {
 				t.Errorf("app.yaml after the server returned = %q", got)
 			}
 
@@ -582,7 +580,7 @@ func TestPublishFromTheNodeCache(t *testing.T) {
 			}
 
 			// Nothing cached for a URI: UseCached cannot help.
-			cold := publishRequest("csi-cold", filepath.Join(t.TempDir(), "cold"), "- uri: file:///never-seen.yaml\n  path: x\n")
+			cold := publishRequest("csi-cold", filepath.Join(t.TempDir(), "cold"), "- uri: file:///never-seen.yaml\n")
 			cold.VolumeContext["failurePolicy"] = "UseCached"
 			if _, err := f.driver.NodePublishVolume(ctx, cold); status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "nothing is cached") {
 				t.Errorf("with nothing cached: got %v, want Unavailable saying so", err)
@@ -670,7 +668,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	target := filepath.Join(t.TempDir(), "mount")
-	req := publishRequest("csi-ack", target, "- uri: file:///app.yaml\n  path: app.yaml\n")
+	req := publishRequest("csi-ack", target, "- uri: file:///app.yaml\n")
 	req.VolumeContext["appAck"] = "true"
 	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
 		t.Fatal(err)
@@ -724,7 +722,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &config); err != nil {
 		t.Fatal(err)
 	}
-	report := `{"generation":"` + config.Generation + `","sources":[{"name":"app.yaml","state":"STATE_REJECTED","message":"cannot parse"}]}`
+	report := `{"generation":"` + config.Generation + `","sources":[{"name":"file:///app.yaml","state":"STATE_REJECTED","message":"cannot parse"}]}`
 	if code, body := call(t, socket, http.MethodPost, "/v1/reports", report); code != http.StatusNoContent {
 		t.Fatalf("reporting rejected = %d %s", code, body)
 	}
@@ -737,7 +735,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	if src := reverted.GetConfig().GetSources()[0]; src.GetVersion() != first || src.GetState() != stevedorev1.Manifest_STATE_LOADED {
 		t.Errorf("after the rejection the config is %v, want the first version, loaded", reverted.GetConfig())
 	}
-	if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 1\n" {
+	if got := read(t, filepath.Join(data, "file", "app.yaml")); got != "a: 1\n" {
 		t.Errorf("after the rejection the file reads %q, want the last loaded version", got)
 	}
 	// The server is told, with what is in the volume now.
@@ -842,7 +840,7 @@ func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	target := filepath.Join(t.TempDir(), "mount")
-	req := publishRequest("csi-token", target, "- uri: file:///app.yaml\n  path: app.yaml\n")
+	req := publishRequest("csi-token", target, "- uri: file:///app.yaml\n")
 	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
 		t.Fatal(err)
 	}
@@ -920,7 +918,7 @@ func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 	}
 
 	// The files were there all along.
-	if got := read(t, filepath.Join(f.mounts.mounts[target], "app.yaml")); got != "a: 1\n" {
+	if got := read(t, filepath.Join(f.mounts.mounts[target], "file", "app.yaml")); got != "a: 1\n" {
 		t.Errorf("app.yaml = %q", got)
 	}
 }
@@ -936,7 +934,7 @@ func noStore(u *stevedorev1.ConfigUpdate) *stevedorev1.ConfigUpdate {
 func TestNoStoreNeedsAVolumeInMemory(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	const sources = "- uri: file:///app.yaml\n  path: app.yaml\n"
+	const sources = "- uri: file:///app.yaml\n"
 
 	target := filepath.Join(t.TempDir(), "memory")
 	req := publishRequest("csi-memory", target, sources)
@@ -1004,7 +1002,7 @@ func TestEventsOnThePod(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	target := filepath.Join(t.TempDir(), "mount")
-	req := publishRequest("csi-events", target, "- name: app\n  uri: file:///app.yaml\n  path: app.yaml\n")
+	req := publishRequest("csi-events", target, "- name: app\n  uri: file:///app.yaml\n")
 	req.VolumeContext["appAck"] = "true"
 	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
 		t.Fatal(err)

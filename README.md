@@ -41,13 +41,15 @@ volumes:
       volumeAttributes:
         sources: |
           - uri: file:///payments/app.yaml
-            path: app.yaml
           - uri: file:///shared/flags/
-            path: flags
 ```
 
-The scheme names the provider. A URI ending in `/` is a directory; any other
-is one file, placed at `path`.
+The scheme names the provider. Each source lands at a location that follows
+from its URI alone: the provider, then the path. Here that is
+`file/payments/app.yaml` and the directory `file/shared/flags`, whose files
+the provider names. A URI ending in `/` is a directory; any other is one file.
+The pod does not choose file names or places: whoever knows the URI, such as a
+client library, knows where its files are.
 
 The full design, including caching, staged rollouts and application
 acknowledgement, is in [docs/design.md](docs/design.md). The wire contracts are
@@ -113,7 +115,8 @@ helm install stevedore oci://quay.io/stevedore/stevedore --version 0.1.0 \
   --set providers.file.source.configMap.name=app-config
 ```
 
-A pod then mounts `file:///app.yaml` as shown above. A change to the ConfigMap
+A pod then mounts `file:///app.yaml` as shown above, and finds it at
+`file/app.yaml` in the volume. A change to the ConfigMap
 reaches the pod's files after kubelet refreshes the provider's mount, about a
 minute.
 
@@ -129,8 +132,9 @@ helm install stevedore oci://quay.io/stevedore/stevedore --version 0.1.0 \
   --set-string 'providers.s3.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::111122223333:role/stevedore-s3'
 ```
 
-Pods then mount `s3://acme-config/payments/app.yaml`, or a prefix as a
-directory with `s3://acme-config/shared/flags/`. Without `buckets`, the
+Pods then mount `s3://acme-config/payments/app.yaml`, found at
+`s3/acme-config/payments/app.yaml`, or a prefix as a directory with
+`s3://acme-config/shared/flags/`. Without `buckets`, the
 provider serves every bucket its role can read to every pod.
 
 To verify a signature:

@@ -103,14 +103,17 @@ message Manifest {
 
 // ManifestSource is one source of a volume in a Manifest.
 message ManifestSource {
-  // The name of the source, from the volume attributes. It defaults to path.
-  // Reports name a source by it.
+  // The name of the source, from the volume attributes. It defaults to the
+  // canonical URI. Reports name a source by it.
   string name = 1;
 
   // The URI the source is read from.
   string uri = 2;
 
-  // Where the source is written, relative to the root of the volume.
+  // Where the source is written, relative to the root of the volume: the
+  // URI's location, <provider>/<authority>/<path> without a trailing slash,
+  // which neither the pod nor the provider chooses. For a directory URI the
+  // provider names the files in it.
   string path = 3;
 
   // The version of the source in this generation, a content address

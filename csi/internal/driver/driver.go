@@ -529,12 +529,12 @@ func (d *Driver) serveAppAck(v *volume.Volume) error {
 					reverted = "the source is back on the last version it loaded"
 				}
 				d.events.Warning(podOf(v), events.ReasonRejected, fmt.Sprintf(
-					"the application rejected a new version of source %q (%s): %s; %s",
-					source.Name, source.URI, o.Message, reverted))
+					"the application rejected a new version of source %s: %s; %s",
+					source, o.Message, reverted))
 			case volume.StateOverdue:
 				d.events.Warning(podOf(v), events.ReasonOverdue, fmt.Sprintf(
-					"the application has not reported whether it loaded the new version of source %q (%s) within %s",
-					source.Name, source.URI, v.Meta().Spec.AppAckTimeout))
+					"the application has not reported whether it loaded the new version of source %s within %s",
+					source, v.Meta().Spec.AppAckTimeout))
 			}
 			state := stevedorev1.AppReport_STATE_LOADED
 			switch o.State {
@@ -621,18 +621,18 @@ func (h sourceHandler) Apply(update *stevedorev1.ConfigUpdate) error {
 	case codes.OK:
 		if update.GetStale() {
 			h.events.Warning(podOf(h.volume), events.ReasonStale, fmt.Sprintf(
-				"source %q (%s) is at a version the config server could not confirm with its provider, which is unreachable",
-				source.Name, source.URI))
+				"source %s is at a version the config server could not confirm with its provider, which is unreachable",
+				source))
 		}
 	case codes.FailedPrecondition, codes.InvalidArgument:
 		h.volume.Fail(h.index, &rpcstatus.Status{Code: int32(code), Message: status.Convert(err).Message()})
 		h.events.Warning(podOf(h.volume), events.ReasonRefused, fmt.Sprintf(
-			"a new version of source %q (%s) cannot be written to this volume and is not applied: %s",
-			source.Name, source.URI, status.Convert(err).Message()))
+			"a new version of source %s cannot be written to this volume and is not applied: %s",
+			source, status.Convert(err).Message()))
 	default:
 		h.events.Warning(podOf(h.volume), events.ReasonWriteFailed, fmt.Sprintf(
-			"a new version of source %q (%s) could not be written and will be retried; the previous one stays: %s",
-			source.Name, source.URI, status.Convert(err).Message()))
+			"a new version of source %s could not be written and will be retried; the previous one stays: %s",
+			source, status.Convert(err).Message()))
 	}
 	return err
 }

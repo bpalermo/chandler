@@ -395,8 +395,7 @@ func contribute(source Source, b *stevedorev1.Bundle) (map[string]atomic.File, e
 		}
 		return contribution, nil
 	}
-	// One object: the source's path names the file, whatever the object
-	// is called at the origin.
+	// One object: it is the file at the URI's location.
 	if n := len(b.GetFiles()); n != 1 {
 		return nil, grpcstatus.Errorf(codes.InvalidArgument,
 			"%s names one object but the bundle has %d files", source.URI, n)
@@ -513,14 +512,14 @@ func (v *Volume) ApplyCached() error {
 		}
 		versions := v.cache.Versions(v.cacheKeys[i])
 		if len(versions) == 0 {
-			return grpcstatus.Errorf(codes.Unavailable, "source %q (%s): nothing is cached on this node", source.Name, source.URI)
+			return grpcstatus.Errorf(codes.Unavailable, "source %s: nothing is cached on this node", source)
 		}
 		update := stevedorev1.ConfigUpdate_builder{
 			Version:   proto.String(versions[0]),
 			UseCached: &stevedorev1.UseCached{},
 		}.Build()
 		if err := v.Apply(i, update); err != nil {
-			return grpcstatus.Errorf(codes.Unavailable, "source %q (%s): %v", source.Name, source.URI, err)
+			return grpcstatus.Errorf(codes.Unavailable, "source %s: %v", source, err)
 		}
 	}
 	return nil
@@ -565,10 +564,10 @@ func (v *Volume) WaitReady(ctx context.Context) error {
 			}
 			if st := v.failures[i]; st != nil {
 				v.mu.Unlock()
-				return grpcstatus.Errorf(codes.Code(st.GetCode()), "source %q (%s): %s", source.Name, source.URI, st.GetMessage())
+				return grpcstatus.Errorf(codes.Code(st.GetCode()), "source %s: %s", source, st.GetMessage())
 			}
 			if waiting == "" {
-				waiting = fmt.Sprintf("source %q (%s)", source.Name, source.URI)
+				waiting = fmt.Sprintf("source %s", source)
 			}
 		}
 		changed := v.changed

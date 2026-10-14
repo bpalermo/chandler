@@ -88,3 +88,22 @@ func TestAccessors(t *testing.T) {
 		t.Error("zero URI should print empty")
 	}
 }
+
+func TestLocationFollowsFromTheURI(t *testing.T) {
+	for raw, want := range map[string]string{
+		"s3://acme-config/payments/app.yaml": "s3/acme-config/payments/app.yaml",
+		"s3://acme-config/shared/flags/":     "s3/acme-config/shared/flags",
+		"file:///payments/app.yaml":          "file/payments/app.yaml",
+		"FILE:///a/./b/../c.yaml":            "file/a/c.yaml",
+		"file:///app.yaml?variant=eu":        "file/app.yaml",
+		"file:///":                           "file",
+	} {
+		u, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", raw, err)
+		}
+		if got := u.Location(); got != want {
+			t.Errorf("Location(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

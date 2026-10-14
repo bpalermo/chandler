@@ -1,9 +1,7 @@
 # Stevedore: configuration delivery over CSI
 
-Status: draft, 2026-10-12
-
-This document describes the target. What is built so far is listed under
-"Implementation status" at the end.
+This document describes the target. What is built is listed under
+"Implementation status" at the end; the first release is v0.1.0.
 
 Stevedore mounts configuration files into pods through a Kubernetes CSI driver.
 A pod names what it wants with URIs (`<provider-name>://...`); the driver
@@ -95,7 +93,7 @@ origin → server cache → node cache → the volume itself (which is never emp
 volumes:
   - name: config
     csi:
-      driver: config.csi.stevedore.dev        # placeholder domain
+      driver: config.csi.stevedore.dev
       readOnly: true
       volumeAttributes:
         sources: |
@@ -872,7 +870,7 @@ What exists today, against the design above.
 | Area | Built | Not built yet |
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport`, one resend of an update unanswered for 60s, keepalives, a max connection age that makes drivers reconnect and spread over replicas | |
-| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, namespace and service account, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached`, volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
+| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, namespace and service account, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy` (`UseCached` by default, or `Fail`), volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, eviction of unused entries to stay within a quota, `no_store` kept in memory only | Authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected, overdue), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, rejections and overdue reports, and S3 metadata overrides | |
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, `ApplicationService` on the socket, defined in `app.proto` and served as HTTP with JSON (`GET /v1/config`, `POST /v1/reports`) and as gRPC, per generation or per source, local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |
@@ -880,6 +878,7 @@ What exists today, against the design above.
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 1) |
 | Observability | Metrics pushed over OTLP from every component, events on pods, structured logs, the build version in every binary (section 11) | Traces |
+| Delivery | Images and the chart signed with cosign and published to quay.io on every commit to `main` (snapshots) and every `v*` tag (releases, with a GitHub Release); after each publish the end-to-end suite runs against what was published | |
 
 The server's cache survives a rollout because each new replica copies it from
 the ready ones before it takes traffic. If every replica is lost at once, the

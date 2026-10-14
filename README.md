@@ -4,18 +4,13 @@ Stevedore delivers configuration files to Kubernetes pods through a CSI driver.
 A pod names the configuration it wants with URIs; the driver mounts the files
 read-only and replaces them atomically when they change.
 
-> **Status: early development.** Configuration is delivered end to end from
-> the file and S3 providers, and updated in place. Connections use mutual TLS,
-> but there is no authorisation yet: any pod can read any URI the cluster's
-> providers can. See
-> [What works today](#what-works-today).
-
-## How it is meant to work
+## How it works
 
 ```mermaid
 flowchart LR
   pod["Pod volume"] --- driver["CSI driver<br/>(one per node)"]
   driver -- "gRPC stream, ACK/NACK" --> server["Config server<br/>(replicated)"]
+  server -- "gRPC stream" --> file["File provider"]
   server -- "gRPC stream" --> s3["S3 provider"]
   server -- "gRPC stream" --> other["Other providers"]
 ```
@@ -58,23 +53,23 @@ The full design, including caching, staged rollouts and application
 acknowledgement, is in [docs/design.md](docs/design.md). The wire contracts are
 in [api/stevedore/v1](api/stevedore/v1).
 
-## What works today
+## Features
 
-| Part | State |
+| Part | What it does |
 |---|---|
-| Protocol definitions | Written, for all three protocols |
+| Protocols | Protobuf contracts for the driver and the server, the server and its providers, server replicas, and applications |
 | CSI driver | Mounts a volume once every source is delivered, replaces files atomically on change, and resumes after a restart. Keeps a node cache, so a pod can start while the server is down, unless it sets `failurePolicy: Fail`. With `medium: Memory` a volume never touches the node's disk, which content marked `no_store` requires |
 | Config server | Shares one provider watch between subscriptions and pushes each new revision. Caches what providers emit, with quotas, and keeps serving it while a provider is down. Runs as several replicas that copy each other's cache, so it survives a rollout without a persistent volume |
 | File provider | Serves files and directories from a volume, such as a ConfigMap |
 | S3 provider | Serves objects and prefixes from allow-listed buckets, on AWS or an S3-compatible store |
 | Helm chart | Installs the driver and the server, and optionally the file and S3 providers |
-| Security | Mutual TLS between all components, with a chart-issued private authority by default, your own certificates, or identities from a SPIFFE Workload API such as SPIRE. The server verifies which pod a volume belongs to from its service account token. Not built: authorisation of which pods may read which URIs |
+| Security | Mutual TLS between all components, with a chart-issued private authority by default, your own certificates, or identities from a SPIFFE Workload API such as SPIRE. The server verifies which pod a volume belongs to from its service account token. There is no authorisation of which pods may read which URIs: any pod can read any URI the cluster's providers serve, so do not deliver secrets through it |
 | Staged rollouts | A provider releases a new version to a growing share of pods and can hold it or take it back; the file and S3 providers have a time-based ramp |
 | Metrics and events | Every component pushes metrics over OTLP to an OpenTelemetry collector (`telemetry.otlpEndpoint`). The driver records events on pods when their configuration is refused, rejected, late, stale or served from a cache |
 | Application acknowledgement | A volume with `appAck: "true"` gets a manifest and an API on a Unix socket, as plain HTTP with JSON or as gRPC. The application reports whether it loaded each version; a rejected one is reverted at once and reported to the provider. With `appAckTimeout`, silence is reported too, and can hold a rollout |
 
-The design document ends with a
-[detailed status table](docs/design.md#13-implementation-status).
+What is built, against the design, is in the design's
+[implementation status](docs/design.md#13-implementation-status).
 
 ## Install
 
@@ -94,16 +89,16 @@ helm install stevedore oci://quay.io/stevedore/stevedore --version 0.1.0 \
   --namespace stevedore-system --create-namespace
 ```
 
-Between releases, every commit to `main` publishes a snapshot of the next one,
-versioned `<next>-dev.<commit time>.g<commit>`. Snapshots are pre-releases, so
-`--devel` takes the newest. In 0.x a release may change the protocol between
-the components, so run all of them from the same release.
-
 That installs the driver and the server with no provider, so no URI resolves
 yet.
 
 Each chart pins its images by digest, so a chart always runs the images built
-from the same commit.
+from the same commit. In 0.x a release may change the protocol between the
+components, so run all of them from the same release.
+
+Between releases, every commit to `main` publishes a snapshot of the next one,
+versioned `<next>-dev.<commit time>.g<commit>`. Snapshots are pre-releases, so
+`--devel` takes the newest.
 
 To serve a ConfigMap, enable the file provider and point it at one in the
 release's namespace:
@@ -166,7 +161,8 @@ e2e/run.sh              # end-to-end suite in a kind cluster
 ```
 
 The end-to-end suite needs `kind`, `kubectl`, `helm` and a container runtime.
-It builds the images and the chart from the checkout and installs them.
+It builds the images and the chart from the checkout and installs them; with
+`E2E_CHART` and `E2E_CHART_VERSION` it tests a published chart instead.
 
 | Directory | Contents |
 |---|---|

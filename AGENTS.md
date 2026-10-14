@@ -11,10 +11,9 @@ design and the protos in `api/stevedore/v1` are the contracts; read both before
 changing behaviour, and update them in the same pull request when behaviour
 changes.
 
-The project is early. Configuration is delivered end to end from the file and
-S3 providers. The design describes the target,
-and its last section, "Implementation status", says what is built. Keep that
-section true in the same pull request that changes it.
+Stevedore is released as 0.x (see Releasing). The design describes the
+target, and its last section, "Implementation status", says what is built.
+Keep that section true in the same pull request that changes it.
 
 ## Build and test
 
@@ -196,7 +195,8 @@ hand-editing what Gazelle owns.
 - A new image has to be added in each place that lists them: the quay.io
   repository (created by hand), `scripts/registry.sh` and the comments in
   `bazel/registry.bzl`, the build lists in `ci.yml` and `publish.yml` (push,
-  record, sign, verify), `e2e/run.sh` and `e2e/images_test.go`. If the chart
+  record, sign, verify), `e2e/run.sh` (both the local images and the
+  published pins), `e2e/values-local.yaml` and `e2e/images_test.go`. If the chart
   deploys it, also `values.yaml`, the chart's `images` and
   `PINNED_COMPONENTS`, `scripts/check-registry-config.sh` and the pin guard in
   `publish.yml`.
@@ -231,6 +231,7 @@ hand-editing what Gazelle owns.
 ## Pull requests
 
 - `main` is protected: squash merges only, linear history, and the `ci` check
-  must pass. `ci` aggregates the Bazel job and the kind end-to-end job.
+  must pass. `ci` aggregates the Bazel job and the two kind end-to-end jobs
+  (generated TLS and SPIFFE).
 - GitHub Actions are pinned by commit SHA, with the version in a comment.
 - Keep a pull request to one slice of behaviour, with its tests.

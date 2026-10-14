@@ -293,6 +293,6 @@ func (v *Volume) revertLocked(i int, rejected string) {
 		return
 	}
 	if v.writeLocked(i, loaded, contribution) == nil {
-		_ = v.cache.Use(v.uris[i], loaded)
+		_ = v.cache.Use(v.cacheKeys[i], loaded)
 	}
 }

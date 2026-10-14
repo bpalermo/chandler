@@ -262,7 +262,7 @@ State lives under a hostPath so mounts and cache survive driver restarts:
   cache/                              node cache, node-wide
     blobs/sha256/<aa>/<digest>        file contents, content-addressed
     manifests/<digest>.json           one bundle: its files and the blob of each
-    index.json                        canonical URI → versions held, newest first
+    index.json                        canonical URI, namespace and service account → versions held, newest first
   volumes/<volume-id>/                CSI volume ID; kubelet derives it from pod UID and volume name
     meta.json                         sources, applied versions (for resubscribe)
     data/                             bind-mounted read-only into the pod
@@ -443,8 +443,11 @@ server is unreachable or answers `UNAVAILABLE`:
 - `failurePolicy: Fail` returns an error; kubelet retries and the pod waits in
   `ContainerCreating` with an event explaining why.
 - `failurePolicy: UseCached` materialises the newest cached version for each
-  source if the node cache has one, mounts, and converges once the server
-  returns. With no cached version it fails as above.
+  source if the node cache has one for the pod's namespace and service
+  account, mounts, and converges once the server returns. With no cached
+  version it fails as above. A version cached for another namespace or
+  service account is never used: a provider may serve the same URI
+  differently to them (`vary_on`), and the driver cannot tell whether it did.
 
 On driver restart the mounts are still in place; the driver rebuilds its
 subscriptions from the `meta.json` files and resyncs.
@@ -855,7 +858,7 @@ What exists today, against the design above.
 | Area | Built | Not built yet |
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport`, one resend of an update unanswered for 60s, keepalives, a max connection age that makes drivers reconnect and spread over replicas | |
-| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached`, volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
+| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, namespace and service account, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached`, volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, eviction of unused entries to stay within a quota, `no_store` kept in memory only | Authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected, overdue), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, rejections and overdue reports, and S3 metadata overrides | |
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, `ApplicationService` on the socket, defined in `app.proto` and served as HTTP with JSON (`GET /v1/config`, `POST /v1/reports`) and as gRPC, per generation or per source, local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |

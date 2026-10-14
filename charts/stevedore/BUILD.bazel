@@ -26,9 +26,31 @@ PINNED_COMPONENTS = [
     "server",
 ]
 
+# Chart.yaml, with its versions from the workspace status. rules_helm stamps
+# only by substituting {KEY} in place, which cannot make a release's version
+# plain (0.1.0) while a snapshot's is a pre-release of it, and turns {KEY} into
+# an invalid version when not stamping. Unstamped (--nostamp), the chart is
+# 0.0.0-dev.unstamped, which the publish workflow refuses to push.
+genrule(
+    name = "chart_yaml",
+    srcs = ["Chart.yaml.in"],
+    outs = ["Chart.yaml"],
+    cmd = """
+status=bazel-out/stable-status.txt
+version=0.0.0-dev.unstamped
+app=unstamped
+if [ -r "$$status" ]; then
+  version="$$(sed -n 's/^STABLE_CHART_VERSION //p' "$$status")"
+  app="$$(sed -n 's/^STABLE_GIT_VERSION //p' "$$status")"
+fi
+sed -e "s|@VERSION@|$$version|" -e "s|@APP_VERSION@|$$app|" $< >$@
+""",
+    stamp = -1,
+)
+
 helm_chart(
     name = "stevedore",
-    chart = "Chart.yaml",
+    chart = ":chart_yaml",
     images = [
         "//csi:image_push",
         "//providers/file:image_push",
@@ -71,19 +93,21 @@ helm_lint_test(
 
 # The chart packs the pins the way the publish workflow relies on: every
 # component's repository is exactly bazel/registry.bzl's and is followed by a
-# sha256 digest, and the version is a snapshot (stamped with the commit time
-# and commit, or with rules_helm's placeholder in a --nostamp build).
+# sha256 digest, and the version is the VERSION file's: the release, a
+# candidate or a snapshot of it (or the unstamped placeholder).
 sh_test(
     name = "pin_test",
     size = "small",
     srcs = ["pin_test.sh"],
     data = [
         ":stevedore",
+        "//:VERSION",
         "//scripts:chart-pin.sh",
     ],
     env = {
         "CHART_RLOCATIONPATH": "$(rlocationpath :stevedore)",
         "CHART_PIN_RLOCATIONPATH": "$(rlocationpath //scripts:chart-pin.sh)",
+        "VERSION_RLOCATIONPATH": "$(rlocationpath //:VERSION)",
         "EXPECT_REPOSITORIES": " ".join([image_reference(c) for c in PINNED_COMPONENTS]),
         "EXPECT_CHART_REPOSITORY": chart_registry_url("stevedore"),
     },

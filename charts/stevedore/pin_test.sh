@@ -43,9 +43,12 @@ for repository in ${EXPECT_REPOSITORIES:?}; do
 done
 
 version="$(printf '%s\n' "$chartyaml" | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
-# Stamped: 0.1.0-dev.<commit time>.g<commit>. Unstamped: rules_helm's
-# placeholder in the same position.
-[[ "$version" =~ ^0\.1\.0-dev\.([0-9]+\.g[0-9a-z]+|STABLE-CHART-SNAPSHOT)$ ]] || bad "chart version is '${version}', want 0.1.0-dev.<commit time>.g<commit>"
+# A release (VERSION, or VERSION-rc.<n>), a snapshot of it
+# (VERSION-dev.<commit time>.g<commit>), or unstamped (0.0.0-dev.unstamped).
+next="$(tr -d '[:space:]' <"$(rlocation "${VERSION_RLOCATIONPATH:?set by the BUILD target}")")"
+release="${next//./\\.}"
+[[ "$version" =~ ^${release}(-rc\.[0-9]+|-dev\.[0-9]+\.g[0-9a-f]+)?$ || "$version" == 0.0.0-dev.unstamped ]] ||
+	bad "chart version is '${version}', want ${next}, ${next}-rc.<n> or ${next}-dev.<commit time>.g<commit>"
 [ "$name" = "${EXPECT_CHART_REPOSITORY##*/}" ] || bad "chart name is '${name}', but helm push publishes it to ${EXPECT_CHART_REPOSITORY}"
 
 [ "$fail" = 0 ] || exit 1

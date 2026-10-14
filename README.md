@@ -78,22 +78,26 @@ The design document ends with a
 
 ## Install
 
-The chart and images are published to quay.io on every commit to `main`, and
-signed with cosign.
+The chart and images are published to quay.io and signed with cosign: every
+release, and a snapshot of every commit to `main`. Releases and their notes are
+on [GitHub](https://github.com/bpalermo/stevedore/releases).
 
 | Artifact | Location |
 |---|---|
 | Chart | `oci://quay.io/stevedore/stevedore` |
 | Images | `quay.io/stevedore/csi`, `server`, `provider-file`, `provider-s3` |
 
-Every chart is currently a snapshot, versioned
-`0.1.0-dev.<commit time>.g<commit>`. Snapshots are pre-releases, so pass
-`--devel` to take the newest one, or `--version` to pin one:
+Install a release by its version:
 
 ```bash
-helm install stevedore oci://quay.io/stevedore/stevedore \
-  --namespace stevedore-system --create-namespace --devel
+helm install stevedore oci://quay.io/stevedore/stevedore --version 0.1.0 \
+  --namespace stevedore-system --create-namespace
 ```
+
+Between releases, every commit to `main` publishes a snapshot of the next one,
+versioned `<next>-dev.<commit time>.g<commit>`. Snapshots are pre-releases, so
+`--devel` takes the newest. In 0.x a release may change the protocol between
+the components, so run all of them from the same release.
 
 That installs the driver and the server with no provider, so no URI resolves
 yet.
@@ -108,8 +112,8 @@ release's namespace:
 kubectl create namespace stevedore-system
 kubectl create configmap app-config -n stevedore-system --from-literal=app.yaml='replicas: 1'
 
-helm install stevedore oci://quay.io/stevedore/stevedore \
-  --namespace stevedore-system --devel \
+helm install stevedore oci://quay.io/stevedore/stevedore --version 0.1.0 \
+  --namespace stevedore-system \
   --set providers.file.enabled=true \
   --set providers.file.source.configMap.name=app-config
 ```
@@ -122,8 +126,8 @@ To serve S3 buckets instead, enable the S3 provider and name the buckets it
 may serve. With IAM roles for service accounts:
 
 ```bash
-helm install stevedore oci://quay.io/stevedore/stevedore \
-  --namespace stevedore-system --create-namespace --devel \
+helm install stevedore oci://quay.io/stevedore/stevedore --version 0.1.0 \
+  --namespace stevedore-system --create-namespace \
   --set providers.s3.enabled=true \
   --set providers.s3.region=eu-west-1 \
   --set 'providers.s3.buckets={acme-config}' \
@@ -137,8 +141,16 @@ provider serves every bucket its role can read to every pod.
 To verify a signature:
 
 ```bash
+cosign verify quay.io/stevedore/csi:v0.1.0 \
+  --certificate-identity https://github.com/bpalermo/stevedore/.github/workflows/publish.yml@refs/tags/v0.1.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+A snapshot is signed from `main` instead:
+
+```bash
 cosign verify quay.io/stevedore/csi:dev \
-  --certificate-identity-regexp '^https://github\.com/bpalermo/stevedore/\.github/workflows/publish\.yml@refs/heads/main$' \
+  --certificate-identity https://github.com/bpalermo/stevedore/.github/workflows/publish.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

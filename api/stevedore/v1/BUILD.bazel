@@ -4,7 +4,7 @@ load("@rules_go//go:def.bzl", "go_library")
 load("@rules_go//proto:def.bzl", "go_proto_library")
 
 proto_library(
-    name = "chandlerv1_proto",
+    name = "stevedorev1_proto",
     srcs = [
         "app.proto",
         "common.proto",
@@ -23,14 +23,14 @@ proto_library(
 )
 
 go_proto_library(
-    name = "chandlerv1_go_proto",
+    name = "stevedorev1_go_proto",
     compilers = [
         "@rules_go//proto:go_proto",
         "@rules_go//proto:go_grpc_v2",
         "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway_opaque",
     ],
-    importpath = "github.com/bpalermo/chandler/api/chandler/v1",
-    proto = ":chandlerv1_proto",
+    importpath = "github.com/bpalermo/stevedore/api/stevedore/v1",
+    proto = ":stevedorev1_proto",
     visibility = ["//visibility:public"],
     deps = [
         "@org_golang_google_genproto_googleapis_api//annotations",
@@ -39,15 +39,15 @@ go_proto_library(
 )
 
 go_library(
-    name = "chandler",
-    embed = [":chandlerv1_go_proto"],
-    importpath = "github.com/bpalermo/chandler/api/chandler/v1",
+    name = "stevedore",
+    embed = [":stevedorev1_go_proto"],
+    importpath = "github.com/bpalermo/stevedore/api/stevedore/v1",
     visibility = ["//visibility:public"],
 )
 
 buf_lint_test(
-    name = "chandlerv1_proto_lint_test",
+    name = "stevedorev1_proto_lint_test",
     size = "small",
     config = "//api:buf.yaml",
-    targets = [":chandlerv1_proto"],
+    targets = [":stevedorev1_proto"],
 )

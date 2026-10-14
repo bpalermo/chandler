@@ -3,19 +3,19 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "chandler.name" . }}-csi
+  name: {{ include "stevedore.name" . }}-csi
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: csi
 spec:
   selector:
     matchLabels:
-      {{- include "chandler.selectorLabels" $selector | nindent 6 }}
+      {{- include "stevedore.selectorLabels" $selector | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "chandler.labels" . | nindent 8 }}
+        {{- include "stevedore.labels" . | nindent 8 }}
         app.kubernetes.io/component: csi
       {{- with .Values.csi.podAnnotations }}
       annotations:
@@ -25,7 +25,7 @@ spec:
       {{- with .Values.csi.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
-      serviceAccountName: {{ include "chandler.name" . }}-csi
+      serviceAccountName: {{ include "stevedore.name" . }}-csi
       # Used for one thing, when asked to: recording events on pods.
       automountServiceAccountToken: {{ .Values.csi.podEvents }}
       {{- with .Values.imagePullSecrets }}
@@ -42,22 +42,22 @@ spec:
       {{- end }}
       containers:
         - name: driver
-          image: {{ include "chandler.image" (dict "root" . "image" .Values.csi.image) }}
+          image: {{ include "stevedore.image" (dict "root" . "image" .Values.csi.image) }}
           imagePullPolicy: {{ .Values.csi.image.pullPolicy }}
           args:
             - --endpoint=unix:///csi/csi.sock
             - --state-dir={{ .Values.csi.stateDir }}
-            - --server={{ include "chandler.name" . }}-server.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
-            - --server-identity={{ include "chandler.identity" $server }}
+            - --server={{ include "stevedore.name" . }}-server.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
+            - --server-identity={{ include "stevedore.identity" $server }}
             - --token-audience={{ .Values.server.podIdentity.audience }}
             - --pod-events={{ .Values.csi.podEvents }}
-            {{- include "chandler.tlsArgs" $selector | nindent 12 }}
+            {{- include "stevedore.tlsArgs" $selector | nindent 12 }}
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            {{- include "chandler.telemetryEnv" . | nindent 12 }}
+            {{- include "stevedore.telemetryEnv" . | nindent 12 }}
           securityContext:
             # Mounting into kubelet's pod directories needs CAP_SYS_ADMIN and
             # Bidirectional propagation, which requires privileged.
@@ -80,13 +80,13 @@ spec:
               # exist on the host, not only in this container, to outlive a
               # restart of the driver.
               mountPropagation: Bidirectional
-            {{- include "chandler.tlsVolumeMount" $selector | nindent 12 }}
+            {{- include "stevedore.tlsVolumeMount" $selector | nindent 12 }}
         - name: registrar
-          image: {{ include "chandler.image" (dict "root" . "image" .Values.csi.registrar.image) }}
+          image: {{ include "stevedore.image" (dict "root" . "image" .Values.csi.registrar.image) }}
           imagePullPolicy: {{ .Values.csi.registrar.image.pullPolicy }}
           args:
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path={{ .Values.csi.kubeletDir }}/plugins/csi.chandler.dev/csi.sock
+            - --kubelet-registration-path={{ .Values.csi.kubeletDir }}/plugins/config.csi.stevedore.dev/csi.sock
           {{- with .Values.csi.registrar.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -99,7 +99,7 @@ spec:
       volumes:
         - name: plugin-dir
           hostPath:
-            path: {{ .Values.csi.kubeletDir }}/plugins/csi.chandler.dev
+            path: {{ .Values.csi.kubeletDir }}/plugins/config.csi.stevedore.dev
             type: DirectoryOrCreate
         - name: registration-dir
           hostPath:
@@ -113,4 +113,4 @@ spec:
           hostPath:
             path: {{ .Values.csi.stateDir }}
             type: DirectoryOrCreate
-        {{- include "chandler.tlsVolume" $selector | nindent 8 }}
+        {{- include "stevedore.tlsVolume" $selector | nindent 8 }}

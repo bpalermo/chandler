@@ -6,10 +6,10 @@ go_library(
         "origin.go",
         "source.go",
     ],
-    importpath = "github.com/bpalermo/chandler/providers/file/internal/source",
+    importpath = "github.com/bpalermo/stevedore/providers/file/internal/source",
     visibility = ["//providers/file:__subpackages__"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/provider",
         "//common/rollout",

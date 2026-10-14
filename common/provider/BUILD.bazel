@@ -3,10 +3,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "provider",
     srcs = ["provider.go"],
-    importpath = "github.com/bpalermo/chandler/common/provider",
+    importpath = "github.com/bpalermo/stevedore/common/provider",
     visibility = ["//visibility:public"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/rollout",
         "//common/telemetry",
@@ -25,7 +25,7 @@ go_test(
     srcs = ["provider_test.go"],
     embed = [":provider"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/rollout",
         "//common/uri",

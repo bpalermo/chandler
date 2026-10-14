@@ -29,7 +29,7 @@ base="$(git merge-base HEAD "${ref}")"
 # In the target configuration only: after a build, cquery also answers with
 # the configurations other rules built the same protos in, and each file would
 # be in the image once per configuration.
-protos="config(kind(proto_library, deps(//api/chandler/v1:chandlerv1_proto)), target)"
+protos="config(kind(proto_library, deps(//api/stevedore/v1:stevedorev1_proto)), target)"
 
 # image <tree> <output> [<bazel flag>...] writes the descriptors of the protos
 # and of everything they import, as one FileDescriptorSet: buf resolves the
@@ -54,7 +54,7 @@ image() {
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
-baseline="${XDG_CACHE_HOME:-${HOME}/.cache}/chandler/proto-baseline"
+baseline="${XDG_CACHE_HOME:-${HOME}/.cache}/stevedore/proto-baseline"
 if [[ -e "${baseline}/.git" ]]; then
 	git -C "${baseline}" checkout --quiet --detach "${base}"
 else
@@ -63,11 +63,19 @@ else
 	git worktree add --quiet --detach "${baseline}" "${base}"
 fi
 
+# An API the earlier commit does not have has no contract to break yet: it is
+# new, or it was moved (a renamed proto package is a new API, and every client
+# has to move to it).
+if [[ ! -e "${baseline}/api/stevedore/v1/BUILD.bazel" ]]; then
+	echo "proto-breaking: ${base:0:12} has no //api/stevedore/v1, nothing to compare"
+	exit 0
+fi
+
 image "${baseline}" "${work}/base.binpb" "$@"
 image "${PWD}" "${work}/head.binpb" "$@"
 
-# --path keeps the check to Chandler's own files: the images also hold what
+# --path keeps the check to Stevedore's own files: the images also hold what
 # they import, and a dependency's change is not ours to refuse.
 bazel run "$@" @rules_buf_toolchains//:buf -- breaking "${work}/head.binpb" \
-	--against "${work}/base.binpb" --config "${PWD}/api/buf.yaml" --path chandler
+	--against "${work}/base.binpb" --config "${PWD}/api/buf.yaml" --path stevedore
 echo "proto-breaking: no breaking change since ${base:0:12}"

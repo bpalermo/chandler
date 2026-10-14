@@ -28,11 +28,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/provider"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/uri"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/provider"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 // consistentReads is how often a read is started again because an object
@@ -66,11 +66,11 @@ const (
 	// RampMetadata is the user metadata of an object that sets its ramp, as
 	// rollout.ParseRamp reads it: "1%:5m,10%:10m". It overrides the
 	// provider's rules for that object.
-	RampMetadata = "chandler-rollout"
+	RampMetadata = "stevedore-rollout"
 	// HoldMetadata is the user metadata of an object that caps the share of
 	// pods that gets it, as a percentage: "10" holds the rollout at 10%.
 	// Setting it is how a rollout is held at the origin.
-	HoldMetadata = "chandler-rollout-hold"
+	HoldMetadata = "stevedore-rollout-hold"
 )
 
 // Resolve implements provider.Origin. The authority is the bucket and the
@@ -165,8 +165,8 @@ func (o object) fetch(ctx context.Context, known string, limits bundle.Limits) (
 	if err != nil {
 		return provider.State{}, err
 	}
-	state.Bundle = chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
-		chandlerv1.File_builder{Path: proto.String(path.Base(o.key)), Content: content}.Build(),
+	state.Bundle = stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
+		stevedorev1.File_builder{Path: proto.String(path.Base(o.key)), Content: content}.Build(),
 	}}.Build()
 	return state, nil
 }
@@ -257,7 +257,7 @@ func (p prefix) fetch(ctx context.Context, known string, limits bundle.Limits) (
 		return state, nil
 	}
 
-	files := make([]*chandlerv1.File, 0, len(objects))
+	files := make([]*stevedorev1.File, 0, len(objects))
 	left := limits.MaxBytes
 	for _, o := range objects {
 		content, err := read(ctx, p.client, p.bucket, o.key, o.etag, left)
@@ -270,12 +270,12 @@ func (p prefix) fetch(ctx context.Context, known string, limits bundle.Limits) (
 			return provider.State{}, err
 		}
 		left -= uint64(len(content))
-		files = append(files, chandlerv1.File_builder{
+		files = append(files, stevedorev1.File_builder{
 			Path:    proto.String(strings.TrimPrefix(o.key, p.prefix)),
 			Content: content,
 		}.Build())
 	}
-	state.Bundle = chandlerv1.Bundle_builder{Files: files}.Build()
+	state.Bundle = stevedorev1.Bundle_builder{Files: files}.Build()
 	return state, nil
 }
 
@@ -333,11 +333,11 @@ func classify(where string, err error) error {
 	}
 }
 
-// parseCacheControl reads the directives Chandler honours from an object's
+// parseCacheControl reads the directives Stevedore honours from an object's
 // Cache-Control header. Anything else in the header is ignored. It returns
 // nil when none is present, so the provider's defaults apply.
-func parseCacheControl(header string) *chandlerv1.CacheControl {
-	var b chandlerv1.CacheControl_builder
+func parseCacheControl(header string) *stevedorev1.CacheControl {
+	var b stevedorev1.CacheControl_builder
 	found := false
 	for _, directive := range strings.Split(header, ",") {
 		name, value, _ := strings.Cut(strings.TrimSpace(directive), "=")

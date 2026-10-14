@@ -3,10 +3,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "origin",
     srcs = ["origin.go"],
-    importpath = "github.com/bpalermo/chandler/providers/s3/internal/origin",
+    importpath = "github.com/bpalermo/stevedore/providers/s3/internal/origin",
     visibility = ["//providers/s3:__subpackages__"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/provider",
         "//common/rollout",

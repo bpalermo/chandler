@@ -30,7 +30,7 @@ bad() {
 	fail=1
 }
 
-chartyaml="$(tar -xzOf "$chart" chandler/Chart.yaml)"
+chartyaml="$(tar -xzOf "$chart" stevedore/Chart.yaml)"
 name="$(printf '%s\n' "$chartyaml" | sed -nE 's/^name:[[:space:]]*(.*)$/\1/p')"
 
 pins=""

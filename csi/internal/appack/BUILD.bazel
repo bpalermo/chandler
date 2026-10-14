@@ -3,10 +3,10 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "appack",
     srcs = ["appack.go"],
-    importpath = "github.com/bpalermo/chandler/csi/internal/appack",
+    importpath = "github.com/bpalermo/stevedore/csi/internal/appack",
     visibility = ["//csi:__subpackages__"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//csi/internal/volume",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",

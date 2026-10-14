@@ -1,5 +1,5 @@
 // Package appack serves the application acknowledgement API of one volume,
-// chandler.v1.ApplicationService, on a Unix socket inside the volume.
+// stevedore.v1.ApplicationService, on a Unix socket inside the volume.
 //
 // The socket answers the same service in two ways, told apart by the
 // Content-Type of the request:
@@ -38,8 +38,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/csi/internal/volume"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/csi/internal/volume"
 )
 
 // maxReportBytes bounds a request.
@@ -47,8 +47,8 @@ const maxReportBytes = 64 << 10
 
 // Volume is what the API serves.
 type Volume interface {
-	Config() *chandlerv1.Manifest
-	Report(*chandlerv1.ReportRequest) ([]volume.Outcome, *chandlerv1.Manifest, error)
+	Config() *stevedorev1.Manifest
+	Report(*stevedorev1.ReportRequest) ([]volume.Outcome, *stevedorev1.Manifest, error)
 }
 
 // Server is the API of one volume.
@@ -67,7 +67,7 @@ func Serve(dir string, v Volume, forward func([]volume.Outcome)) (*Server, error
 	// gRPC, served through the HTTP server below rather than on a listener
 	// of its own.
 	grpcServer := grpc.NewServer(grpc.MaxRecvMsgSize(maxReportBytes))
-	chandlerv1.RegisterApplicationServiceServer(grpcServer, api)
+	stevedorev1.RegisterApplicationServiceServer(grpcServer, api)
 
 	// HTTP with JSON. The gateway calls the service in this process. Unknown
 	// fields are refused, so that a misspelt one is not silently ignored.
@@ -78,7 +78,7 @@ func Serve(dir string, v Volume, forward func([]volume.Outcome)) (*Server, error
 		}),
 		runtime.WithForwardResponseOption(noContent),
 	)
-	if err := chandlerv1.RegisterApplicationServiceHandlerServer(context.Background(), gateway, api); err != nil {
+	if err := stevedorev1.RegisterApplicationServiceHandlerServer(context.Background(), gateway, api); err != nil {
 		return nil, fmt.Errorf("register the HTTP API: %w", err)
 	}
 
@@ -141,19 +141,19 @@ func (s *Server) Close() {
 	_ = os.Remove(s.socket)
 }
 
-// service is chandler.v1.ApplicationService for one volume.
+// service is stevedore.v1.ApplicationService for one volume.
 type service struct {
-	chandlerv1.UnimplementedApplicationServiceServer
+	stevedorev1.UnimplementedApplicationServiceServer
 
 	volume  Volume
 	forward func([]volume.Outcome)
 }
 
-func (s *service) GetConfig(context.Context, *chandlerv1.GetConfigRequest) (*chandlerv1.GetConfigResponse, error) {
-	return chandlerv1.GetConfigResponse_builder{Config: s.volume.Config()}.Build(), nil
+func (s *service) GetConfig(context.Context, *stevedorev1.GetConfigRequest) (*stevedorev1.GetConfigResponse, error) {
+	return stevedorev1.GetConfigResponse_builder{Config: s.volume.Config()}.Build(), nil
 }
 
-func (s *service) Report(_ context.Context, r *chandlerv1.ReportRequest) (*chandlerv1.ReportResponse, error) {
+func (s *service) Report(_ context.Context, r *stevedorev1.ReportRequest) (*stevedorev1.ReportResponse, error) {
 	outcomes, current, err := s.volume.Report(r)
 	switch {
 	case errors.Is(err, volume.ErrMalformedReport):
@@ -175,13 +175,13 @@ func (s *service) Report(_ context.Context, r *chandlerv1.ReportRequest) (*chand
 	if len(outcomes) > 0 {
 		s.forward(outcomes)
 	}
-	return &chandlerv1.ReportResponse{}, nil
+	return &stevedorev1.ReportResponse{}, nil
 }
 
 // noContent answers an accepted report over HTTP with 204: there is nothing
 // to say, and a client need not read a body to know it.
 func noContent(_ context.Context, w http.ResponseWriter, m proto.Message) error {
-	if _, ok := m.(*chandlerv1.ReportResponse); ok {
+	if _, ok := m.(*stevedorev1.ReportResponse); ok {
 		w.WriteHeader(http.StatusNoContent)
 	}
 	return nil

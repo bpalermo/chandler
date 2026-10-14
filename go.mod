@@ -1,4 +1,4 @@
-module github.com/bpalermo/chandler
+module github.com/bpalermo/stevedore
 
 go 1.27.2
 

@@ -5,7 +5,7 @@ load("@rules_shell//shell:sh_library.bzl", "sh_library")
 # runfiles, so the verifier takes its expected layout from the environment
 # there (see verify_image.sh).
 #
-# chart-pin.sh is run by //charts/chandler:pin_test and by the publish
+# chart-pin.sh is run by //charts/stevedore:pin_test and by the publish
 # workflow, so both read a chart's image pins the same way.
 exports_files([
     "chart-pin.sh",

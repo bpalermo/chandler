@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -48,19 +48,19 @@ type Reader struct {
 // (a mounted ConfigMap, a git-sync checkout) reads as its current content.
 // Entries whose name starts with ".." are that writer's bookkeeping and are
 // neither readable nor listed.
-func (r Reader) Read(p string) (*chandlerv1.Bundle, error) {
+func (r Reader) Read(p string) (*stevedorev1.Bundle, error) {
 	b, _, err := r.ReadStat(p)
 	return b, err
 }
 
 // ReadStat is Read, and also returns the newest modification time among the
 // files read: when the resource last changed.
-func (r Reader) ReadStat(p string) (*chandlerv1.Bundle, time.Time, error) {
+func (r Reader) ReadStat(p string) (*stevedorev1.Bundle, time.Time, error) {
 	b, modified, err := r.read(p)
 	return b, modified, err
 }
 
-func (r Reader) read(p string) (*chandlerv1.Bundle, time.Time, error) {
+func (r Reader) read(p string) (*stevedorev1.Bundle, time.Time, error) {
 	if !strings.HasPrefix(p, "/") {
 		return nil, time.Time{}, fmt.Errorf("%w: %q is not absolute", ErrInvalid, p)
 	}
@@ -98,12 +98,12 @@ func (r Reader) read(p string) (*chandlerv1.Bundle, time.Time, error) {
 		return nil, time.Time{}, err
 	}
 	sort.Slice(w.files, func(i, j int) bool { return w.files[i].GetPath() < w.files[j].GetPath() })
-	return chandlerv1.Bundle_builder{Files: w.files}.Build(), w.modified, nil
+	return stevedorev1.Bundle_builder{Files: w.files}.Build(), w.modified, nil
 }
 
 type walk struct {
 	limits bundle.Limits
-	files  []*chandlerv1.File
+	files  []*stevedorev1.File
 	bytes  uint64
 	// modified is the newest modification time among the files read.
 	modified time.Time
@@ -167,7 +167,7 @@ func (w *walk) file(local, rel string, info fs.FileInfo) error {
 	if info.ModTime().After(w.modified) {
 		w.modified = info.ModTime()
 	}
-	w.files = append(w.files, chandlerv1.File_builder{
+	w.files = append(w.files, stevedorev1.File_builder{
 		Path:    proto.String(rel),
 		Mode:    proto.Uint32(uint32(info.Mode().Perm())),
 		Content: content,

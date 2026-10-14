@@ -2,9 +2,9 @@ apiVersion: storage.k8s.io/v1
 kind: CSIDriver
 metadata:
   # The name pods use in their volumes; fixed, not derived from the release.
-  name: csi.chandler.dev
+  name: config.csi.stevedore.dev
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
 spec:
   # Inline volumes only: nothing to attach, nothing to provision.
   attachRequired: false

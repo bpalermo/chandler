@@ -5,10 +5,10 @@ load("//bazel/image:defs.bzl", "go_image")
 go_library(
     name = "file_lib",
     srcs = ["main.go"],
-    importpath = "github.com/bpalermo/chandler/providers/file",
+    importpath = "github.com/bpalermo/stevedore/providers/file",
     visibility = ["//visibility:private"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/provider",
         "//common/rollout",
         "//common/telemetry",
@@ -21,7 +21,7 @@ go_library(
 
 go_binary(
     name = "file",
-    basename = "chandler-provider-file",
+    basename = "stevedore-provider-file",
     embed = [":file_lib"],
     # Pure Go: the image binary is cross-built for linux with cgo off.
     pure = "on",
@@ -32,8 +32,8 @@ go_image(
     name = "image",
     base = "@distroless_static",
     binary = ":file",
-    load_tag = "localhost/chandler-provider-file:e2e",
-    path = "/chandler-provider-file",
+    load_tag = "localhost/stevedore-provider-file:e2e",
+    path = "/stevedore-provider-file",
     registry = IMAGE_REGISTRY,
     repository = image_repository("provider-file"),
 )

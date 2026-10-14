@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
 func write(t *testing.T, root, rel, content string) {

@@ -15,18 +15,18 @@ tls:
     providerFile: provider-file-certs
     providerS3: provider-s3-certs
   identities:
-    csi: spiffe://example.org/ns/chandler-system/sa/csi
-    server: spiffe://example.org/ns/chandler-system/sa/server
+    csi: spiffe://example.org/ns/stevedore-system/sa/csi
+    server: spiffe://example.org/ns/stevedore-system/sa/server
 imagePullSecrets:
   - name: registry-credentials
 csi:
   image:
-    repository: registry.example.com/chandler/csi
+    repository: registry.example.com/stevedore/csi
     digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     pullPolicy: Always
   podEvents: false
   kubeletDir: /var/lib/k0s/kubelet
-  stateDir: /var/lib/chandler-state
+  stateDir: /var/lib/stevedore-state
   nodeSelector:
     kubernetes.io/os: linux
     node-role.example.com/storage: "true"
@@ -43,7 +43,7 @@ csi:
         memory: 16Mi
 server:
   image:
-    repository: registry.example.com/chandler/server
+    repository: registry.example.com/stevedore/server
     digest: ""
     tag: v9.9.9
   replicas: 3
@@ -127,7 +127,7 @@ providers:
     serviceAccount:
       name: s3-reader
       annotations:
-        eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/chandler-s3
+        eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/stevedore-s3
     env:
       - name: AWS_ACCESS_KEY_ID
         valueFrom:

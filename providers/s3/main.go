@@ -1,4 +1,4 @@
-// Command chandler-provider-s3 is the Chandler reference provider: it serves
+// Command stevedore-provider-s3 is the Stevedore reference provider: it serves
 // configuration from S3 buckets. <name>://<bucket>/<key> is one object and
 // <name>://<bucket>/<prefix>/ every object below a prefix.
 //
@@ -27,13 +27,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"google.golang.org/grpc"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/provider"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/telemetry"
-	"github.com/bpalermo/chandler/common/transport"
-	"github.com/bpalermo/chandler/common/version"
-	"github.com/bpalermo/chandler/providers/s3/internal/origin"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/provider"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/telemetry"
+	"github.com/bpalermo/stevedore/common/transport"
+	"github.com/bpalermo/stevedore/common/version"
+	"github.com/bpalermo/stevedore/providers/s3/internal/origin"
 )
 
 // bucketFlags collects repeated --bucket flags.
@@ -90,13 +90,13 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("chandler-provider-s3 %s\n", version.Version)
+		fmt.Printf("stevedore-provider-s3 %s\n", version.Version)
 		return
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(log, *listen, *name, *pollInterval, *endpointURL, *pathStyle, buckets, rollouts, *maxRefused, *maxOverdue, sec); err != nil {
-		log.Error("chandler-provider-s3 failed", "error", err)
+		log.Error("stevedore-provider-s3 failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -112,7 +112,7 @@ func run(log *slog.Logger, listen, name string, pollInterval time.Duration, endp
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	stopTelemetry, err := telemetry.Setup(ctx, "chandler-provider-s3", version.Version)
+	stopTelemetry, err := telemetry.Setup(ctx, "stevedore-provider-s3", version.Version)
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func run(log *slog.Logger, listen, name string, pollInterval time.Duration, endp
 	// credentials and serves whatever it is asked for.
 	options := transport.Serve(src, func(string) []string { return servers })
 	server := grpc.NewServer(append(options, transport.ServerKeepalive(0)...)...)
-	chandlerv1.RegisterConfigProviderServer(server, &provider.Server{
+	stevedorev1.RegisterConfigProviderServer(server, &provider.Server{
 		Name:         name,
 		Origin:       origin.Origin{Client: client, Buckets: buckets, Rollouts: rollouts},
 		PollInterval: pollInterval,

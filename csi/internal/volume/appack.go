@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
 )
 
 // Application acknowledgement: the application says whether it could load
@@ -22,9 +22,9 @@ import (
 const (
 	// ManifestName is the file in the volume that describes the current
 	// generation. It is swapped in together with the files it describes.
-	ManifestName = "..chandler.json"
+	ManifestName = "..stevedore.json"
 	// SocketName is the Unix socket in the volume the application reports on.
-	SocketName = "..chandler.sock"
+	SocketName = "..stevedore.sock"
 
 	// The states of an Outcome. The first two are the application's verdicts.
 	StateLoaded   = "loaded"
@@ -67,10 +67,10 @@ func generationID(versions []string) string {
 // manifest describes a generation: which version of each source it holds. A
 // volume can combine sources from several providers, so each is listed with
 // its own version. The caller holds v.mu.
-func (v *Volume) manifest(g Generation) *chandlerv1.Manifest {
-	sources := make([]*chandlerv1.ManifestSource, len(v.meta.Spec.Sources))
+func (v *Volume) manifest(g Generation) *stevedorev1.Manifest {
+	sources := make([]*stevedorev1.ManifestSource, len(v.meta.Spec.Sources))
 	for i, source := range v.meta.Spec.Sources {
-		s := chandlerv1.ManifestSource_builder{
+		s := stevedorev1.ManifestSource_builder{
 			Name: proto.String(source.Name),
 			Uri:  proto.String(source.URI),
 			Path: proto.String(source.Path),
@@ -80,7 +80,7 @@ func (v *Volume) manifest(g Generation) *chandlerv1.Manifest {
 		}
 		sources[i] = s.Build()
 	}
-	return chandlerv1.Manifest_builder{Generation: proto.String(g.ID), Sources: sources}.Build()
+	return stevedorev1.Manifest_builder{Generation: proto.String(g.ID), Sources: sources}.Build()
 }
 
 // manifestFile is the content of the manifest file of a generation: the
@@ -165,23 +165,23 @@ func (v *Volume) OverdueVersion(i int) string {
 
 // Config returns the manifest of the current generation with the state the
 // application has reported for each source.
-func (v *Volume) Config() *chandlerv1.Manifest {
+func (v *Volume) Config() *stevedorev1.Manifest {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.configLocked()
 }
 
-func (v *Volume) configLocked() *chandlerv1.Manifest {
+func (v *Volume) configLocked() *stevedorev1.Manifest {
 	versions := append([]string(nil), v.meta.Applied...)
 	m := v.manifest(Generation{ID: generationID(versions), Versions: versions})
 	for i, source := range m.GetSources() {
 		switch version := source.GetVersion(); {
 		case version != "" && version == v.meta.Loaded[i]:
-			source.SetState(chandlerv1.Manifest_STATE_LOADED)
+			source.SetState(stevedorev1.Manifest_STATE_LOADED)
 		case slices.Contains(v.meta.Rejected[i], version):
-			source.SetState(chandlerv1.Manifest_STATE_REJECTED)
+			source.SetState(stevedorev1.Manifest_STATE_REJECTED)
 		default:
-			source.SetState(chandlerv1.Manifest_STATE_PENDING)
+			source.SetState(stevedorev1.Manifest_STATE_PENDING)
 		}
 	}
 	return m
@@ -201,7 +201,7 @@ func (v *Volume) configLocked() *chandlerv1.Manifest {
 //
 // The error wraps ErrMalformedReport, ErrUnknownSource or ErrStaleGeneration;
 // with the last, the current configuration is returned to reload from.
-func (v *Volume) Report(r *chandlerv1.ReportRequest) ([]Outcome, *chandlerv1.Manifest, error) {
+func (v *Volume) Report(r *stevedorev1.ReportRequest) ([]Outcome, *stevedorev1.Manifest, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
@@ -212,9 +212,9 @@ func (v *Volume) Report(r *chandlerv1.ReportRequest) ([]Outcome, *chandlerv1.Man
 	type verdict struct{ state, message string }
 	verdicts := make(map[int]verdict)
 	// The states an application may report, as an Outcome names them.
-	states := map[chandlerv1.Manifest_State]string{
-		chandlerv1.Manifest_STATE_LOADED:   StateLoaded,
-		chandlerv1.Manifest_STATE_REJECTED: StateRejected,
+	states := map[stevedorev1.Manifest_State]string{
+		stevedorev1.Manifest_STATE_LOADED:   StateLoaded,
+		stevedorev1.Manifest_STATE_REJECTED: StateRejected,
 	}
 	const want = "STATE_LOADED or STATE_REJECTED"
 	if len(r.GetSources()) == 0 {

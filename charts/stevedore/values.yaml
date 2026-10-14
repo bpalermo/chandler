@@ -139,7 +139,7 @@ server:
     verify: true
     # The audience of the token. It is requested for this audience only, so
     # the token a pod can read from its own filesystem is of no use here.
-    audience: chandler
+    audience: stevedore
     # Where the cluster's signing keys are: a URL or a file in the container.
     # Empty reads them from the API server, with the server's service
     # account; that needs the system:service-account-issuer-discovery role,
@@ -287,7 +287,7 @@ providers:
     rolloutMaxRefused: 0
     rolloutMaxOverdue: 5
     # A single object can also carry its own ramp in its metadata
-    # (chandler-rollout), and be held at a share (chandler-rollout-hold: "10").
+    # (stevedore-rollout), and be held at a share (stevedore-rollout-hold: "10").
 
     port: 9100
 
@@ -295,7 +295,7 @@ providers:
     # service accounts, annotate the service account with the role:
     #   serviceAccount:
     #     annotations:
-    #       eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/chandler-s3
+    #       eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/stevedore-s3
     serviceAccount:
       create: true
       # Defaults to <release name>-provider-s3.
@@ -350,7 +350,7 @@ csi:
 
   # Where the driver keeps volumes and its cache on each node. It is mounted
   # into the driver at the same path.
-  stateDir: /var/lib/chandler
+  stateDir: /var/lib/stevedore
 
   priorityClassName: system-node-critical
 

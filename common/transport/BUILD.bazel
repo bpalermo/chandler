@@ -8,7 +8,7 @@ go_library(
         "spiffe.go",
         "transport.go",
     ],
-    importpath = "github.com/bpalermo/chandler/common/transport",
+    importpath = "github.com/bpalermo/stevedore/common/transport",
     visibility = ["//visibility:public"],
     deps = [
         "@com_github_spiffe_go_spiffe_v2//workloadapi",

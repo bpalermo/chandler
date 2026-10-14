@@ -18,10 +18,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/provider"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/uri"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/provider"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 type stored struct {

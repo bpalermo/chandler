@@ -15,13 +15,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
-func (p *fakeProvider) emitAs(watchID, nonce, revision, key string, b *chandlerv1.Bundle, cc *chandlerv1.CacheControl) {
-	p.responses <- chandlerv1.ProviderResponse_builder{
-		Update: chandlerv1.ResourceUpdate_builder{
+func (p *fakeProvider) emitAs(watchID, nonce, revision, key string, b *stevedorev1.Bundle, cc *stevedorev1.CacheControl) {
+	p.responses <- stevedorev1.ProviderResponse_builder{
+		Update: stevedorev1.ResourceUpdate_builder{
 			WatchId:      proto.String(watchID),
 			Nonce:        proto.String(nonce),
 			CacheKey:     proto.String(key),
@@ -33,20 +33,20 @@ func (p *fakeProvider) emitAs(watchID, nonce, revision, key string, b *chandlerv
 }
 
 func (p *fakeProvider) notModified(watchID, nonce, revision string) {
-	p.responses <- chandlerv1.ProviderResponse_builder{
-		Update: chandlerv1.ResourceUpdate_builder{
+	p.responses <- stevedorev1.ProviderResponse_builder{
+		Update: stevedorev1.ResourceUpdate_builder{
 			WatchId:     proto.String(watchID),
 			Nonce:       proto.String(nonce),
 			CacheKey:    proto.String("/app.yaml"),
 			Revision:    proto.String(revision),
-			NotModified: &chandlerv1.NotModified{},
+			NotModified: &stevedorev1.NotModified{},
 		}.Build(),
 	}.Build()
 }
 
 func (p *fakeProvider) fail(watchID string, code codes.Code) {
-	p.responses <- chandlerv1.ProviderResponse_builder{
-		Error: chandlerv1.WatchError_builder{
+	p.responses <- stevedorev1.ProviderResponse_builder{
+		Error: stevedorev1.WatchError_builder{
 			WatchId: proto.String(watchID),
 			Status:  &status.Status{Code: int32(code), Message: "from the provider"},
 		}.Build(),
@@ -63,19 +63,19 @@ func (p *fakeProvider) expectAck(t *testing.T, nonce string) {
 
 func (n *node) subscribeAs(t *testing.T, id, uri, namespace string) {
 	t.Helper()
-	n.send(t, chandlerv1.ConfigRequest_builder{
-		Subscribe: chandlerv1.Subscribe_builder{
+	n.send(t, stevedorev1.ConfigRequest_builder{
+		Subscribe: stevedorev1.Subscribe_builder{
 			SubscriptionId: proto.String(id),
 			Uri:            proto.String(uri),
-			Workload:       chandlerv1.Workload_builder{Namespace: proto.String(namespace)}.Build(),
+			Workload:       stevedorev1.Workload_builder{Namespace: proto.String(namespace)}.Build(),
 		}.Build(),
 	}.Build())
 }
 
 func (n *node) unsubscribe(t *testing.T, id string) {
 	t.Helper()
-	n.send(t, chandlerv1.ConfigRequest_builder{
-		Unsubscribe: chandlerv1.Unsubscribe_builder{SubscriptionId: proto.String(id)}.Build(),
+	n.send(t, stevedorev1.ConfigRequest_builder{
+		Unsubscribe: stevedorev1.Unsubscribe_builder{SubscriptionId: proto.String(id)}.Build(),
 	}.Build())
 }
 
@@ -117,7 +117,7 @@ func TestStaleAndExpired(t *testing.T) {
 	h := startWith(t, Config{Now: now.Now}, newFakeProvider())
 	n := h.connect(t)
 	v1 := oneFile("v1")
-	cc := chandlerv1.CacheControl_builder{
+	cc := stevedorev1.CacheControl_builder{
 		MaxAge:       durationpb.New(time.Minute),
 		StaleIfError: durationpb.New(time.Hour),
 	}.Build()
@@ -199,7 +199,7 @@ func TestCacheSurvivesARestart(t *testing.T) {
 	n.subscribe(t, "s/0", "file:///secret.yaml", "")
 	watch = first.provider.expectWatch(t, "file:///secret.yaml")
 	first.provider.emitAs(watch.GetWatchId(), "n2", "r1", "/secret.yaml", secret,
-		chandlerv1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
+		stevedorev1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
 	n.expectUpdate(t, "s/0", secret)
 	first.stop()
 
@@ -435,11 +435,11 @@ func TestSubscriptionIdentityComesFromTheToken(t *testing.T) {
 	n := h.connect(t)
 	subscribe := func(id, token, claimedNamespace string) {
 		t.Helper()
-		n.send(t, chandlerv1.ConfigRequest_builder{
-			Subscribe: chandlerv1.Subscribe_builder{
+		n.send(t, stevedorev1.ConfigRequest_builder{
+			Subscribe: stevedorev1.Subscribe_builder{
 				SubscriptionId: proto.String(id),
 				Uri:            proto.String("file:///app.yaml"),
-				Workload: chandlerv1.Workload_builder{
+				Workload: stevedorev1.Workload_builder{
 					Namespace:           proto.String(claimedNamespace),
 					ServiceAccountToken: proto.String(token),
 				}.Build(),
@@ -505,7 +505,7 @@ func (h harness) cacheKeys() []string {
 
 // use subscribes to file:///<name>.yaml and has the provider emit content
 // for it, under the cache key /<name>.yaml.
-func (h harness) use(t *testing.T, n *node, name string, b *chandlerv1.Bundle) (admitted bool) {
+func (h harness) use(t *testing.T, n *node, name string, b *stevedorev1.Bundle) (admitted bool) {
 	t.Helper()
 	n.subscribe(t, name+"/0", "file:///"+name+".yaml", "")
 	watch := h.provider.expectWatch(t, "file:///"+name+".yaml")

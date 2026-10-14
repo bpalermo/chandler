@@ -47,12 +47,12 @@ func TestMetrics(t *testing.T) {
 	// Four pods, one resource, a rollout in progress, the provider connected;
 	// four ACKs of v1 and two of v2.
 	want := map[string]int64{
-		"chandler.server.subscriptions":      4,
-		"chandler.server.watches":            1,
-		"chandler.server.provider.connected": 1,
-		"chandler.server.cache.keys":         1,
-		"chandler.server.rollouts":           1,
-		"chandler.server.acks":               6,
+		"stevedore.server.subscriptions":      4,
+		"stevedore.server.watches":            1,
+		"stevedore.server.provider.connected": 1,
+		"stevedore.server.cache.keys":         1,
+		"stevedore.server.rollouts":           1,
+		"stevedore.server.acks":               6,
 	}
 	waitFor(t, func() bool {
 		got := read()
@@ -65,17 +65,17 @@ func TestMetrics(t *testing.T) {
 	})
 	got := read()
 	for name, want := range map[string]int64{
-		"chandler.server.cache.uri_variants":       1,
-		"chandler.server.cache.uri_variants.limit": 16,
-		"chandler.server.cache.keys.limit":         10000,
-		"chandler.server.namespace_uris":           1,
-		"chandler.server.namespace_uris.limit":     1000,
+		"stevedore.server.cache.uri_variants":       1,
+		"stevedore.server.cache.uri_variants.limit": 16,
+		"stevedore.server.cache.keys.limit":         10000,
+		"stevedore.server.namespace_uris":           1,
+		"stevedore.server.namespace_uris.limit":     1000,
 	} {
 		if got[name] != want {
 			t.Errorf("%s = %d, want %d", name, got[name], want)
 		}
 	}
-	if got := read(); got["chandler.server.cache.bytes"] <= 0 {
-		t.Errorf("cache bytes = %d, want what the stable version weighs", got["chandler.server.cache.bytes"])
+	if got := read(); got["stevedore.server.cache.bytes"] <= 0 {
+		t.Errorf("cache bytes = %d, want what the stable version weighs", got["stevedore.server.cache.bytes"])
 	}
 }

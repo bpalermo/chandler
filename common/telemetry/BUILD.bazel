@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "telemetry",
     srcs = ["telemetry.go"],
-    importpath = "github.com/bpalermo/chandler/common/telemetry",
+    importpath = "github.com/bpalermo/stevedore/common/telemetry",
     visibility = ["//visibility:public"],
     deps = [
         "@io_opentelemetry_go_otel//:otel",

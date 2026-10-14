@@ -16,7 +16,7 @@ const (
 	keepaliveTimeout = 10 * time.Second
 
 	// maxAgeGrace is how long streams get to finish after a connection
-	// reached its maximum age. Chandler's streams never finish; this is how
+	// reached its maximum age. Stevedore's streams never finish; this is how
 	// long until they are cut.
 	maxAgeGrace = 5 * time.Second
 )

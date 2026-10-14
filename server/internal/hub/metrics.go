@@ -6,7 +6,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/bpalermo/chandler/common/telemetry"
+	"github.com/bpalermo/stevedore/common/telemetry"
 )
 
 // metrics is what the hub counts as it goes. What can be read off its state
@@ -24,50 +24,50 @@ func providerAttr(name string) metric.MeasurementOption {
 func (h *Hub) instrument() {
 	m := telemetry.Meter()
 	h.metrics = metrics{
-		acks: telemetry.Must(m.Int64Counter("chandler.server.acks",
+		acks: telemetry.Must(m.Int64Counter("stevedore.server.acks",
 			metric.WithDescription("Updates drivers reported written."))),
-		nacks: telemetry.Must(m.Int64Counter("chandler.server.nacks",
+		nacks: telemetry.Must(m.Int64Counter("stevedore.server.nacks",
 			metric.WithDescription("Updates drivers could not write, by gRPC code."))),
-		appReports: telemetry.Must(m.Int64Counter("chandler.server.app_reports",
+		appReports: telemetry.Must(m.Int64Counter("stevedore.server.app_reports",
 			metric.WithDescription("Verdicts of applications on versions they were given, by state."))),
-		adopted: telemetry.Must(m.Int64Counter("chandler.server.peer.adopted",
+		adopted: telemetry.Must(m.Int64Counter("stevedore.server.peer.adopted",
 			metric.WithDescription("Cache entries copied from another replica."))),
-		resent: telemetry.Must(m.Int64Counter("chandler.server.resent",
+		resent: telemetry.Must(m.Int64Counter("stevedore.server.resent",
 			metric.WithDescription("Updates sent a second time because the driver did not answer the first."))),
-		evictions: telemetry.Must(m.Int64Counter("chandler.server.cache.evictions",
+		evictions: telemetry.Must(m.Int64Counter("stevedore.server.cache.evictions",
 			metric.WithDescription("Cache entries nothing used that were dropped, by reason: unused for the grace period, or to stay within a quota."))),
-		refusedBundles: telemetry.Must(m.Int64Counter("chandler.server.provider.refused",
+		refusedBundles: telemetry.Must(m.Int64Counter("stevedore.server.provider.refused",
 			metric.WithDescription("Bundles refused to a provider, by gRPC code."))),
 	}
 
-	subscriptions := telemetry.Must(m.Int64ObservableGauge("chandler.server.subscriptions",
+	subscriptions := telemetry.Must(m.Int64ObservableGauge("stevedore.server.subscriptions",
 		metric.WithDescription("Subscriptions of pod volumes served by this replica.")))
-	watches := telemetry.Must(m.Int64ObservableGauge("chandler.server.watches",
+	watches := telemetry.Must(m.Int64ObservableGauge("stevedore.server.watches",
 		metric.WithDescription("Resources this replica watches at a provider.")))
-	connected := telemetry.Must(m.Int64ObservableGauge("chandler.server.provider.connected",
+	connected := telemetry.Must(m.Int64ObservableGauge("stevedore.server.provider.connected",
 		metric.WithDescription("1 while this replica has a stream to the provider, else 0.")))
-	keys := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.keys",
+	keys := telemetry.Must(m.Int64ObservableGauge("stevedore.server.cache.keys",
 		metric.WithDescription("Cache keys held, against the per-provider quota.")))
-	bytes := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.bytes",
+	bytes := telemetry.Must(m.Int64ObservableGauge("stevedore.server.cache.bytes",
 		metric.WithDescription("Bytes of content held, against the per-provider quota: every version of every key, shared content counted once."), metric.WithUnit("By")))
-	orphaned := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.orphaned_keys",
+	orphaned := telemetry.Must(m.Int64ObservableGauge("stevedore.server.cache.orphaned_keys",
 		metric.WithDescription("Keys whose resource was deleted at the origin and is served from the cache.")))
-	rollouts := telemetry.Must(m.Int64ObservableGauge("chandler.server.rollouts",
+	rollouts := telemetry.Must(m.Int64ObservableGauge("stevedore.server.rollouts",
 		metric.WithDescription("Keys with a version released to a share of their subscribers only.")))
 
-	keysLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.keys.limit",
-		metric.WithDescription("The most cache keys one provider may issue: the quota chandler.server.cache.keys is held against.")))
-	bytesLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.bytes.limit",
-		metric.WithDescription("The most content held for one provider: the quota chandler.server.cache.bytes is held against."), metric.WithUnit("By")))
-	variants := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.uri_variants",
+	keysLimit := telemetry.Must(m.Int64ObservableGauge("stevedore.server.cache.keys.limit",
+		metric.WithDescription("The most cache keys one provider may issue: the quota stevedore.server.cache.keys is held against.")))
+	bytesLimit := telemetry.Must(m.Int64ObservableGauge("stevedore.server.cache.bytes.limit",
+		metric.WithDescription("The most content held for one provider: the quota stevedore.server.cache.bytes is held against."), metric.WithUnit("By")))
+	variants := telemetry.Must(m.Int64ObservableGauge("stevedore.server.cache.uri_variants",
 		metric.WithDescription("The most cache keys any one URI of the provider resolves to; a provider varying on too much shows here before it hits the limit.")))
-	variantsLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.cache.uri_variants.limit",
+	variantsLimit := telemetry.Must(m.Int64ObservableGauge("stevedore.server.cache.uri_variants.limit",
 		metric.WithDescription("The most cache keys one URI may resolve to.")))
-	namespaceURIs := telemetry.Must(m.Int64ObservableGauge("chandler.server.namespace_uris",
+	namespaceURIs := telemetry.Must(m.Int64ObservableGauge("stevedore.server.namespace_uris",
 		metric.WithDescription("The most distinct URIs the pods of any one namespace are subscribed to.")))
-	namespaceURIsLimit := telemetry.Must(m.Int64ObservableGauge("chandler.server.namespace_uris.limit",
+	namespaceURIsLimit := telemetry.Must(m.Int64ObservableGauge("stevedore.server.namespace_uris.limit",
 		metric.WithDescription("The most distinct URIs the pods of one namespace may be subscribed to.")))
-	syncAge := telemetry.Must(m.Float64ObservableGauge("chandler.server.peer.sync_age",
+	syncAge := telemetry.Must(m.Float64ObservableGauge("stevedore.server.peer.sync_age",
 		metric.WithDescription("Time since this replica last synced its cache with a peer; not reported before the first sync."),
 		metric.WithUnit("s")))
 	telemetry.Must(m.RegisterCallback(func(_ context.Context, o metric.Observer) error {

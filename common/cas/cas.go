@@ -26,8 +26,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
 const (
@@ -68,7 +68,7 @@ func Open(dir string) (*Store, error) {
 
 // Put stores a bundle under version. The bundle must already be verified
 // against it.
-func (s *Store) Put(version string, b *chandlerv1.Bundle) error {
+func (s *Store) Put(version string, b *stevedorev1.Bundle) error {
 	name, err := manifestName(version)
 	if err != nil {
 		return err
@@ -94,7 +94,7 @@ func (s *Store) Put(version string, b *chandlerv1.Bundle) error {
 
 // Get returns the bundle with the given version, verified against it. The
 // error wraps ErrNotFound when the store does not hold it intact.
-func (s *Store) Get(version string) (*chandlerv1.Bundle, error) {
+func (s *Store) Get(version string) (*stevedorev1.Bundle, error) {
 	name, err := manifestName(version)
 	if err != nil {
 		return nil, err
@@ -106,7 +106,7 @@ func (s *Store) Get(version string) (*chandlerv1.Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, version)
 	}
-	files := make([]*chandlerv1.File, 0, len(m.Files))
+	files := make([]*stevedorev1.File, 0, len(m.Files))
 	for _, mf := range m.Files {
 		if len(mf.Blob) != sha256.Size*2 {
 			return nil, fmt.Errorf("%w: %s: damaged manifest", ErrNotFound, version)
@@ -115,13 +115,13 @@ func (s *Store) Get(version string) (*chandlerv1.Bundle, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s: missing blob", ErrNotFound, version)
 		}
-		f := chandlerv1.File_builder{Path: proto.String(mf.Path), Content: content}
+		f := stevedorev1.File_builder{Path: proto.String(mf.Path), Content: content}
 		if mf.HasMode {
 			f.Mode = proto.Uint32(mf.Mode)
 		}
 		files = append(files, f.Build())
 	}
-	b := chandlerv1.Bundle_builder{Files: files}.Build()
+	b := stevedorev1.Bundle_builder{Files: files}.Build()
 	// Disks rot: never hand out bytes that are not the version asked for.
 	if !bundle.Verify(b, version) {
 		return nil, fmt.Errorf("%w: %s: content does not match", ErrNotFound, version)

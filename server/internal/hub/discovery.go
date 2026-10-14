@@ -9,13 +9,13 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/queue"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/queue"
 )
 
-// StreamConfigs implements chandlerv1.ConfigDiscoveryServiceServer: one stream
+// StreamConfigs implements stevedorev1.ConfigDiscoveryServiceServer: one stream
 // per node, carrying every subscription on that node.
-func (h *Hub) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_StreamConfigsServer) error {
+func (h *Hub) StreamConfigs(stream stevedorev1.ConfigDiscoveryService_StreamConfigsServer) error {
 	first, err := stream.Recv()
 	if err != nil {
 		return err
@@ -26,7 +26,7 @@ func (h *Hub) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_StreamConfi
 	sess := &session{
 		node:    first.GetHello().GetNodeId(),
 		cluster: first.GetHello().GetCluster(),
-		out:     queue.New[*chandlerv1.ConfigResponse](),
+		out:     queue.New[*stevedorev1.ConfigResponse](),
 		subs:    make(map[string]*subscription),
 	}
 	log := h.log.With("node", sess.node)
@@ -34,8 +34,8 @@ func (h *Hub) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_StreamConfi
 	defer log.Info("driver disconnected")
 	defer h.closeSession(sess)
 
-	sess.out.Push(chandlerv1.ConfigResponse_builder{
-		Hello: chandlerv1.ServerHello_builder{
+	sess.out.Push(stevedorev1.ConfigResponse_builder{
+		Hello: stevedorev1.ServerHello_builder{
 			ServerId:       proto.String(h.id),
 			MaxBundleBytes: proto.Uint64(h.limits.MaxBytes),
 		}.Build(),

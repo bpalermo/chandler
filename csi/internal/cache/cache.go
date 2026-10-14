@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/cas"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/cas"
 )
 
 const (
@@ -77,7 +77,7 @@ func Open(dir string, grace time.Duration) (*Cache, error) {
 
 // Put stores a bundle as the newest version of a key. The bundle must already
 // be verified against version.
-func (c *Cache) Put(key, version string, b *chandlerv1.Bundle) error {
+func (c *Cache) Put(key, version string, b *stevedorev1.Bundle) error {
 	if err := c.store.Put(version, b); err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func (c *Cache) Use(key, version string) error {
 
 // Get returns the bundle with the given version, verified against it. The
 // error wraps ErrNotCached when the cache does not hold it intact.
-func (c *Cache) Get(version string) (*chandlerv1.Bundle, error) {
+func (c *Cache) Get(version string) (*stevedorev1.Bundle, error) {
 	return c.store.Get(version)
 }
 

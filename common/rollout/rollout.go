@@ -3,7 +3,7 @@
 // share grows over time.
 //
 // A rollout exists so that a new version does not reach every pod at the same
-// moment. Nothing in Chandler can judge whether a version is good, since the
+// moment. Nothing in Stevedore can judge whether a version is good, since the
 // content is opaque: the ramp buys time for people and their monitoring to
 // notice a bad one before it is everywhere.
 package rollout

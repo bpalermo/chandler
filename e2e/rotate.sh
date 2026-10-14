@@ -10,9 +10,9 @@ cd "$(dirname "$0")/.."
 helm="$1" chart="$2"
 shift 2
 
-ns=chandler-system
+ns=stevedore-system
 cert() { kubectl get secret "$1" -n "${ns}" -o jsonpath='{.data.tls\.crt}' | sha256sum | cut -d' ' -f1; }
-restarts() { kubectl get pods -n "${ns}" -l app.kubernetes.io/name=chandler -o jsonpath='{range .items[*]}{.metadata.uid}{"="}{range .status.containerStatuses[*]}{.restartCount}{","}{end}{" "}{end}'; }
+restarts() { kubectl get pods -n "${ns}" -l app.kubernetes.io/name=stevedore -o jsonpath='{range .items[*]}{.metadata.uid}{"="}{range .status.containerStatuses[*]}{.restartCount}{","}{end}{" "}{end}'; }
 # What every server replica presents on the wire, as curl sees it: each is
 # asked by its own address, since the Service would answer for only one.
 served() {
@@ -40,8 +40,8 @@ kubectl run rotation-probe -n "${ns}" --restart=Never \
 trap 'kubectl delete pod rotation-probe -n "${ns}" --ignore-not-found --wait=false' EXIT
 kubectl wait pod/rotation-probe -n "${ns}" --for=condition=Ready --timeout=120s
 
-ca_before="$(cert chandler-ca)"
-leaf_before="$(cert chandler-server-tls)"
+ca_before="$(cert stevedore-ca)"
+leaf_before="$(cert stevedore-server-tls)"
 served_before="$(served)"
 restarts_before="$(restarts)"
 if [ -z "${served_before}" ] || grep -q unreachable <<<"${served_before}"; then
@@ -50,8 +50,8 @@ if [ -z "${served_before}" ] || grep -q unreachable <<<"${served_before}"; then
 fi
 
 # An upgrade that changes nothing must change no certificate.
-"${helm}" upgrade chandler "${chart}" -n "${ns}" --reuse-values --wait --timeout 300s >/dev/null
-if [ "$(cert chandler-server-tls)" != "${leaf_before}" ]; then
+"${helm}" upgrade stevedore "${chart}" -n "${ns}" --reuse-values --wait --timeout 300s >/dev/null
+if [ "$(cert stevedore-server-tls)" != "${leaf_before}" ]; then
 	echo "rotate.sh: an upgrade replaced a certificate that was nowhere near expiring" >&2
 	exit 1
 fi
@@ -59,13 +59,13 @@ fi
 # One that finds every certificate inside its renewal window must renew them,
 # under the same authority. A second apart, so the new expiry differs.
 sleep 2
-"${helm}" upgrade chandler "${chart}" -n "${ns}" --reuse-values \
+"${helm}" upgrade stevedore "${chart}" -n "${ns}" --reuse-values \
 	--set tls.generated.renewBeforeDays=100000 --wait --timeout 300s >/dev/null
-if [ "$(cert chandler-server-tls)" = "${leaf_before}" ]; then
+if [ "$(cert stevedore-server-tls)" = "${leaf_before}" ]; then
 	echo "rotate.sh: the certificate was not renewed inside its renewal window" >&2
 	exit 1
 fi
-if [ "$(cert chandler-ca)" != "${ca_before}" ]; then
+if [ "$(cert stevedore-ca)" != "${ca_before}" ]; then
 	echo "rotate.sh: renewing a certificate replaced the authority" >&2
 	exit 1
 fi

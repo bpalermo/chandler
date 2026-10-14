@@ -7,11 +7,11 @@
 # at the old registry. So this asserts, on every change:
 #
 #   1. scripts/registry.sh parses the setting.
-#   2. charts/chandler/values.yaml takes the CSI repository and digest from the
+#   2. charts/stevedore/values.yaml takes the CSI repository and digest from the
 #      //csi:image_push target (which gets them from registry.bzl) instead of
 #      spelling them out. The values are data, so they cannot be Starlark; the
 #      package-time substitution is what derives them, and
-#      //charts/chandler:pin_test asserts the result equals
+#      //charts/stevedore:pin_test asserts the result equals
 #      image_reference("csi").
 #   3. No tracked file outside the allow-list contains `<host>/<namespace>`,
 #      computed from the setting, not typed here.
@@ -49,7 +49,7 @@ echo "setting: ${host}/${namespace}"
 esc() { printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|/]/\\&/g'; }
 
 # --- 2. the chart's image defaults are derived --------------------------------
-values=charts/chandler/values.yaml
+values=charts/stevedore/values.yaml
 for target in //csi:image_push //server:image_push //providers/file:image_push //providers/s3:image_push; do
 	t="$(esc "$target")"
 	n_repo="$(grep -cE "^[[:space:]]*repository:[[:space:]]*\"\{@${t}\.repository\}\"[[:space:]]*\$" "$values" || true)"

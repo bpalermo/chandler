@@ -1,5 +1,5 @@
 # What buf checks in the protos. buf does not compile or generate anything
-# here: Bazel does. //api/chandler/v1:chandlerv1_proto_lint_test runs the lint
+# here: Bazel does. //api/stevedore/v1:stevedorev1_proto_lint_test runs the lint
 # rules and scripts/proto-breaking.sh the breaking ones.
 version: v2
 lint:
@@ -23,14 +23,14 @@ breaking:
     # encoding, because applications use app.proto as JSON.
     - WIRE_JSON
   ignore_only:
-    # Between Chandler's own components only the binary encoding is used, so
+    # Between Stevedore's own components only the binary encoding is used, so
     # there a field or an enum value may be renamed: only the generated code
     # sees its name. In app.proto the names are the JSON an application
     # writes, and stay checked.
     FIELD_SAME_JSON_NAME: &internal
-      - chandler/v1/common.proto
-      - chandler/v1/discovery.proto
-      - chandler/v1/peer.proto
-      - chandler/v1/provider.proto
+      - stevedore/v1/common.proto
+      - stevedore/v1/discovery.proto
+      - stevedore/v1/peer.proto
+      - stevedore/v1/provider.proto
     FIELD_SAME_NAME: *internal
     ENUM_VALUE_SAME_NAME: *internal

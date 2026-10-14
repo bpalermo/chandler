@@ -9,14 +9,14 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
-func oneFile(content string) (*chandlerv1.Bundle, string) {
-	b := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
-		chandlerv1.File_builder{Path: proto.String("dir/app.yaml"), Mode: proto.Uint32(0o640), Content: []byte(content)}.Build(),
-		chandlerv1.File_builder{Path: proto.String("default-mode"), Content: []byte("shared")}.Build(),
+func oneFile(content string) (*stevedorev1.Bundle, string) {
+	b := stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
+		stevedorev1.File_builder{Path: proto.String("dir/app.yaml"), Mode: proto.Uint32(0o640), Content: []byte(content)}.Build(),
+		stevedorev1.File_builder{Path: proto.String("default-mode"), Content: []byte("shared")}.Build(),
 	}}.Build()
 	return b, bundle.Version(b)
 }

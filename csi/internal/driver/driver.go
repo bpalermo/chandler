@@ -1,4 +1,4 @@
-// Package driver implements the CSI Identity and Node services of the Chandler
+// Package driver implements the CSI Identity and Node services of the Stevedore
 // driver. It serves ephemeral inline volumes only: there is no controller, no
 // attach and no staging.
 //
@@ -28,18 +28,18 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/csi/internal/appack"
-	"github.com/bpalermo/chandler/csi/internal/client"
-	"github.com/bpalermo/chandler/csi/internal/events"
-	"github.com/bpalermo/chandler/csi/internal/mount"
-	"github.com/bpalermo/chandler/csi/internal/volume"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/csi/internal/appack"
+	"github.com/bpalermo/stevedore/csi/internal/client"
+	"github.com/bpalermo/stevedore/csi/internal/events"
+	"github.com/bpalermo/stevedore/csi/internal/mount"
+	"github.com/bpalermo/stevedore/csi/internal/volume"
 )
 
 const (
 	// Name is the CSI driver name pods refer to. The domain is a placeholder
 	// (see docs/design.md).
-	Name = "csi.chandler.dev"
+	Name = "config.csi.stevedore.dev"
 
 	// ephemeralKey is set by kubelet in the volume context of inline volumes.
 	ephemeralKey = "csi.storage.k8s.io/ephemeral"
@@ -56,7 +56,7 @@ const (
 
 	// DefaultTokenAudience is the audience of the token kubelet is asked
 	// for, and the server expects.
-	DefaultTokenAudience = "chandler"
+	DefaultTokenAudience = "stevedore"
 
 	volumesDir = "volumes"
 
@@ -82,7 +82,7 @@ type Subscriber interface {
 	// Unsubscribe ends a subscription.
 	Unsubscribe(id string)
 	// Report relays what an application said about a version.
-	Report(*chandlerv1.AppReport)
+	Report(*stevedorev1.AppReport)
 	// Err says why the server is unreachable, or nil when it is not.
 	Err() error
 }
@@ -495,7 +495,7 @@ func (d *Driver) subscribe(v *volume.Volume) {
 	d.published[meta.VolumeID] = v
 	d.mu.Unlock()
 
-	workload := chandlerv1.Workload_builder{
+	workload := stevedorev1.Workload_builder{
 		Namespace:      proto.String(meta.Workload.Namespace),
 		PodName:        proto.String(meta.Workload.PodName),
 		PodUid:         proto.String(meta.Workload.PodUID),
@@ -536,14 +536,14 @@ func (d *Driver) serveAppAck(v *volume.Volume) error {
 					"the application has not reported whether it loaded the new version of source %q (%s) within %s",
 					source.Name, source.URI, v.Meta().Spec.AppAckTimeout))
 			}
-			state := chandlerv1.AppReport_STATE_LOADED
+			state := stevedorev1.AppReport_STATE_LOADED
 			switch o.State {
 			case volume.StateRejected:
-				state = chandlerv1.AppReport_STATE_REJECTED
+				state = stevedorev1.AppReport_STATE_REJECTED
 			case volume.StateOverdue:
-				state = chandlerv1.AppReport_STATE_OVERDUE
+				state = stevedorev1.AppReport_STATE_OVERDUE
 			}
-			report := chandlerv1.AppReport_builder{
+			report := stevedorev1.AppReport_builder{
 				SubscriptionId: proto.String(v.SubscriptionID(o.Source)),
 				Version:        proto.String(o.Version),
 				State:          state.Enum(),
@@ -609,7 +609,7 @@ func podOf(v *volume.Volume) events.Pod {
 	return events.Pod{Namespace: w.Namespace, Name: w.PodName, UID: w.PodUID}
 }
 
-func (h sourceHandler) Apply(update *chandlerv1.ConfigUpdate) error {
+func (h sourceHandler) Apply(update *stevedorev1.ConfigUpdate) error {
 	start := time.Now()
 	err := h.volume.Apply(h.index, update)
 	h.metrics.applies.Record(context.Background(), since(start), outcome(err))

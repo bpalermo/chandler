@@ -10,23 +10,23 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/rollout"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/rollout"
 )
 
 const (
-	driverName      = "csi.chandler.dev"
-	driverNamespace = "chandler-system"
+	driverName      = "config.csi.stevedore.dev"
+	driverNamespace = "stevedore-system"
 
 	// The ConfigMap the chart's file provider serves; e2e/run.sh creates it
 	// and points the provider at it.
-	configMap = "chandler-e2e-config"
+	configMap = "stevedore-e2e-config"
 
 	// busybox 1.37, pinned so the suite does not depend on a moving tag.
 	busybox = "docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e"
 
-	mountPath = "/etc/chandler"
+	mountPath = "/etc/stevedore"
 
 	// The config server's replica count in e2e/values.yaml.
 	serverReplicas = 2
@@ -47,7 +47,7 @@ func scaleDeployment(ctx context.Context, name, component string, replicas int) 
 	return err
 }
 
-// consumerPod is a pod that mounts a Chandler inline volume with the given
+// consumerPod is a pod that mounts a Stevedore inline volume with the given
 // sources, the YAML list a pod author writes, and nothing else: the
 // failurePolicy is the default, UseCached.
 func consumerPod(name string, readOnly bool, sources string) string {
@@ -112,7 +112,7 @@ spec:
   volumes:
     - name: state
       hostPath:
-        path: /var/lib/chandler
+        path: /var/lib/stevedore
 `
 
 // publish puts a file into the origin the file provider serves: a key of the
@@ -130,9 +130,9 @@ func publish(ctx context.Context, t *testing.T, key, content string) {
 	mustKubectl(ctx, t, "patch", "configmap", configMap, "-n", driverNamespace, "--type=merge", "-p", string(patch))
 	// Both providers that serve the ConfigMap: the chart's, and the one with
 	// a small quota (e2e/small-provider.yaml), where it is deployed.
-	for _, selector := range []string{"app.kubernetes.io/component=provider-file", "app.kubernetes.io/name=chandler-provider-small"} {
+	for _, selector := range []string{"app.kubernetes.io/component=provider-file", "app.kubernetes.io/name=stevedore-provider-small"} {
 		mustKubectl(ctx, t, "annotate", "pods", "-n", driverNamespace, "-l", selector,
-			"--overwrite", fmt.Sprintf("e2e.chandler.dev/published=%d", time.Now().UnixNano()))
+			"--overwrite", fmt.Sprintf("e2e.stevedore.dev/published=%d", time.Now().UnixNano()))
 	}
 }
 
@@ -158,7 +158,7 @@ func TestDriverRegistersWithKubelet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	mustKubectl(ctx, t, "rollout", "status", "daemonset/chandler-csi", "-n", driverNamespace, "--timeout=150s")
+	mustKubectl(ctx, t, "rollout", "status", "daemonset/stevedore-csi", "-n", driverNamespace, "--timeout=150s")
 
 	// The registrar sidecar hands the driver's socket to kubelet, which then
 	// lists the driver on the node's CSINode object.
@@ -278,7 +278,7 @@ func TestUpdatesSurviveRestarts(t *testing.T) {
 	}
 	expectFile(ctx, t, ns, "consumer", "app.yaml", "v1")
 
-	for i, workload := range []string{"daemonset/chandler-csi", "deployment/chandler-server", "deployment/chandler-provider-file"} {
+	for i, workload := range []string{"daemonset/stevedore-csi", "deployment/stevedore-server", "deployment/stevedore-provider-file"} {
 		mustKubectl(ctx, t, "rollout", "restart", workload, "-n", driverNamespace)
 		mustKubectl(ctx, t, "rollout", "status", workload, "-n", driverNamespace, "--timeout=180s")
 
@@ -374,7 +374,7 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	}
 
 	scale := func(ctx context.Context, replicas int) error {
-		return scaleDeployment(ctx, "chandler-server", "server", replicas)
+		return scaleDeployment(ctx, "stevedore-server", "server", replicas)
 	}
 	t.Cleanup(func() {
 		// Whatever happened, the next test needs a server.
@@ -475,7 +475,7 @@ func TestServerCacheServesThroughAProviderOutage(t *testing.T) {
 	mustKubectl(ctx, t, "delete", "pod", "first", "-n", ns, "--wait=true")
 
 	scale := func(ctx context.Context, replicas int) error {
-		return scaleDeployment(ctx, "chandler-provider-file", "provider-file", replicas)
+		return scaleDeployment(ctx, "stevedore-provider-file", "provider-file", replicas)
 	}
 	t.Cleanup(func() {
 		// Whatever happened, the next test needs a provider.
@@ -550,18 +550,18 @@ func TestServerCacheSurvivesARollingRestart(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
-		if err := scaleDeployment(ctx, "chandler-provider-file", "provider-file", 1); err != nil {
+		if err := scaleDeployment(ctx, "stevedore-provider-file", "provider-file", 1); err != nil {
 			t.Errorf("restoring the file provider: %v", err)
 		}
 	})
-	if err := scaleDeployment(ctx, "chandler-provider-file", "provider-file", 0); err != nil {
+	if err := scaleDeployment(ctx, "stevedore-provider-file", "provider-file", 0); err != nil {
 		t.Fatal(err)
 	}
 
 	before := mustKubectl(ctx, t, "get", "pods", "-n", driverNamespace,
 		"-l", "app.kubernetes.io/component=server", "-o", "jsonpath={.items[*].metadata.uid}")
-	mustKubectl(ctx, t, "rollout", "restart", "deployment/chandler-server", "-n", driverNamespace)
-	mustKubectl(ctx, t, "rollout", "status", "deployment/chandler-server", "-n", driverNamespace, "--timeout=240s")
+	mustKubectl(ctx, t, "rollout", "restart", "deployment/stevedore-server", "-n", driverNamespace)
+	mustKubectl(ctx, t, "rollout", "status", "deployment/stevedore-server", "-n", driverNamespace, "--timeout=240s")
 	// Wait for the old pods to be gone, so nothing below is served by one.
 	err := eventually(ctx, func() error {
 		after, err := kubectl(ctx, "get", "pods", "-n", driverNamespace,
@@ -608,8 +608,8 @@ func TestStagedRollout(t *testing.T) {
 	// The version of what is about to be published, as every component
 	// computes it: one file, named after the key, as kubelet writes a
 	// ConfigMap's files.
-	next := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
-		chandlerv1.File_builder{Path: proto.String(key), Mode: proto.Uint32(0o644), Content: []byte("v2")}.Build(),
+	next := stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
+		stevedorev1.File_builder{Path: proto.String(key), Mode: proto.Uint32(0o644), Content: []byte("v2")}.Build(),
 	}}.Build()
 	version := bundle.Version(next)
 

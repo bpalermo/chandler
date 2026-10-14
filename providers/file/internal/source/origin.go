@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/provider"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/uri"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/provider"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 // stableReads is how many times a resource is re-read while two consecutive
@@ -74,10 +74,10 @@ func (r resource) Fetch(_ context.Context, known string, limits bundle.Limits) (
 // readStable reads the resource until two consecutive reads agree, so that a
 // directory being rewritten is not emitted half old and half new. A directory
 // swapped atomically (a ConfigMap mount) agrees on the second read.
-func (r resource) readStable(reader Reader) (*chandlerv1.Bundle, time.Time, error) {
+func (r resource) readStable(reader Reader) (*stevedorev1.Bundle, time.Time, error) {
 	b, modified, err := reader.ReadStat(r.path)
 	for i := 0; err == nil && i < stableReads; i++ {
-		var again *chandlerv1.Bundle
+		var again *stevedorev1.Bundle
 		again, modified, err = reader.ReadStat(r.path)
 		if err != nil || bundle.Version(again) == bundle.Version(b) {
 			break

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploys SPIRE into the current cluster and registers Chandler's components,
+# Deploys SPIRE into the current cluster and registers Stevedore's components,
 # for the end-to-end suite's SPIFFE variant (see run.sh, E2E_TLS=spiffe).
 #
 # Each component is identified by the pod it runs in: the chart's namespace
@@ -30,10 +30,10 @@ register() {
 }
 
 # Every agent of this cluster, under one name the workloads can hang from.
-register spiffe://chandler.test/node -node -selector k8s_psat:cluster:chandler-e2e
+register spiffe://stevedore.test/node -node -selector k8s_psat:cluster:stevedore-e2e
 for component in csi server provider-file provider-s3; do
-	register "spiffe://chandler.test/chandler/${component}" \
-		-parentID spiffe://chandler.test/node \
-		-selector k8s:ns:chandler-system \
+	register "spiffe://stevedore.test/stevedore/${component}" \
+		-parentID spiffe://stevedore.test/node \
+		-selector k8s:ns:stevedore-system \
 		-selector "k8s:pod-label:app.kubernetes.io/component:${component}"
 done

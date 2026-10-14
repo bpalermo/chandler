@@ -1,18 +1,18 @@
-# Chandler: configuration delivery over CSI
+# Stevedore: configuration delivery over CSI
 
 Status: draft, 2026-10-12
 
 This document describes the target. What is built so far is listed under
 "Implementation status" at the end.
 
-Chandler mounts configuration files into pods through a Kubernetes CSI driver.
+Stevedore mounts configuration files into pods through a Kubernetes CSI driver.
 A pod names what it wants with URIs (`<provider-name>://...`); the driver
 subscribes to a config server, which sources the content from pluggable
 providers, caches it, rolls new versions out progressively, and pushes them to
 the node. The node replaces the files atomically and keeps the last known good
 version whenever anything upstream fails or a new version cannot be written.
 
-The wire contracts are in [`api/chandler/v1`](../api/chandler/v1):
+The wire contracts are in [`api/stevedore/v1`](../api/stevedore/v1):
 `discovery.proto` (driver ↔ server), `provider.proto` (server ↔ provider),
 `peer.proto` (server ↔ server), `app.proto` (application ↔ driver),
 `common.proto` (shared types). This document explains the design around them.
@@ -47,11 +47,11 @@ Non-goals
   the provider's concern before it emits and the application's after.
 - How configuration gets into a provider. Authoring, uploading and
   validating config happen on the provider's side of the `ConfigProvider`
-  interface. Chandler defines how config is delivered, not how it is
+  interface. Stevedore defines how config is delivered, not how it is
   published; each provider must offer its users a safe way to do that.
 - Large artifacts. A bundle is capped (default 1 MiB, hard cap 3 MiB) and sent
   in one gRPC message; there is no chunking.
-- Secrets management. Content can be marked `no_store`, but Chandler is not a
+- Secrets management. Content can be marked `no_store`, but Stevedore is not a
   replacement for a secrets driver.
 - Templating or merging config on the node. Providers produce final bytes.
 - Telling the application to reload. Apps watch the volume, exactly as they do
@@ -62,12 +62,12 @@ Non-goals
 ```mermaid
 flowchart LR
   subgraph node["Node (DaemonSet)"]
-    kubelet -- "CSI NodePublish / NodeUnpublish" --> driver["chandler-csi"]
+    kubelet -- "CSI NodePublish / NodeUnpublish" --> driver["stevedore-csi"]
     driver --- ncache[("node cache<br/>CAS + aliases")]
     driver -- "bind mount (ro)" --> pod["pod volume"]
   end
   subgraph cp["Control plane (Deployment, N replicas)"]
-    server["chandler-server"] --- scache[("server cache<br/>emptyDir: CAS + key index")]
+    server["stevedore-server"] --- scache[("server cache<br/>emptyDir: CAS + key index")]
     server <-- "PeerSync" --> peers["other replicas"]
   end
   driver <-- "ConfigDiscoveryService<br/>bidi stream, ACK/NACK" --> server
@@ -78,8 +78,8 @@ flowchart LR
 
 | Component | Runs as | Responsibility |
 |---|---|---|
-| `chandler-csi` | DaemonSet, CSI node plugin (ephemeral inline volumes) | Mount volumes, hold one stream to the server, atomically write updates, ACK/NACK, node cache |
-| `chandler-server` | Deployment, several replicas, cache on `emptyDir` | Authorise subscriptions, coalesce them into provider watches, cache and replicate the cache to peers, decide which version each pod gets (rollouts), push |
+| `stevedore-csi` | DaemonSet, CSI node plugin (ephemeral inline volumes) | Mount volumes, hold one stream to the server, atomically write updates, ACK/NACK, node cache |
+| `stevedore-server` | Deployment, several replicas, cache on `emptyDir` | Authorise subscriptions, coalesce them into provider watches, cache and replicate the cache to peers, decide which version each pod gets (rollouts), push |
 | Providers | In-process (built-in) or separate gRPC services | Resolve a URI to a bundle, issue its cache key and revision, push changes |
 
 Each cluster runs its own set of server replicas. A provider may be shared by
@@ -95,7 +95,7 @@ origin → server cache → node cache → the volume itself (which is never emp
 volumes:
   - name: config
     csi:
-      driver: csi.chandler.dev        # placeholder domain
+      driver: config.csi.stevedore.dev        # placeholder domain
       readOnly: true
       volumeAttributes:
         sources: |
@@ -129,7 +129,7 @@ fragment, reject userinfo.
 
 The mapping to HTTP caching is direct:
 
-| HTTP | Chandler |
+| HTTP | Stevedore |
 |---|---|
 | Request URL | Canonical URI |
 | `Vary` | `ProviderHello.vary_on`: subscriber attributes the content may depend on |
@@ -199,8 +199,8 @@ one source of one pod volume: `(subscription_id, uri, workload)`.
 
 ```mermaid
 sequenceDiagram
-  participant D as chandler-csi
-  participant S as chandler-server
+  participant D as stevedore-csi
+  participant S as stevedore-server
   D->>S: NodeHello
   S->>D: ServerHello
   D->>S: Subscribe(sub=A, uri, workload, applied="", cached=[])
@@ -258,7 +258,7 @@ a failed write for one pod's source must not affect any other pod on the node.
 State lives under a hostPath so mounts and cache survive driver restarts:
 
 ```
-/var/lib/chandler/
+/var/lib/stevedore/
   cache/                              node cache, node-wide
     blobs/sha256/<aa>/<digest>        file contents, content-addressed
     manifests/<digest>.json           one bundle: its files and the blob of each
@@ -271,8 +271,8 @@ State lives under a hostPath so mounts and cache survive driver restarts:
       ..data -> ..2026_10_12_07_51_00.123
       app.yaml -> ..data/app.yaml
       flags    -> ..data/flags
-      ..chandler.json -> ..data/..chandler.json   only with appAck
-      ..chandler.sock                             only with appAck
+      ..stevedore.json -> ..data/..stevedore.json   only with appAck
+      ..stevedore.sock                             only with appAck
 ```
 
 Applying an update, per subscription:
@@ -323,8 +323,8 @@ A volume opts in with the attribute `appAck: "true"`. The driver then adds two
 entries at the volume root:
 
 ```
-..chandler.json -> ..data/..chandler.json    manifest of the current generation
-..chandler.sock                              Unix socket served by the driver
+..stevedore.json -> ..data/..stevedore.json    manifest of the current generation
+..stevedore.sock                              Unix socket served by the driver
 ```
 
 **Manifest.** Written into every generation directory, so it is swapped
@@ -345,7 +345,7 @@ source's `name` comes from the volume attributes and defaults to its `path`.
 `generation` identifies this exact combination of source versions.
 
 **Socket.** The driver serves `ApplicationService`
-([`app.proto`](../api/chandler/v1/app.proto)) on the socket. The proto is the
+([`app.proto`](../api/stevedore/v1/app.proto)) on the socket. The proto is the
 contract: the manifest file and every request and response are its messages.
 The service is reachable in two ways on the same socket, told apart by the
 `Content-Type` of the request:
@@ -386,8 +386,8 @@ of it, or for individual sources:
 ```
 
 ```
-curl --unix-socket /etc/payments/..chandler.sock \
-  -d '{"generation":"g-5d41402abc4b2a76","state":"STATE_LOADED"}' http://chandler/v1/reports
+curl --unix-socket /etc/payments/..stevedore.sock \
+  -d '{"generation":"g-5d41402abc4b2a76","state":"STATE_LOADED"}' http://stevedore/v1/reports
 ```
 
 - With `sources`, only the listed sources are affected; the others stay
@@ -430,7 +430,7 @@ after a driver restart.
 Verdicts are kept in `meta.json`, and the driver re-creates the sockets when
 it restarts. The driver binds through a directory file descriptor, so the
 socket's long host path does not hit the 108-byte limit; inside the container
-the mount path plus `/..chandler.sock` must fit in it. As with updates, a
+the mount path plus `/..stevedore.sock` must fit in it. As with updates, a
 `subPath` mount sees neither the manifest nor the socket.
 
 ### Mounting
@@ -481,7 +481,7 @@ attributes)`.
 
 ```mermaid
 sequenceDiagram
-  participant S as chandler-server
+  participant S as stevedore-server
   participant P as provider
   S->>P: WatcherHello(limits)
   P->>S: ProviderHello(name, vary_on, default_cache_control)
@@ -504,7 +504,7 @@ sequenceDiagram
   owns the path by which config enters its store (an upload API, a review
   gate, a signing step) and refuses invalid config there, so that nothing
   invalid is ever stored, let alone emitted. That path is entirely the
-  provider's; it is not part of Chandler and does not appear in these
+  provider's; it is not part of Stevedore and does not appear in these
   protocols.
 - `Feedback` tells the provider how a revision fares on the pods, which an
   ACK cannot know yet; see section 8.
@@ -592,7 +592,7 @@ cache is small by construction, so replicas keep each other's copies instead.
 ### Peer sync
 
 Replicas find each other through a headless Service and speak `PeerSync`
-([`peer.proto`](../api/chandler/v1/peer.proto)).
+([`peer.proto`](../api/stevedore/v1/peer.proto)).
 
 - **Warm-up.** A starting replica lists the keys of every ready peer and
   fetches every bundle it lacks before it reports ready (for at most a
@@ -643,7 +643,7 @@ ones.
 
 The purpose of a rollout is that a new version does not reach every pod at the
 same moment. A new version is released to a growing share of its subscribers
-over time. Because the content is opaque, nothing in Chandler can judge
+over time. Because the content is opaque, nothing in Stevedore can judge
 whether a version is good: the ramp buys time for people and their monitoring
 to notice a bad one and stop it before it is everywhere.
 
@@ -670,7 +670,7 @@ the server holds it, and replicas copy it from each other.
 ```mermaid
 sequenceDiagram
   participant P as provider
-  participant S as chandler-server
+  participant S as stevedore-server
   P->>S: ResourceUpdate(r2, bundle, rollout 1%)
   Note over S: pods in the 1% get r2, the rest keep r1
   S-->>P: Feedback(r2, assigned 3, written 3)
@@ -742,8 +742,8 @@ any state:
   on it. A hold is released only after the reports have been clear for 30
   seconds: they are a snapshot, and a subscription is briefly nowhere while
   its driver reconnects.
-- An S3 object can carry its own ramp in its metadata (`chandler-rollout`) and
-  be held at a share (`chandler-rollout-hold: "10"`).
+- An S3 object can carry its own ramp in its metadata (`stevedore-rollout`) and
+  be held at a share (`stevedore-rollout-hold: "10"`).
 
 The reference ramp has limits a production provider would not: time spent held
 still counts toward the ramp, a hold on refusals is forgotten when the
@@ -751,16 +751,16 @@ provider restarts until the next feedback arrives, and a file provider serving
 a ConfigMap restarts the clock of every key when any key changes, because
 kubelet rewrites them all (the share never shrinks, so this only delays).
 
-**Health is the ramp owner's concern.** Chandler reports what it can observe:
+**Health is the ramp owner's concern.** Stevedore reports what it can observe:
 whether the files were written and, with application acknowledgement, whether
 the application loaded them. For a pod without it, a configuration that is
 well-formed but makes the application crash or lose readiness is written
-successfully, and nothing in Chandler holds the ramp. Chandler does not watch
+successfully, and nothing in Stevedore holds the ramp. Stevedore does not watch
 pods to find out: the driver and the server would need to read the Kubernetes
 API, and a pod is unready for many reasons that are not its configuration.
 Whoever owns a ramp already has that signal, in their alerts and dashboards,
 and connects it to the hold: stop raising the share, or set
-`chandler-rollout-hold` on an S3 object. Workloads that need a hold without a
+`stevedore-rollout-hold` on an S3 object. Workloads that need a hold without a
 person in the loop use application acknowledgement.
 
 ## 9. Security
@@ -828,7 +828,7 @@ It is printed by `--version`, logged at start, reported in metrics as
 `NodeHello.driver_version`, which the server logs. A build without stamping
 reports `dev`.
 
-| Component | Metrics (`chandler.` prefix) |
+| Component | Metrics (`stevedore.` prefix) |
 |---|---|
 | Server | `server.subscriptions`, `server.watches`, `server.provider.connected`, `server.cache.keys`, `server.cache.bytes`, `server.cache.evictions` by reason (`grace`, `pressure`), `server.cache.orphaned_keys`, `server.rollouts`, `server.cache.uri_variants`, and the limits `server.cache.keys.limit`, `server.cache.bytes.limit` and `server.cache.uri_variants.limit`, all per provider; `server.namespace_uris` and its limit; `server.peer.sync_age`; `server.resent`; `server.acks`; `server.nacks` and `server.provider.refused` by code; `server.app_reports` by state; `server.peer.adopted` |
 | Driver | `csi.volumes`, `csi.server.connected`, `csi.publish.duration` and `csi.apply.duration` by outcome, `csi.mounts_from_cache`, `csi.app_reports` by state, `csi.cache.uris`, `csi.cache.bytes` |

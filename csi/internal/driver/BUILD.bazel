@@ -6,10 +6,10 @@ go_library(
         "driver.go",
         "metrics.go",
     ],
-    importpath = "github.com/bpalermo/chandler/csi/internal/driver",
+    importpath = "github.com/bpalermo/stevedore/csi/internal/driver",
     visibility = ["//csi:__subpackages__"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/telemetry",
         "//csi/internal/appack",
         "//csi/internal/client",
@@ -32,7 +32,7 @@ go_test(
     srcs = ["driver_test.go"],
     embed = [":driver"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//csi/internal/cache",
         "//csi/internal/client",

@@ -5,20 +5,20 @@ import (
 	"strings"
 	"testing"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
 	"google.golang.org/protobuf/proto"
 )
 
-func file(path string, mode uint32, content string) *chandlerv1.File {
-	b := chandlerv1.File_builder{Path: proto.String(path), Content: []byte(content)}
+func file(path string, mode uint32, content string) *stevedorev1.File {
+	b := stevedorev1.File_builder{Path: proto.String(path), Content: []byte(content)}
 	if mode != 0 {
 		b.Mode = proto.Uint32(mode)
 	}
 	return b.Build()
 }
 
-func bundleOf(files ...*chandlerv1.File) *chandlerv1.Bundle {
-	return chandlerv1.Bundle_builder{Files: files}.Build()
+func bundleOf(files ...*stevedorev1.File) *stevedorev1.Bundle {
+	return stevedorev1.Bundle_builder{Files: files}.Build()
 }
 
 func TestVersion(t *testing.T) {
@@ -32,7 +32,7 @@ func TestVersion(t *testing.T) {
 		t.Error("Verify() = false for the bundle's own version")
 	}
 
-	same := map[string]*chandlerv1.Bundle{
+	same := map[string]*stevedorev1.Bundle{
 		"file order":            bundleOf(file("dir/b.yaml", 0o440, "b: 2"), file("a.yaml", 0, "a: 1")),
 		"explicit default mode": bundleOf(file("a.yaml", 0o444, "a: 1"), file("dir/b.yaml", 0o440, "b: 2")),
 		"non-permission bits":   bundleOf(file("a.yaml", 0o444|0o4000, "a: 1"), file("dir/b.yaml", 0o440, "b: 2")),
@@ -43,7 +43,7 @@ func TestVersion(t *testing.T) {
 		}
 	}
 
-	different := map[string]*chandlerv1.Bundle{
+	different := map[string]*stevedorev1.Bundle{
 		"content":      bundleOf(file("a.yaml", 0, "a: 2"), file("dir/b.yaml", 0o440, "b: 2")),
 		"mode":         bundleOf(file("a.yaml", 0o400, "a: 1"), file("dir/b.yaml", 0o440, "b: 2")),
 		"path":         bundleOf(file("c.yaml", 0, "a: 1"), file("dir/b.yaml", 0o440, "b: 2")),
@@ -87,7 +87,7 @@ func TestValidate(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		bundle *chandlerv1.Bundle
+		bundle *stevedorev1.Bundle
 		limits Limits
 		want   error
 	}{

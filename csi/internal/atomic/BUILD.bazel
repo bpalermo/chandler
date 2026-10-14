@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "atomic",
     srcs = ["writer.go"],
-    importpath = "github.com/bpalermo/chandler/csi/internal/atomic",
+    importpath = "github.com/bpalermo/stevedore/csi/internal/atomic",
     visibility = ["//csi:__subpackages__"],
     deps = ["//common/bundle"],
 )

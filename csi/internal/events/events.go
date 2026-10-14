@@ -28,7 +28,7 @@ import (
 
 const (
 	// Component is the name events are reported under.
-	Component = "chandler-csi"
+	Component = "stevedore-csi"
 
 	tokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	caFile    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"

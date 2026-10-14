@@ -7,10 +7,10 @@ go_library(
         "spec.go",
         "volume.go",
     ],
-    importpath = "github.com/bpalermo/chandler/csi/internal/volume",
+    importpath = "github.com/bpalermo/stevedore/csi/internal/volume",
     visibility = ["//csi:__subpackages__"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/uri",
         "//csi/internal/atomic",
@@ -28,7 +28,7 @@ go_test(
     srcs = ["volume_test.go"],
     embed = [":volume"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//csi/internal/cache",
         "@org_golang_google_genproto_googleapis_rpc//status",

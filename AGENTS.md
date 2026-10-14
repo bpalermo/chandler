@@ -4,10 +4,10 @@ Guidance for agents working in this repository.
 
 ## What this is
 
-Chandler delivers configuration files to pods through a CSI driver. Four
+Stevedore delivers configuration files to pods through a CSI driver. Four
 binaries: the CSI node driver (`csi`), the config server (`server`), the file
 provider (`providers/file`) and the S3 reference provider (`providers/s3`). [docs/design.md](docs/design.md) is the
-design and the protos in `api/chandler/v1` are the contracts; read both before
+design and the protos in `api/stevedore/v1` are the contracts; read both before
 changing behaviour, and update them in the same pull request when behaviour
 changes.
 
@@ -74,9 +74,9 @@ hand-editing what Gazelle owns.
 - A provider is an `Origin` (how to name and read its resources) plugged into
   `common/provider`, which owns the stream, the watches and what is sent when.
   Do not reimplement the protocol in a provider.
-- `api/chandler/v1` holds the protos. The Go import path is
-  `github.com/bpalermo/chandler/api/chandler/v1`.
-- `bazel/` holds build rules, `scripts/` release tooling, `charts/chandler` the
+- `api/stevedore/v1` holds the protos. The Go import path is
+  `github.com/bpalermo/stevedore/api/stevedore/v1`.
+- `bazel/` holds build rules, `scripts/` release tooling, `charts/stevedore` the
   Helm chart, `e2e/` the end-to-end suite.
 
 ## Protos
@@ -91,7 +91,7 @@ hand-editing what Gazelle owns.
   and fails on a change that breaks the wire. Renaming a message is allowed,
   and so is renaming a field or an enum value, except in `app.proto`, where
   the names are the JSON applications write. Renaming a service or an RPC is
-  not. A new proto file used only between Chandler's components is added to
+  not. A new proto file used only between Stevedore's components is added to
   the `ignore_only` lists in `api/buf.yaml`.
 
 ## Design rules that code must keep
@@ -100,7 +100,7 @@ hand-editing what Gazelle owns.
   validate file contents. They check only the digest, the size, the file count
   and that paths stay inside the volume. Validity is the provider's concern.
 - **Publishing is the provider's concern.** How configuration gets into a
-  provider is outside Chandler. The S3 provider is a reference implementation,
+  provider is outside Stevedore. The S3 provider is a reference implementation,
   not the only one.
 - **Rollouts are the provider's concern.** A provider says what share of
   pods gets a new version; the server only places pods (`common/rollout`) and
@@ -143,7 +143,7 @@ hand-editing what Gazelle owns.
 
 - Instrument with the OpenTelemetry API through `common/telemetry`
   (`telemetry.Meter()`); metrics are pushed over OTLP and there is no scrape
-  endpoint. Names start with `chandler.<component>.`.
+  endpoint. Names start with `stevedore.<component>.`.
 - Keep attributes low-cardinality: a provider name, a gRPC code, a state.
   Never a URI, a pod, a namespace or a version.
 - List a new metric in section 11 of the design.
@@ -169,7 +169,7 @@ hand-editing what Gazelle owns.
 - Unit tests sit next to the code and run under `bazel test //...`.
 - The end-to-end suite in `e2e/` is tagged `e2e` and excluded from
   `bazel test //...`. `e2e/run.sh` creates or reuses the kind cluster
-  `chandler-e2e`, loads the images, installs the chart built from the checkout
+  `stevedore-e2e`, loads the images, installs the chart built from the checkout
   and runs the suite. Set `E2E_KEEP_CLUSTER=1` to keep the cluster.
 - Every change that adds user-visible behaviour extends the end-to-end suite.
 - The end-to-end suite gets its configuration from the file provider, serving
@@ -190,7 +190,7 @@ hand-editing what Gazelle owns.
   output group in the build step (see `--output_groups=+digest`).
 - Image repositories are `server`, `csi`, `provider-file` and `provider-s3`;
   the chart is
-  `chandler`.
+  `stevedore`.
 - Images are built with the `go_image` macro in `bazel/image/defs.bzl`.
 - A new image has to be added in each place that lists them: the quay.io
   repository (created by hand), `scripts/registry.sh` and the comments in
@@ -201,7 +201,7 @@ hand-editing what Gazelle owns.
   `publish.yml`.
 - The chart's version and image pin are stamped at package time. Do not write a
   version or a digest into `Chart.yaml` or `values.yaml` by hand.
-  `//charts/chandler:pin_test` checks the result.
+  `//charts/stevedore:pin_test` checks the result.
 - `.github/workflows/publish.yml` publishes and signs on every push to `main`.
   It cannot be exercised from a pull request, so read a change to it twice and
   watch the run after merge.

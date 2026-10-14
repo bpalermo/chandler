@@ -91,11 +91,11 @@ func newNamespace(ctx context.Context, t *testing.T) string {
 			for _, args := range [][]string{
 				{"get", "pods", "-n", ns, "-o", "wide"},
 				{"get", "events", "-n", ns, "--sort-by=.lastTimestamp"},
-				{"logs", "-n", "chandler-system", "-l", "app.kubernetes.io/component=csi", "--all-containers", "--tail=100"},
-				{"logs", "-n", "chandler-system", "-l", "app.kubernetes.io/component=server", "--tail=100"},
-				{"logs", "-n", "chandler-system", "-l", "app.kubernetes.io/component=provider-file", "--tail=100"},
-				{"logs", "-n", "chandler-system", "-l", "app.kubernetes.io/component=provider-s3", "--all-containers", "--tail=100"},
-				{"get", "pods", "-n", "chandler-system", "-o", "wide"},
+				{"logs", "-n", "stevedore-system", "-l", "app.kubernetes.io/component=csi", "--all-containers", "--tail=100"},
+				{"logs", "-n", "stevedore-system", "-l", "app.kubernetes.io/component=server", "--tail=100"},
+				{"logs", "-n", "stevedore-system", "-l", "app.kubernetes.io/component=provider-file", "--tail=100"},
+				{"logs", "-n", "stevedore-system", "-l", "app.kubernetes.io/component=provider-s3", "--all-containers", "--tail=100"},
+				{"get", "pods", "-n", "stevedore-system", "-o", "wide"},
 			} {
 				out, err := kubectl(ctx, args...)
 				t.Logf("kubectl %s:\n%s%v", strings.Join(args, " "), out, errString(err))

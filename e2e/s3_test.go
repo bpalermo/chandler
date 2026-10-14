@@ -13,7 +13,7 @@ import (
 )
 
 // The bucket the chart's S3 provider is allowed to serve (e2e/values.yaml).
-const bucket = "chandler-e2e"
+const bucket = "stevedore-e2e"
 
 // s3Endpoint forwards a local port to the LocalStack that runs beside the S3
 // provider and returns its URL. The forward ends with the test.
@@ -21,7 +21,7 @@ func s3Endpoint(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(ctx, "kubectl", "port-forward", "-n", driverNamespace,
-		"deployment/chandler-provider-s3", ":4566")
+		"deployment/stevedore-provider-s3", ":4566")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -221,8 +221,8 @@ func TestNoStoreStaysInMemory(t *testing.T) {
 
 	// The memory outlives the driver: after a restart the pod still reads
 	// its file, and the new driver finds the volume and keeps updating it.
-	mustKubectl(ctx, t, "rollout", "restart", "daemonset/chandler-csi", "-n", driverNamespace)
-	mustKubectl(ctx, t, "rollout", "status", "daemonset/chandler-csi", "-n", driverNamespace, "--timeout=180s")
+	mustKubectl(ctx, t, "rollout", "restart", "daemonset/stevedore-csi", "-n", driverNamespace)
+	mustKubectl(ctx, t, "rollout", "status", "daemonset/stevedore-csi", "-n", driverNamespace, "--timeout=180s")
 	if got := mustKubectl(ctx, t, "exec", "in-memory", "-n", ns, "--", "cat", mountPath+"/secret.yaml"); got != secret+"-rotated" {
 		t.Errorf("after a driver restart secret.yaml = %q", got)
 	}

@@ -122,7 +122,7 @@ jobs:
             //csi:image_push //csi:image_index \
             //providers/s3:image_push //providers/s3:image_index \
             //providers/file:image_push //providers/file:image_index \
-            //charts/chandler:chandler //charts/chandler:chandler.push_registry \
+            //charts/stevedore:stevedore //charts/stevedore:stevedore.push_registry \
             //bazel/cosign //bazel/cosign:verify_image
 
       # The chart is published under its version, which must be this commit's;
@@ -135,7 +135,7 @@ jobs:
       - name: Require a stamped chart that pins the images built from this commit
         run: |
           set -euo pipefail
-          chart="$(bazel cquery --config=ci //charts/chandler:chandler --output=files 2>/dev/null | grep -E '\.tgz$' | head -1)"
+          chart="$(bazel cquery --config=ci //charts/stevedore:stevedore --output=files 2>/dev/null | grep -E '\.tgz$' | head -1)"
           if [ -z "${chart}" ] || [ ! -s "${chart}" ]; then
             echo "::error::could not find the chart package (${chart})" >&2
             exit 1
@@ -149,7 +149,7 @@ jobs:
           fi
           want_version="0.1.0-dev.${snapshot}"
           echo "CHART_VERSION=${want_version}" >> "${GITHUB_ENV}"
-          got_version="$(tar -xzOf "${chart}" chandler/Chart.yaml | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
+          got_version="$(tar -xzOf "${chart}" stevedore/Chart.yaml | sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p')"
           if [ "${got_version}" != "${want_version}" ]; then
             echo "::error::the chart is version '${got_version}', want '${want_version}' (an unstamped build?)" >&2
             exit 1
@@ -164,7 +164,7 @@ jobs:
               exit 1
             fi
             built="$(cat "${digest_file}")"
-            if ! pin="$(scripts/chart-pin.sh "${chart}" chandler "${image}")"; then
+            if ! pin="$(scripts/chart-pin.sh "${chart}" stevedore "${image}")"; then
               echo "::error::the chart does not pin ${image} by digest" >&2
               exit 1
             fi
@@ -321,7 +321,7 @@ jobs:
           HELM_REGISTRY_PASSWORD: ${{ secrets.QUAY_TOKEN }}
         run: |
           set -euo pipefail
-          bazel run --config=ci //charts/chandler:chandler.push_registry 2>&1 | tee chart-push.log
+          bazel run --config=ci //charts/stevedore:stevedore.push_registry 2>&1 | tee chart-push.log
           # helm prints the digest of the manifest it pushed; that, not a tag
           # looked up afterwards, is what gets signed.
           # `|| true`: grep exits 1 when nothing matches, and under pipefail

@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "events",
     srcs = ["events.go"],
-    importpath = "github.com/bpalermo/chandler/csi/internal/events",
+    importpath = "github.com/bpalermo/stevedore/csi/internal/events",
     visibility = ["//csi:__subpackages__"],
 )
 

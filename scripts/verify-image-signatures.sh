@@ -26,7 +26,7 @@
 #
 # ENVIRONMENT
 #   COSIGN                cosign binary (default `cosign` on PATH); must be v3+.
-#   CERT_IDENTITY_REGEXP  default: publish.yml of bpalermo/chandler on main.
+#   CERT_IDENTITY_REGEXP  default: publish.yml of bpalermo/stevedore on main.
 #   CERT_OIDC_ISSUER      default https://token.actions.githubusercontent.com
 #   REGISTRY_USERNAME, REGISTRY_PASSWORD, REGISTRY_CREDENTIAL_HOST
 #                         optional; public repositories read anonymously.
@@ -40,7 +40,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${here}/registry-lib.sh"
 
 cosign_bin="${COSIGN:-cosign}"
-identity="${CERT_IDENTITY_REGEXP:-^https://github\.com/${GITHUB_REPOSITORY:-bpalermo/chandler}/\.github/workflows/publish\.yml@refs/heads/main$}"
+identity="${CERT_IDENTITY_REGEXP:-^https://github\.com/${GITHUB_REPOSITORY:-bpalermo/stevedore}/\.github/workflows/publish\.yml@refs/heads/main$}"
 issuer="${CERT_OIDC_ISSUER:-https://token.actions.githubusercontent.com}"
 expect="${EXPECT_SIGNATURE_LAYOUT:-}"
 if [ -z "$expect" ]; then

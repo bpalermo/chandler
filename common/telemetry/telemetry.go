@@ -23,10 +23,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 )
 
-// scope is the instrumentation scope of every Chandler metric.
-const scope = "github.com/bpalermo/chandler"
+// scope is the instrumentation scope of every Stevedore metric.
+const scope = "github.com/bpalermo/stevedore"
 
-// Meter returns the meter Chandler's metrics are created on.
+// Meter returns the meter Stevedore's metrics are created on.
 func Meter() metric.Meter { return otel.Meter(scope) }
 
 // Enabled reports whether the environment names a collector.

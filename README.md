@@ -1,6 +1,6 @@
-# Chandler
+# Stevedore
 
-Chandler delivers configuration files to Kubernetes pods through a CSI driver.
+Stevedore delivers configuration files to Kubernetes pods through a CSI driver.
 A pod names the configuration it wants with URIs; the driver mounts the files
 read-only and replaces them atomically when they change.
 
@@ -41,7 +41,7 @@ A pod asks for configuration with an inline volume:
 volumes:
   - name: config
     csi:
-      driver: csi.chandler.dev
+      driver: config.csi.stevedore.dev
       readOnly: true
       volumeAttributes:
         sources: |
@@ -56,7 +56,7 @@ is one file, placed at `path`.
 
 The full design, including caching, staged rollouts and application
 acknowledgement, is in [docs/design.md](docs/design.md). The wire contracts are
-in [api/chandler/v1](api/chandler/v1).
+in [api/stevedore/v1](api/stevedore/v1).
 
 ## What works today
 
@@ -83,16 +83,16 @@ signed with cosign.
 
 | Artifact | Location |
 |---|---|
-| Chart | `oci://quay.io/shipchandler/chandler` |
-| Images | `quay.io/shipchandler/csi`, `server`, `provider-file`, `provider-s3` |
+| Chart | `oci://quay.io/stevedore/stevedore` |
+| Images | `quay.io/stevedore/csi`, `server`, `provider-file`, `provider-s3` |
 
 Every chart is currently a snapshot, versioned
 `0.1.0-dev.<commit time>.g<commit>`. Snapshots are pre-releases, so pass
 `--devel` to take the newest one, or `--version` to pin one:
 
 ```bash
-helm install chandler oci://quay.io/shipchandler/chandler \
-  --namespace chandler-system --create-namespace --devel
+helm install stevedore oci://quay.io/stevedore/stevedore \
+  --namespace stevedore-system --create-namespace --devel
 ```
 
 That installs the driver and the server with no provider, so no URI resolves
@@ -105,11 +105,11 @@ To serve a ConfigMap, enable the file provider and point it at one in the
 release's namespace:
 
 ```bash
-kubectl create namespace chandler-system
-kubectl create configmap app-config -n chandler-system --from-literal=app.yaml='replicas: 1'
+kubectl create namespace stevedore-system
+kubectl create configmap app-config -n stevedore-system --from-literal=app.yaml='replicas: 1'
 
-helm install chandler oci://quay.io/shipchandler/chandler \
-  --namespace chandler-system --devel \
+helm install stevedore oci://quay.io/stevedore/stevedore \
+  --namespace stevedore-system --devel \
   --set providers.file.enabled=true \
   --set providers.file.source.configMap.name=app-config
 ```
@@ -122,12 +122,12 @@ To serve S3 buckets instead, enable the S3 provider and name the buckets it
 may serve. With IAM roles for service accounts:
 
 ```bash
-helm install chandler oci://quay.io/shipchandler/chandler \
-  --namespace chandler-system --create-namespace --devel \
+helm install stevedore oci://quay.io/stevedore/stevedore \
+  --namespace stevedore-system --create-namespace --devel \
   --set providers.s3.enabled=true \
   --set providers.s3.region=eu-west-1 \
   --set 'providers.s3.buckets={acme-config}' \
-  --set-string 'providers.s3.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::111122223333:role/chandler-s3'
+  --set-string 'providers.s3.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::111122223333:role/stevedore-s3'
 ```
 
 Pods then mount `s3://acme-config/payments/app.yaml`, or a prefix as a
@@ -137,8 +137,8 @@ provider serves every bucket its role can read to every pod.
 To verify a signature:
 
 ```bash
-cosign verify quay.io/shipchandler/csi:dev \
-  --certificate-identity-regexp '^https://github\.com/bpalermo/chandler/\.github/workflows/publish\.yml@refs/heads/main$' \
+cosign verify quay.io/stevedore/csi:dev \
+  --certificate-identity-regexp '^https://github\.com/bpalermo/stevedore/\.github/workflows/publish\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -158,13 +158,13 @@ It builds the images and the chart from the checkout and installs them.
 
 | Directory | Contents |
 |---|---|
-| `api/chandler/v1` | Protocol definitions |
+| `api/stevedore/v1` | Protocol definitions |
 | `csi` | CSI node driver |
 | `server` | Config server |
 | `providers/file` | File provider |
 | `providers/s3` | S3 reference provider |
 | `common` | Code shared between the binaries |
-| `charts/chandler` | Helm chart |
+| `charts/stevedore` | Helm chart |
 | `e2e` | End-to-end tests |
 | `bazel`, `scripts` | Build rules and release tooling |
 

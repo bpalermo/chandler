@@ -18,20 +18,20 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/uri"
-	"github.com/bpalermo/chandler/csi/internal/atomic"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/uri"
+	"github.com/bpalermo/stevedore/csi/internal/atomic"
 )
 
 // Cache is the node cache, as a volume uses it.
 type Cache interface {
 	// Put stores a verified bundle as the newest version of a URI.
-	Put(uri, version string, b *chandlerv1.Bundle) error
+	Put(uri, version string, b *stevedorev1.Bundle) error
 	// Use marks an already held version as the newest of a URI.
 	Use(uri, version string) error
 	// Get returns a held bundle, verified against its version.
-	Get(version string) (*chandlerv1.Bundle, error)
+	Get(version string) (*stevedorev1.Bundle, error)
 	// Versions returns the versions held for a URI, newest first.
 	Versions(uri string) []string
 	// Stats returns the number of URIs with held versions and the bytes of
@@ -325,7 +325,7 @@ func (v *Volume) Applied(i int) string {
 // it was.
 //
 // The content of the files is never opened or interpreted.
-func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
+func (v *Volume) Apply(i int, update *stevedorev1.ConfigUpdate) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
@@ -384,7 +384,7 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 
 // contribute returns what a bundle puts into the volume for a source: its
 // files, keyed by their path in the volume.
-func contribute(source Source, b *chandlerv1.Bundle) (map[string]atomic.File, error) {
+func contribute(source Source, b *stevedorev1.Bundle) (map[string]atomic.File, error) {
 	if err := bundle.Validate(b, limits); err != nil {
 		return nil, grpcstatus.Errorf(codes.InvalidArgument, "%v", err)
 	}
@@ -515,9 +515,9 @@ func (v *Volume) ApplyCached() error {
 		if len(versions) == 0 {
 			return grpcstatus.Errorf(codes.Unavailable, "source %q (%s): nothing is cached on this node", source.Name, source.URI)
 		}
-		update := chandlerv1.ConfigUpdate_builder{
+		update := stevedorev1.ConfigUpdate_builder{
 			Version:   proto.String(versions[0]),
-			UseCached: &chandlerv1.UseCached{},
+			UseCached: &stevedorev1.UseCached{},
 		}.Build()
 		if err := v.Apply(i, update); err != nil {
 			return grpcstatus.Errorf(codes.Unavailable, "source %q (%s): %v", source.Name, source.URI, err)

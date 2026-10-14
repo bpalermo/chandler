@@ -40,12 +40,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/cas"
-	"github.com/bpalermo/chandler/common/queue"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/uri"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/cas"
+	"github.com/bpalermo/stevedore/common/queue"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 const (
@@ -159,8 +159,8 @@ type Identity struct {
 
 // Hub serves ConfigDiscoveryService and watches providers.
 type Hub struct {
-	chandlerv1.UnimplementedConfigDiscoveryServiceServer
-	chandlerv1.UnimplementedPeerSyncServer
+	stevedorev1.UnimplementedConfigDiscoveryServiceServer
+	stevedorev1.UnimplementedPeerSyncServer
 
 	id          string
 	limits      bundle.Limits
@@ -283,8 +283,8 @@ type entry struct {
 	reported   feedback
 	reportedOn uint64
 	// bundles holds the content of the versions, by version.
-	bundles      map[string]*chandlerv1.Bundle
-	cacheControl *chandlerv1.CacheControl
+	bundles      map[string]*stevedorev1.Bundle
+	cacheControl *stevedorev1.CacheControl
 	// lastRefreshed is when a provider watch for the key was last live;
 	// freshness is measured from it.
 	lastRefreshed time.Time
@@ -317,14 +317,14 @@ func (e *entry) all() []held {
 
 // target returns the version a pod gets, and which side of the rollout that
 // puts it on.
-func (e *entry) target(podUID string) (held, chandlerv1.Track) {
+func (e *entry) target(podUID string) (held, stevedorev1.Track) {
 	switch {
 	case e.candidate == nil:
-		return e.current(), chandlerv1.Track_TRACK_UNSPECIFIED
+		return e.current(), stevedorev1.Track_TRACK_UNSPECIFIED
 	case podUID != "" && rollout.Placed(e.candidate.Version, podUID, e.share):
-		return *e.candidate, chandlerv1.Track_TRACK_CANDIDATE
+		return *e.candidate, stevedorev1.Track_TRACK_CANDIDATE
 	default:
-		return e.current(), chandlerv1.Track_TRACK_STABLE
+		return e.current(), stevedorev1.Track_TRACK_STABLE
 	}
 }
 
@@ -374,7 +374,7 @@ type subscription struct {
 	sess *session
 	res  *resource
 	// request is what the driver subscribed with.
-	request *chandlerv1.Subscribe
+	request *stevedorev1.Subscribe
 
 	// answered is set once the initial answer was sent.
 	answered bool
@@ -408,7 +408,7 @@ type subscription struct {
 type session struct {
 	node    string
 	cluster string
-	out     *queue.Queue[*chandlerv1.ConfigResponse]
+	out     *queue.Queue[*stevedorev1.ConfigResponse]
 	subs    map[string]*subscription
 	nonce   uint64
 }
@@ -419,8 +419,8 @@ func (s *session) nextNonce() string {
 }
 
 func (s *session) fail(id string, code codes.Code, msg string) {
-	s.out.Push(chandlerv1.ConfigResponse_builder{
-		Error: chandlerv1.SubscriptionError_builder{
+	s.out.Push(stevedorev1.ConfigResponse_builder{
+		Error: stevedorev1.SubscriptionError_builder{
 			SubscriptionId: proto.String(id),
 			Status:         &status.Status{Code: int32(code), Message: msg},
 		}.Build(),
@@ -429,7 +429,7 @@ func (s *session) fail(id string, code codes.Code, msg string) {
 
 // subscribe registers a subscription and sends its initial answer if one is
 // already known.
-func (h *Hub) subscribe(sess *session, msg *chandlerv1.Subscribe) {
+func (h *Hub) subscribe(sess *session, msg *stevedorev1.Subscribe) {
 	// Who the pod is decides what it may vary on, which namespace's quota it
 	// counts against and where a rollout places it, so it is taken from the
 	// token Kubernetes signed, not from the driver's word. Verified before
@@ -437,7 +437,7 @@ func (h *Hub) subscribe(sess *session, msg *chandlerv1.Subscribe) {
 	msg = proto.CloneOf(msg)
 	workload := msg.GetWorkload()
 	if workload == nil {
-		workload = &chandlerv1.Workload{}
+		workload = &stevedorev1.Workload{}
 		msg.SetWorkload(workload)
 	}
 	if h.verify != nil {
@@ -689,7 +689,7 @@ func (h *Hub) serveLocked(sub *subscription, force bool) {
 		sub.attempts = 0
 	}
 	nonce := sub.sess.nextNonce()
-	update := chandlerv1.ConfigUpdate_builder{
+	update := stevedorev1.ConfigUpdate_builder{
 		SubscriptionId: proto.String(sub.id),
 		Nonce:          proto.String(nonce),
 		Version:        proto.String(version),
@@ -704,12 +704,12 @@ func (h *Hub) serveLocked(sub *subscription, force bool) {
 		update.Rollout = proto.String(e.candidate.Version)
 	}
 	if sub.nodeHas[version] {
-		update.UseCached = &chandlerv1.UseCached{}
+		update.UseCached = &stevedorev1.UseCached{}
 	} else {
 		update.Bundle = e.bundles[version]
 	}
 	sub.sent, sub.nonce, sub.answered = version, nonce, true
-	sub.sess.out.Push(chandlerv1.ConfigResponse_builder{Update: update.Build()}.Build())
+	sub.sess.out.Push(stevedorev1.ConfigResponse_builder{Update: update.Build()}.Build())
 	h.expectAnswerLocked(sub)
 }
 
@@ -748,7 +748,7 @@ func (h *Hub) serveAllLocked(r *resource) {
 }
 
 // ack records that the driver wrote a version.
-func (h *Hub) ack(sess *session, msg *chandlerv1.Ack) {
+func (h *Hub) ack(sess *session, msg *stevedorev1.Ack) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	sub, ok := sess.subs[msg.GetSubscriptionId()]
@@ -766,7 +766,7 @@ func (h *Hub) ack(sess *session, msg *chandlerv1.Ack) {
 }
 
 // nack reacts to a failed write according to its code.
-func (h *Hub) nack(sess *session, msg *chandlerv1.Nack) {
+func (h *Hub) nack(sess *session, msg *stevedorev1.Nack) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	sub, ok := sess.subs[msg.GetSubscriptionId()]
@@ -826,7 +826,7 @@ func (h *Hub) nack(sess *session, msg *chandlerv1.Nack) {
 
 // appReport records what an application said about a version it was given.
 // The server only carries the verdict, to the provider.
-func (h *Hub) appReport(sess *session, msg *chandlerv1.AppReport) {
+func (h *Hub) appReport(sess *session, msg *stevedorev1.AppReport) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	sub, ok := sess.subs[msg.GetSubscriptionId()]
@@ -837,17 +837,17 @@ func (h *Hub) appReport(sess *session, msg *chandlerv1.AppReport) {
 		attribute.String("provider", sub.res.up.name),
 		attribute.String("state", strings.ToLower(strings.TrimPrefix(msg.GetState().String(), "STATE_")))))
 	switch msg.GetState() {
-	case chandlerv1.AppReport_STATE_LOADED:
+	case stevedorev1.AppReport_STATE_LOADED:
 		sub.loaded = msg.GetVersion()
 		delete(sub.rejected, msg.GetVersion())
 		if sub.overdue == msg.GetVersion() {
 			sub.overdue = ""
 		}
-	case chandlerv1.AppReport_STATE_OVERDUE:
+	case stevedorev1.AppReport_STATE_OVERDUE:
 		sub.overdue = msg.GetVersion()
 		h.log.Warn("an application has not reported on a version in time", "node", sess.node,
 			"subscription", sub.id, "uri", sub.res.uri, "version", msg.GetVersion())
-	case chandlerv1.AppReport_STATE_REJECTED:
+	case stevedorev1.AppReport_STATE_REJECTED:
 		sub.rejected[msg.GetVersion()] = true
 		if sub.loaded == msg.GetVersion() {
 			sub.loaded = ""
@@ -911,16 +911,16 @@ func (h *Hub) reportLocked(e *entry) {
 	}
 	// Tell the provider when a revision it heard about no longer has anyone.
 	if e.reportedOn == up.generation && e.reported.revision != now.revision && e.reported.assigned > 0 {
-		up.out.Push(chandlerv1.ProviderRequest_builder{
-			Feedback: chandlerv1.Feedback_builder{
+		up.out.Push(stevedorev1.ProviderRequest_builder{
+			Feedback: stevedorev1.Feedback_builder{
 				CacheKey: proto.String(e.key.cacheKey),
 				Revision: proto.String(e.reported.revision),
 			}.Build(),
 		}.Build())
 	}
 	e.reported, e.reportedOn = now, up.generation
-	up.out.Push(chandlerv1.ProviderRequest_builder{
-		Feedback: chandlerv1.Feedback_builder{
+	up.out.Push(stevedorev1.ProviderRequest_builder{
+		Feedback: stevedorev1.Feedback_builder{
 			CacheKey: proto.String(e.key.cacheKey),
 			Revision: proto.String(now.revision),
 			Assigned: proto.Uint32(now.assigned),
@@ -935,7 +935,7 @@ func (h *Hub) reportLocked(e *entry) {
 }
 
 // accept checks the envelope of a provider's update.
-func (h *Hub) accept(u *chandlerv1.ResourceUpdate) (codes.Code, error) {
+func (h *Hub) accept(u *stevedorev1.ResourceUpdate) (codes.Code, error) {
 	switch {
 	case u.GetCacheKey() == "":
 		return codes.InvalidArgument, errors.New("update has no cache_key")

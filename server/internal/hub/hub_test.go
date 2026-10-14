@@ -16,8 +16,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
 const wait = 10 * time.Second
@@ -25,27 +25,27 @@ const wait = 10 * time.Second
 // fakeProvider is a ConfigProvider driven by the test: it exposes what the
 // server sends and sends what the test tells it to.
 type fakeProvider struct {
-	chandlerv1.UnimplementedConfigProviderServer
+	stevedorev1.UnimplementedConfigProviderServer
 	name string
 	// varyOn and cacheControl are what the provider declares in its hello.
 	varyOn       []string
-	cacheControl *chandlerv1.CacheControl
+	cacheControl *stevedorev1.CacheControl
 	// requests carries everything the server sends after its hello, except
 	// feedback, which arrives whenever counts change and goes to feedback.
-	requests chan *chandlerv1.ProviderRequest
-	feedback chan *chandlerv1.Feedback
+	requests chan *stevedorev1.ProviderRequest
+	feedback chan *stevedorev1.Feedback
 	// responses is sent on the current stream.
-	responses chan *chandlerv1.ProviderResponse
+	responses chan *stevedorev1.ProviderResponse
 	// hangup ends the current stream.
 	hangup chan struct{}
 }
 
-func (p *fakeProvider) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConfigsServer) error {
+func (p *fakeProvider) StreamConfigs(stream stevedorev1.ConfigProvider_StreamConfigsServer) error {
 	if _, err := stream.Recv(); err != nil {
 		return err
 	}
-	err := stream.Send(chandlerv1.ProviderResponse_builder{
-		Hello: chandlerv1.ProviderHello_builder{
+	err := stream.Send(stevedorev1.ProviderResponse_builder{
+		Hello: stevedorev1.ProviderHello_builder{
 			Name:                proto.String(p.name),
 			VaryOn:              p.varyOn,
 			DefaultCacheControl: p.cacheControl,
@@ -84,7 +84,7 @@ func (p *fakeProvider) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConf
 	}
 }
 
-func (p *fakeProvider) next(t *testing.T) *chandlerv1.ProviderRequest {
+func (p *fakeProvider) next(t *testing.T) *stevedorev1.ProviderRequest {
 	t.Helper()
 	select {
 	case req := <-p.requests:
@@ -95,7 +95,7 @@ func (p *fakeProvider) next(t *testing.T) *chandlerv1.ProviderRequest {
 	}
 }
 
-func (p *fakeProvider) expectWatch(t *testing.T, uri string) *chandlerv1.Watch {
+func (p *fakeProvider) expectWatch(t *testing.T, uri string) *stevedorev1.Watch {
 	t.Helper()
 	req := p.next(t)
 	if !req.HasWatch() || req.GetWatch().GetUri() != uri {
@@ -104,15 +104,15 @@ func (p *fakeProvider) expectWatch(t *testing.T, uri string) *chandlerv1.Watch {
 	return req.GetWatch()
 }
 
-func oneFile(content string) *chandlerv1.Bundle {
-	return chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
-		chandlerv1.File_builder{Path: proto.String("app.yaml"), Content: []byte(content)}.Build(),
+func oneFile(content string) *stevedorev1.Bundle {
+	return stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
+		stevedorev1.File_builder{Path: proto.String("app.yaml"), Content: []byte(content)}.Build(),
 	}}.Build()
 }
 
-func (p *fakeProvider) emit(watchID, nonce, revision string, b *chandlerv1.Bundle) {
-	p.responses <- chandlerv1.ProviderResponse_builder{
-		Update: chandlerv1.ResourceUpdate_builder{
+func (p *fakeProvider) emit(watchID, nonce, revision string, b *stevedorev1.Bundle) {
+	p.responses <- stevedorev1.ProviderResponse_builder{
+		Update: stevedorev1.ResourceUpdate_builder{
 			WatchId:  proto.String(watchID),
 			Nonce:    proto.String(nonce),
 			CacheKey: proto.String("/app.yaml"),
@@ -124,11 +124,11 @@ func (p *fakeProvider) emit(watchID, nonce, revision string, b *chandlerv1.Bundl
 
 // node is a driver's stream to the server.
 type node struct {
-	stream chandlerv1.ConfigDiscoveryService_StreamConfigsClient
-	in     chan *chandlerv1.ConfigResponse
+	stream stevedorev1.ConfigDiscoveryService_StreamConfigsClient
+	in     chan *stevedorev1.ConfigResponse
 }
 
-func (n *node) send(t *testing.T, req *chandlerv1.ConfigRequest) {
+func (n *node) send(t *testing.T, req *stevedorev1.ConfigRequest) {
 	t.Helper()
 	if err := n.stream.Send(req); err != nil {
 		t.Fatal(err)
@@ -137,14 +137,14 @@ func (n *node) send(t *testing.T, req *chandlerv1.ConfigRequest) {
 
 func (n *node) subscribe(t *testing.T, id, uri, applied string) {
 	t.Helper()
-	sub := chandlerv1.Subscribe_builder{SubscriptionId: proto.String(id), Uri: proto.String(uri)}
+	sub := stevedorev1.Subscribe_builder{SubscriptionId: proto.String(id), Uri: proto.String(uri)}
 	if applied != "" {
 		sub.AppliedVersion = proto.String(applied)
 	}
-	n.send(t, chandlerv1.ConfigRequest_builder{Subscribe: sub.Build()}.Build())
+	n.send(t, stevedorev1.ConfigRequest_builder{Subscribe: sub.Build()}.Build())
 }
 
-func (n *node) next(t *testing.T) *chandlerv1.ConfigResponse {
+func (n *node) next(t *testing.T) *stevedorev1.ConfigResponse {
 	t.Helper()
 	select {
 	case msg, ok := <-n.in:
@@ -158,7 +158,7 @@ func (n *node) next(t *testing.T) *chandlerv1.ConfigResponse {
 	}
 }
 
-func (n *node) expectUpdate(t *testing.T, id string, b *chandlerv1.Bundle) *chandlerv1.ConfigUpdate {
+func (n *node) expectUpdate(t *testing.T, id string, b *stevedorev1.Bundle) *stevedorev1.ConfigUpdate {
 	t.Helper()
 	msg := n.next(t)
 	u := msg.GetUpdate()
@@ -170,7 +170,7 @@ func (n *node) expectUpdate(t *testing.T, id string, b *chandlerv1.Bundle) *chan
 
 // expectUpdates expects one update to b for each of the subscriptions, in any
 // order: subscriptions of one resource are served in no particular order.
-func (n *node) expectUpdates(t *testing.T, b *chandlerv1.Bundle, ids ...string) {
+func (n *node) expectUpdates(t *testing.T, b *stevedorev1.Bundle, ids ...string) {
 	t.Helper()
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -255,9 +255,9 @@ func start(t *testing.T, limits bundle.Limits) harness {
 func newFakeProvider() *fakeProvider {
 	return &fakeProvider{
 		name:      "file",
-		requests:  make(chan *chandlerv1.ProviderRequest, 64),
-		feedback:  make(chan *chandlerv1.Feedback, 256),
-		responses: make(chan *chandlerv1.ProviderResponse),
+		requests:  make(chan *stevedorev1.ProviderRequest, 64),
+		feedback:  make(chan *stevedorev1.Feedback, 256),
+		responses: make(chan *stevedorev1.ProviderResponse),
 		hangup:    make(chan struct{}),
 	}
 }
@@ -282,7 +282,7 @@ func run(t *testing.T, cfg Config, p *fakeProvider, waitConnected bool) harness 
 	providerTarget := "127.0.0.1:1"
 	stopProvider := func() {}
 	if p != nil {
-		providerTarget, stopProvider = serve(t, func(s *grpc.Server) { chandlerv1.RegisterConfigProviderServer(s, p) })
+		providerTarget, stopProvider = serve(t, func(s *grpc.Server) { stevedorev1.RegisterConfigProviderServer(s, p) })
 	}
 
 	cfg.ServerID = "server-1"
@@ -310,8 +310,8 @@ func run(t *testing.T, cfg Config, p *fakeProvider, waitConnected bool) harness 
 		close(done)
 	}()
 	target, stopServer := serve(t, func(s *grpc.Server) {
-		chandlerv1.RegisterConfigDiscoveryServiceServer(s, h)
-		chandlerv1.RegisterPeerSyncServer(s, h)
+		stevedorev1.RegisterConfigDiscoveryServiceServer(s, h)
+		stevedorev1.RegisterPeerSyncServer(s, h)
 	})
 	stop := sync.OnceFunc(func() {
 		stopServer()
@@ -347,13 +347,13 @@ func (h harness) connect(t *testing.T) *node {
 	t.Cleanup(func() { conn.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stream, err := chandlerv1.NewConfigDiscoveryServiceClient(conn).StreamConfigs(ctx)
+	stream, err := stevedorev1.NewConfigDiscoveryServiceClient(conn).StreamConfigs(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := &node{stream: stream, in: make(chan *chandlerv1.ConfigResponse, 64)}
-	n.send(t, chandlerv1.ConfigRequest_builder{
-		Hello: chandlerv1.NodeHello_builder{NodeId: proto.String("node-1")}.Build(),
+	n := &node{stream: stream, in: make(chan *stevedorev1.ConfigResponse, 64)}
+	n.send(t, stevedorev1.ConfigRequest_builder{
+		Hello: stevedorev1.NodeHello_builder{NodeId: proto.String("node-1")}.Build(),
 	}.Build())
 	go func() {
 		defer close(n.in)
@@ -371,9 +371,9 @@ func (h harness) connect(t *testing.T) *node {
 	return n
 }
 
-func ack(u *chandlerv1.ConfigUpdate) *chandlerv1.ConfigRequest {
-	return chandlerv1.ConfigRequest_builder{
-		Ack: chandlerv1.Ack_builder{
+func ack(u *stevedorev1.ConfigUpdate) *stevedorev1.ConfigRequest {
+	return stevedorev1.ConfigRequest_builder{
+		Ack: stevedorev1.Ack_builder{
 			SubscriptionId: proto.String(u.GetSubscriptionId()),
 			Nonce:          proto.String(u.GetNonce()),
 			Version:        proto.String(u.GetVersion()),
@@ -381,9 +381,9 @@ func ack(u *chandlerv1.ConfigUpdate) *chandlerv1.ConfigRequest {
 	}.Build()
 }
 
-func nack(u *chandlerv1.ConfigUpdate, code codes.Code) *chandlerv1.ConfigRequest {
-	return chandlerv1.ConfigRequest_builder{
-		Nack: chandlerv1.Nack_builder{
+func nack(u *stevedorev1.ConfigUpdate, code codes.Code) *stevedorev1.ConfigRequest {
+	return stevedorev1.ConfigRequest_builder{
+		Nack: stevedorev1.Nack_builder{
 			SubscriptionId: proto.String(u.GetSubscriptionId()),
 			Nonce:          proto.String(u.GetNonce()),
 			Version:        proto.String(u.GetVersion()),
@@ -428,8 +428,8 @@ func TestSubscriptionsShareOneWatchAndFollowRevisions(t *testing.T) {
 	}
 
 	// The watch ends with the last subscription.
-	a.send(t, chandlerv1.ConfigRequest_builder{
-		Unsubscribe: chandlerv1.Unsubscribe_builder{SubscriptionId: proto.String("vol-a/0")}.Build(),
+	a.send(t, stevedorev1.ConfigRequest_builder{
+		Unsubscribe: stevedorev1.Unsubscribe_builder{SubscriptionId: proto.String("vol-a/0")}.Build(),
 	}.Build())
 	b.stream.CloseSend()
 	if req := h.provider.next(t); !req.HasUnwatch() || req.GetUnwatch().GetWatchId() != watch.GetWatchId() {
@@ -445,8 +445,8 @@ func TestProviderFailuresAnswerThePendingSubscription(t *testing.T) {
 	watch := h.provider.expectWatch(t, "file:///app.yaml")
 
 	// The provider has nothing: the driver is told, and stays subscribed.
-	h.provider.responses <- chandlerv1.ProviderResponse_builder{
-		Error: chandlerv1.WatchError_builder{
+	h.provider.responses <- stevedorev1.ProviderResponse_builder{
+		Error: stevedorev1.WatchError_builder{
 			WatchId: proto.String(watch.GetWatchId()),
 			Status:  &status.Status{Code: int32(codes.NotFound), Message: "no such file"},
 		}.Build(),

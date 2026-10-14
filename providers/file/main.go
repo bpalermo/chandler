@@ -1,4 +1,4 @@
-// Command chandler-provider-file is a Chandler configuration provider that
+// Command stevedore-provider-file is a Stevedore configuration provider that
 // serves the files below a directory. A URI names a path under that
 // directory: <name>:///app.yaml is one file, <name>:///flags/ a directory.
 //
@@ -22,13 +22,13 @@ import (
 
 	"google.golang.org/grpc"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/provider"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/telemetry"
-	"github.com/bpalermo/chandler/common/transport"
-	"github.com/bpalermo/chandler/common/version"
-	"github.com/bpalermo/chandler/providers/file/internal/source"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/provider"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/telemetry"
+	"github.com/bpalermo/stevedore/common/transport"
+	"github.com/bpalermo/stevedore/common/version"
+	"github.com/bpalermo/stevedore/providers/file/internal/source"
 )
 
 // rolloutFlags collects repeated --rollout flags.
@@ -76,13 +76,13 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("chandler-provider-file %s\n", version.Version)
+		fmt.Printf("stevedore-provider-file %s\n", version.Version)
 		return
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := run(log, *listen, *name, *root, *pollInterval, rollouts, *maxRefused, *maxOverdue, sec); err != nil {
-		log.Error("chandler-provider-file failed", "error", err)
+		log.Error("stevedore-provider-file failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -123,7 +123,7 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 	// credentials and serves whatever it is asked for.
 	options := transport.Serve(src, func(string) []string { return servers })
 	server := grpc.NewServer(append(options, transport.ServerKeepalive(0)...)...)
-	chandlerv1.RegisterConfigProviderServer(server, &provider.Server{
+	stevedorev1.RegisterConfigProviderServer(server, &provider.Server{
 		Name:         name,
 		Origin:       source.Origin{Root: root, Rollouts: rollouts},
 		PollInterval: pollInterval,
@@ -140,7 +140,7 @@ func run(log *slog.Logger, listen, name, root string, pollInterval time.Duration
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	stopTelemetry, err := telemetry.Setup(ctx, "chandler-provider-file", version.Version)
+	stopTelemetry, err := telemetry.Setup(ctx, "stevedore-provider-file", version.Version)
 	if err != nil {
 		return err
 	}

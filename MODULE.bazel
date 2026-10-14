@@ -15,8 +15,8 @@ bazel_dep(name = "rules_helm", version = "0.34.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 
 # sh_binary and sh_test for the tool wrappers in //bazel/cosign. Already in the
-# graph (0.6.1) through rules_go and rules_helm.
-bazel_dep(name = "rules_shell", version = "0.6.1")
+# graph through rules_go and rules_helm, and at 0.8.0 through grpc-gateway.
+bazel_dep(name = "rules_shell", version = "0.8.0")
 
 # The cosign CLI -- only the CLI. @rules_img_signer_cosign//cosign is the
 # official prebuilt release binary, selected per platform, with its sha256
@@ -26,6 +26,27 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 # //bazel/cosign:version_test). The module's signer plugin for `img deploy` is
 # not used: publishing keeps image_push and a separate `cosign sign`.
 bazel_dep(name = "rules_img_signer_cosign", version = "0.0.1")
+
+# grpc-gateway, for the HTTP side of the application API: its generator
+# (go_gen_grpc_gateway_opaque, used by //api/chandler/v1) and the runtime the
+# generated code calls. Gazelle uses this module in place of the Go module of
+# the same name, so the version here and the one in go.mod have to agree.
+#
+# The registry has no 2.31 yet, and go.mod cannot go lower: the OpenTelemetry
+# exporter needs 2.30 or later. So the release is fetched from GitHub. Upstream
+# declares version 0.0.0, which the registry rewrites when it publishes;
+# patch_cmds does the same here, or Gazelle reports the two versions as
+# different on every build. Once the registry has this version or a later one,
+# delete the archive_override.
+bazel_dep(name = "grpc_ecosystem_grpc_gateway", version = "2.31.0")
+archive_override(
+    module_name = "grpc_ecosystem_grpc_gateway",
+    integrity = "sha256-GTr3a+olksw4vzys15Pz+a6EXDHC1deruIKjBjWRbk4=",
+    patch_cmds = ["sed -i 's/version = \"0.0.0\"/version = \"2.31.0\"/' MODULE.bazel"],
+    strip_prefix = "grpc-gateway-2.31.0",
+    urls = ["https://github.com/grpc-ecosystem/grpc-gateway/archive/refs/tags/v2.31.0.tar.gz"],
+)
+
 bazel_dep(name = "googleapis", version = "0.0.0-20260929-28769825")
 
 # buf lints the protos and checks them for breaking changes (//api/chandler/v1
@@ -56,16 +77,7 @@ go_sdk.nogo(nogo = "//:nogo")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
-
-# grpc-gateway ships BUILD files that compile its protos from a @googleapis
-# repository it cannot see from here. Generate them instead, from the Go code
-# the module checks in, so that its protoc plugin builds.
-go_deps.gazelle_override(
-    build_file_generation = "clean",
-    directives = ["gazelle:proto disable_global"],
-    path = "github.com/grpc-ecosystem/grpc-gateway/v2",
-)
-use_repo(go_deps, "co_honnef_go_tools", "com_github_aws_aws_sdk_go_v2", "com_github_aws_aws_sdk_go_v2_config", "com_github_aws_aws_sdk_go_v2_service_s3", "com_github_aws_smithy_go", "com_github_container_storage_interface_spec", "com_github_grpc_ecosystem_grpc_gateway_v2", "com_github_spiffe_go_spiffe_v2", "in_yaml_go_yaml_v3", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlpmetric_otlpmetricgrpc", "io_opentelemetry_go_otel_metric", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_sdk_metric", "org_golang_google_genproto_googleapis_api", "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sys", "org_golang_x_tools")
+use_repo(go_deps, "co_honnef_go_tools", "com_github_aws_aws_sdk_go_v2", "com_github_aws_aws_sdk_go_v2_config", "com_github_aws_aws_sdk_go_v2_service_s3", "com_github_aws_smithy_go", "com_github_container_storage_interface_spec", "com_github_spiffe_go_spiffe_v2", "in_yaml_go_yaml_v3", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlpmetric_otlpmetricgrpc", "io_opentelemetry_go_otel_metric", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_sdk_metric", "org_golang_google_genproto_googleapis_api", "org_golang_google_genproto_googleapis_rpc", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sys", "org_golang_x_tools")
 
 # Container image base: distroless static on Debian 13, nonroot variant (user
 # 65532), pinned by index digest so a moving tag cannot change the image.

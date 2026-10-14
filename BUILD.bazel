@@ -8,7 +8,7 @@ load("//bazel/nogo:staticcheck.bzl", "STATICCHECK")
 # gazelle:resolve proto go google/rpc/status.proto @org_golang_google_genproto_googleapis_rpc//status
 # gazelle:resolve proto google/api/annotations.proto @googleapis//google/api:annotations_proto
 # gazelle:resolve proto go google/api/annotations.proto @org_golang_google_genproto_googleapis_api//annotations
-# gazelle:go_grpc_compilers @rules_go//proto:go_proto,@rules_go//proto:go_grpc_v2,//bazel/proto:go_grpc_gateway
+# gazelle:go_grpc_compilers @rules_go//proto:go_proto,@rules_go//proto:go_grpc_v2,@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway_opaque
 
 gazelle(name = "gazelle")
 

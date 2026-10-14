@@ -26,11 +26,13 @@ const (
 	// MediumMemory keeps a volume in memory, as it does for an emptyDir.
 	MediumMemory = "Memory"
 
-	// FailurePolicyFail fails the mount when a source has no answer.
+	// FailurePolicyFail fails the mount when a source has no answer, so the
+	// pod waits for a version the server can supply.
 	FailurePolicyFail = "Fail"
 	// FailurePolicyUseCached mounts from the node cache when the server
 	// cannot be reached or has no version, and fails only if the node holds
-	// nothing for a source.
+	// nothing for a source. It is the default: the last version the node was
+	// given is better than no configuration at all.
 	FailurePolicyUseCached = "UseCached"
 
 	maxSources = 32
@@ -75,7 +77,7 @@ func ParseSpec(attributes map[string]string) (Spec, error) {
 	spec := Spec{FailurePolicy: attributes[failurePolicyKey]}
 	switch spec.FailurePolicy {
 	case "":
-		spec.FailurePolicy = FailurePolicyFail
+		spec.FailurePolicy = FailurePolicyUseCached
 	case FailurePolicyFail, FailurePolicyUseCached:
 	default:
 		return Spec{}, fmt.Errorf("%w: %s must be %s or %s, not %q", ErrInvalidSpec,

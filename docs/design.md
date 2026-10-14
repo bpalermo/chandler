@@ -103,7 +103,7 @@ volumes:
             path: app.yaml
           - uri: s3://acme-config/shared/flags/     # trailing slash: directory bundle
             path: flags
-        failurePolicy: UseCached      # or Fail (default)
+        failurePolicy: Fail           # optional: wait for the server (default: UseCached)
         medium: Memory                # optional: keep the volume off the node's disk
 ```
 
@@ -440,14 +440,22 @@ waits for all initial answers (deadline 90s, inside kubelet's own timeout)
 before mounting, so a container never starts with a partial volume. If the
 server is unreachable or answers `UNAVAILABLE`:
 
-- `failurePolicy: Fail` returns an error; kubelet retries and the pod waits in
-  `ContainerCreating` with an event explaining why.
-- `failurePolicy: UseCached` materialises the newest cached version for each
+- `failurePolicy: UseCached`, the default, materialises the newest cached version for each
   source if the node cache has one for the pod's namespace and service
   account, mounts, and converges once the server returns. With no cached
-  version it fails as above. A version cached for another namespace or
+  version it fails as below. A version cached for another namespace or
   service account is never used: a provider may serve the same URI
   differently to them (`vary_on`), and the driver cannot tell whether it did.
+- `failurePolicy: Fail` returns an error; kubelet retries and the pod waits in
+  `ContainerCreating` with an event explaining why. It is for a pod that
+  would rather not start than start on a version the server has not
+  confirmed: the newest on the node may be behind, or be one a rollout has
+  since taken back.
+
+The default is `UseCached` because, for configuration, the last version the
+node was given is almost always better than none, as it is for the server's
+`stale_if_error` (section 7). Nothing is ever taken from a running pod under
+either policy.
 
 On driver restart the mounts are still in place; the driver rebuilds its
 subscriptions from the `meta.json` files and resyncs.
@@ -621,9 +629,11 @@ progress stays at its share during the outage.
 
 **What is not covered.** If every replica loses its cache at the same time
 while a provider is down, the server has nothing to serve for that provider's
-keys. Running pods are unaffected. New pods on nodes without a node cache wait
-for the provider; new pods on nodes with one start only if they set
-`failurePolicy: UseCached`.
+keys. Running pods are unaffected. New pods start from the node cache where
+the node holds a version for them, unless they set `failurePolicy: Fail`;
+the others wait for the provider. The server does not override a pod's
+`Fail`: with no cache it cannot tell whether the node's newest version is one
+the provider has withdrawn.
 
 **Deletion at the origin** is treated as dangerous. The key is marked
 orphaned and keeps being served from the cache, to running pods and to new
@@ -849,11 +859,7 @@ Not built: traces.
 
 ## 12. Open questions
 
-1. **Total cache loss.** When the server has nothing for a key, it could
-   answer "use your newest cached version, marked stale" so that pods on
-   nodes with a node cache start regardless of `failurePolicy`. Not adopted
-   yet.
-2. **Authorisation.** Which namespaces and service accounts may read which
+1. **Authorisation.** Which namespaces and service accounts may read which
    URIs. The candidates are a policy file on the server, per cluster and
    without CRDs, or passing the verified identity to the provider and letting
    it decide, which keeps one policy for all clusters beside the data. Until
@@ -872,10 +878,10 @@ What exists today, against the design above.
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, `ApplicationService` on the socket, defined in `app.proto` and served as HTTP with JSON (`GET /v1/config`, `POST /v1/reports`) and as gRPC, per generation or per source, local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
-| Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 2) |
+| Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 1) |
 | Observability | Metrics pushed over OTLP from every component, events on pods, structured logs, the build version in every binary (section 11) | Traces |
 
 The server's cache survives a rollout because each new replica copies it from
 the ready ones before it takes traffic. If every replica is lost at once, the
 cache is gone and is refilled from the providers; nodes with a node cache
-still start pods that set `failurePolicy: UseCached`.
+still start pods, unless they set `failurePolicy: Fail`.

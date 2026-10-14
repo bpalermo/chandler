@@ -544,13 +544,14 @@ func TestPublishFromTheNodeCache(t *testing.T) {
 			outage(f.server)
 
 			strict := publishRequest("csi-strict", filepath.Join(t.TempDir(), "strict"), twoSources)
+			strict.VolumeContext["failurePolicy"] = "Fail"
 			if _, err := f.driver.NodePublishVolume(ctx, strict); status.Code(err) != codes.Unavailable {
 				t.Errorf("failurePolicy Fail: got %v, want Unavailable", err)
 			}
 
 			target := filepath.Join(t.TempDir(), "cached")
+			// UseCached is the default.
 			lenient := publishRequest("csi-cached", target, twoSources)
-			lenient.VolumeContext["failurePolicy"] = "UseCached"
 			if _, err := f.driver.NodePublishVolume(ctx, lenient); err != nil {
 				t.Fatalf("failurePolicy UseCached: %v", err)
 			}

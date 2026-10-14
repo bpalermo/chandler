@@ -48,9 +48,10 @@ func scaleDeployment(ctx context.Context, name, component string, replicas int) 
 }
 
 // consumerPod is a pod that mounts a Chandler inline volume with the given
-// sources, the YAML list a pod author writes.
+// sources, the YAML list a pod author writes, and nothing else: the
+// failurePolicy is the default, UseCached.
 func consumerPod(name string, readOnly bool, sources string) string {
-	return consumerPodWithPolicy(name, readOnly, sources, "Fail")
+	return consumerPodWithAttributes(name, readOnly, sources, "")
 }
 
 // consumerPodWithPolicy is consumerPod with a failurePolicy.
@@ -355,8 +356,8 @@ func TestWritableVolumeIsRefused(t *testing.T) {
 	}
 }
 
-// The node cache: with the config server gone, a pod that allows it starts
-// from what the node already holds for its namespace, a pod that does not
+// The node cache: with the config server gone, a pod starts from what the
+// node already holds for its namespace, unless it set failurePolicy: Fail and
 // waits, and all get the server's version once it is back.
 func TestPodStartsFromTheNodeCache(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -387,8 +388,8 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mustApply(ctx, t, ns, consumerPodWithPolicy("cached", true, sources, "UseCached"))
-	mustApply(ctx, t, ns, consumerPod("strict", true, sources))
+	mustApply(ctx, t, ns, consumerPod("cached", true, sources))
+	mustApply(ctx, t, ns, consumerPodWithPolicy("strict", true, sources, "Fail"))
 	if _, err := waitForPodPhase(ctx, ns, "cached", "Running"); err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +423,7 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	// What the node holds for one namespace is not given to a pod of
 	// another, which a provider may serve differently.
 	other := newNamespace(ctx, t)
-	mustApply(ctx, t, other, consumerPodWithPolicy("elsewhere", true, sources, "UseCached"))
+	mustApply(ctx, t, other, consumerPod("elsewhere", true, sources))
 	err = eventually(ctx, func() error {
 		events, err := kubectl(ctx, "get", "events", "-n", other,
 			"--field-selector", "involvedObject.name=elsewhere,reason=FailedMount",

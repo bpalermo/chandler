@@ -30,8 +30,8 @@ func TestParseSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.FailurePolicy != FailurePolicyFail {
-		t.Errorf("default failure policy = %q", spec.FailurePolicy)
+	if spec.FailurePolicy != FailurePolicyUseCached {
+		t.Errorf("default failure policy = %q, want UseCached", spec.FailurePolicy)
 	}
 	if len(spec.Sources) != 2 {
 		t.Fatalf("got %d sources", len(spec.Sources))

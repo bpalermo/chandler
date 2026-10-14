@@ -27,7 +27,7 @@ go_proto_library(
     compilers = [
         "@rules_go//proto:go_proto",
         "@rules_go//proto:go_grpc_v2",
-        "//bazel/proto:go_grpc_gateway",
+        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway_opaque",
     ],
     importpath = "github.com/bpalermo/chandler/api/chandler/v1",
     proto = ":chandlerv1_proto",

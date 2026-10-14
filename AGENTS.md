@@ -28,6 +28,7 @@ E2E_TLS=spiffe e2e/run.sh   # the same on SPIRE-issued identities, transport tes
 scripts/proto-breaking.sh   # the protos against origin/main, for wire compatibility
 E2E_FILTER=TestName e2e/run.sh        # only the tests whose name matches
 E2E_KEEP_CLUSTER=1 e2e/run.sh         # leave the cluster up to look around
+E2E_CHART=oci://<chart repo> E2E_CHART_VERSION=0.1.0 e2e/run.sh  # a published chart
 ```
 
 Bazel is the only build. The Go packages for the protos exist only as Bazel
@@ -205,6 +206,11 @@ hand-editing what Gazelle owns.
 - `.github/workflows/publish.yml` publishes and signs on every push to `main`
   and on every release tag. It cannot be exercised from a pull request, so read
   a change to it twice and watch the run after merge.
+- After publishing, the workflow runs the end-to-end suite against what it
+  published: `E2E_CHART=oci://<chart repository> E2E_CHART_VERSION=<version>
+  e2e/run.sh` pulls the chart and runs the images it pins, building nothing
+  but the tests. The same works locally, from the commit the chart was built
+  from.
 
 ## Releasing
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,13 @@ func TestMetricsReachTheCollector(t *testing.T) {
 		"chandler.provider.watches",
 		"chandler.provider.updates",
 	}
+	// Every component reports the version it was built from, the one
+	// e2e/run.sh stamped the images with.
+	version := os.Getenv("E2E_VERSION")
+	if version == "" || version == "dev" {
+		t.Fatalf("E2E_VERSION is %q: run the suite through e2e/run.sh", version)
+	}
+	services := []string{"chandler-server", "chandler-csi", "chandler-provider-file", "chandler-provider-s3"}
 	err := eventually(ctx, func() error {
 		logs, err := kubectl(ctx, "logs", "-n", driverNamespace, "deployment/otel-collector", "--tail=-1")
 		if err != nil {
@@ -65,6 +73,21 @@ func TestMetricsReachTheCollector(t *testing.T) {
 		for _, w := range want {
 			if !strings.Contains(logs, w) {
 				missing = append(missing, w)
+			}
+		}
+		// The debug exporter prints each resource in its own block.
+		stamped := make(map[string]bool)
+		for _, block := range strings.Split(logs, "ResourceMetrics #") {
+			for _, service := range services {
+				if strings.Contains(block, "service.name: Str("+service+")") &&
+					strings.Contains(block, "service.version: Str("+version+")") {
+					stamped[service] = true
+				}
+			}
+		}
+		for _, service := range services {
+			if !stamped[service] {
+				missing = append(missing, service+" at version "+version)
 			}
 		}
 		if len(missing) > 0 {

@@ -1,0 +1,176 @@
+edition = "2024";
+
+// The application-facing API: how an application says whether it could load
+// the configuration in its volume. It is served by the CSI driver on a Unix
+// socket inside every volume that sets the attribute appAck, and nowhere
+// else. The socket carries no TLS and no authentication: each volume has its
+// own, so the driver knows which pod is speaking by the socket it used.
+//
+// The same service is reachable in two ways on that socket, told apart by the
+// Content-Type of the request:
+//
+//   - as plain HTTP with JSON bodies, on the paths in the google.api.http
+//     options below, so that an application needs no client library; and
+//   - as gRPC (Content-Type application/grpc, over HTTP/2 without TLS), for
+//     an application that would rather use a generated client.
+//
+// The JSON is the canonical protobuf JSON mapping of these messages: field
+// names in lowerCamelCase, enum values by name, and fields at their default
+// left out.
+package chandler.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
+
+// ApplicationService is served by the CSI driver to the containers that mount
+// a volume with application acknowledgement.
+//
+// An application reads its configuration, tries to load it and reports the
+// outcome. A version it reports loaded becomes the last known good of its
+// source; a version it rejects is taken out of the volume at once and is not
+// delivered to this pod again.
+service ApplicationService {
+  // GetConfig returns what the volume holds now, and what the application has
+  // said about each source so far.
+  //
+  // Over HTTP the response body is the Manifest itself, not wrapped.
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse) {
+    option (google.api.http) = {
+      get: "/v1/config"
+      response_body: "config"
+    };
+  }
+
+  // Report records whether the application loaded or rejected a generation,
+  // as a whole or source by source.
+  //
+  // It fails with:
+  //
+  //   INVALID_ARGUMENT (HTTP 400)  the report is malformed, or a state is not
+  //                                STATE_LOADED or STATE_REJECTED
+  //   NOT_FOUND (HTTP 404)         a source named in the report is not in
+  //                                the volume
+  //   ABORTED (HTTP 409)           the generation is neither the current one
+  //                                nor the one before it. The status carries
+  //                                the current Manifest in its details, to
+  //                                reload from and report on
+  //
+  // Over HTTP a successful report is answered with 204 and no body.
+  rpc Report(ReportRequest) returns (ReportResponse) {
+    option (google.api.http) = {
+      post: "/v1/reports"
+      body: "*"
+    };
+  }
+}
+
+// Manifest describes one generation of a volume: which version of each
+// source it holds. A volume can combine sources from several providers, so
+// each is listed with its own version.
+//
+// The driver also writes it, as JSON, to the file ..chandler.json at the root
+// of the volume. The file is replaced atomically together with the content it
+// describes.
+message Manifest {
+  // State is what the application has said about the version of a source.
+  enum State {
+    // Not set. In a report it is an error.
+    STATE_UNSPECIFIED = 0;
+
+    // The application has not reported on this version. Set by the driver;
+    // an application cannot report it.
+    STATE_PENDING = 1;
+
+    // The application loaded the version and is running with it. The version
+    // is now the source's last known good.
+    STATE_LOADED = 2;
+
+    // The application refused the version. The driver puts the last loaded
+    // version of the source back in the volume at once, if there is one, and
+    // never writes the rejected version to this volume again.
+    STATE_REJECTED = 3;
+  }
+
+  // Identifies this exact combination of source versions. An application
+  // names it when it reports, so that the driver knows which versions the
+  // report is about even if a newer generation has arrived meanwhile.
+  string generation = 1;
+
+  // The sources of the volume, in the order of its volume attributes.
+  repeated ManifestSource sources = 2;
+}
+
+// ManifestSource is one source of a volume in a Manifest.
+message ManifestSource {
+  // The name of the source, from the volume attributes. It defaults to path.
+  // Reports name a source by it.
+  string name = 1;
+
+  // The URI the source is read from.
+  string uri = 2;
+
+  // Where the source is written, relative to the root of the volume.
+  string path = 3;
+
+  // The version of the source in this generation, a content address
+  // (sha256:<hex>). Unset while nothing has been delivered for the source.
+  string version = 4;
+
+  // What the application has said about this version. Set in the response of
+  // GetConfig. Unset in the manifest file, which is written before the
+  // application has read it.
+  Manifest.State state = 5;
+}
+
+// GetConfigRequest asks for the current configuration. It has no fields: the
+// socket identifies the volume.
+message GetConfigRequest {}
+
+// GetConfigResponse is the answer to GetConfig.
+message GetConfigResponse {
+  // The manifest of the current generation, with the state of every source
+  // set. Always set.
+  Manifest config = 1;
+}
+
+// ReportRequest is what an application says about a generation it read.
+//
+// With sources, only the listed sources are affected and the others keep
+// their state; an application whose components load different sources at
+// different times sends several reports and they accumulate. Without
+// sources, state and message apply to every source.
+message ReportRequest {
+  // The generation the application read, from the manifest. Required. It has
+  // to be the current generation or the one before it.
+  string generation = 1;
+
+  // The verdict on every source: STATE_LOADED or STATE_REJECTED. Required
+  // when sources is empty, and ignored otherwise.
+  Manifest.State state = 2;
+
+  // The application's own explanation, typically the reason for a rejection.
+  // Shown to operators and never interpreted; cut at 1024 bytes. Used only
+  // when sources is empty. May be unset.
+  string message = 3;
+
+  // Verdicts on individual sources. May be empty.
+  repeated SourceReport sources = 4;
+}
+
+// SourceReport is the application's verdict on one source.
+message SourceReport {
+  // The name of the source, as in the manifest. Required.
+  string name = 1;
+
+  // The verdict: STATE_LOADED or STATE_REJECTED. Required.
+  Manifest.State state = 2;
+
+  // The application's own explanation, typically the reason for a rejection.
+  // Shown to operators and never interpreted; cut at 1024 bytes. May be
+  // unset.
+  string message = 3;
+}
+
+// ReportResponse is the answer to an accepted report. It has no fields.
+message ReportResponse {}

@@ -88,8 +88,11 @@ hand-editing what Gazelle owns.
   is set and what happens when it is not.
 - Never reuse or renumber a field, and reserve the number of one you delete.
   CI compares the protos with the base commit (`scripts/proto-breaking.sh`)
-  and fails on a change that breaks the wire. Renaming a field or a message is
-  allowed; renaming a service or an RPC is not.
+  and fails on a change that breaks the wire. Renaming a message is allowed,
+  and so is renaming a field or an enum value, except in `app.proto`, where
+  the names are the JSON applications write. Renaming a service or an RPC is
+  not. A new proto file used only between Chandler's components is added to
+  the `ignore_only` lists in `api/buf.yaml`.
 
 ## Design rules that code must keep
 
@@ -111,8 +114,13 @@ hand-editing what Gazelle owns.
   revision is the provider's own change marker. They are never interchangeable.
 - **The server keeps no persistent storage.** Its cache lives on an `emptyDir`
   and replicas copy from each other.
-- **The application-facing API is HTTP over a Unix socket**, not gRPC, so
-  applications need no SDK.
+- **The application-facing API needs no SDK.** `ApplicationService` in
+  `app.proto` is served on a Unix socket in the volume as plain HTTP with JSON
+  bodies, on the paths its `google.api.http` options give, and as gRPC on the
+  same socket for whoever prefers a client. Whatever an application can do
+  over gRPC it must be able to do with curl: give every RPC an HTTP binding.
+  The JSON is part of the contract, so a field or an enum value of
+  `app.proto` cannot be renamed; CI checks it.
 
 ## Connections
 
@@ -120,7 +128,9 @@ hand-editing what Gazelle owns.
   `common/transport`. A component dials with `transport.Dial` and serves with
   `transport.Serve`; do not construct `tls.Config` or use insecure
   credentials elsewhere. Running without TLS has to be asked for with
-  `--insecure`.
+  `--insecure`. The one exception is the application socket
+  (`csi/internal/appack`): it is a Unix socket inside one pod's volume, with
+  no peer to identify.
 - Certificates come from a `transport.Source`: files, or a SPIFFE Workload
   API. Both are tested end to end, in separate CI jobs; a change to
   `common/transport` or to the chart's TLS settings has to pass both.

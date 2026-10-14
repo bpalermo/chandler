@@ -14,7 +14,8 @@ version whenever anything upstream fails or a new version cannot be written.
 
 The wire contracts are in [`api/chandler/v1`](../api/chandler/v1):
 `discovery.proto` (driver ↔ server), `provider.proto` (server ↔ provider),
-`peer.proto` (server ↔ server), `common.proto` (shared types). This document explains the design around them.
+`peer.proto` (server ↔ server), `app.proto` (application ↔ driver),
+`common.proto` (shared types). This document explains the design around them.
 
 ## 1. Goals and non-goals
 
@@ -31,7 +32,7 @@ Goals
   from running pods and, where a cache exists, do not block new pods.
 - Updates are atomic per volume; the last known good config is always kept.
 - An application can optionally report whether it loaded or rejected a
-  config, over a plain HTTP API on a Unix socket in the volume. A rejection
+  config, over plain HTTP or gRPC on a Unix socket in the volume. A rejection
   reverts that pod and is reported to the provider, which can hold a rollout.
 - Caching is keyed by provider-issued cache keys and is bounded by design.
 - Configuration content is opaque to the server and the driver. Neither parses
@@ -343,50 +344,65 @@ source's `name` comes from the volume attributes and defaults to its `path`.
 
 `generation` identifies this exact combination of source versions.
 
-**Socket.** The driver serves plain HTTP/1.1 with JSON bodies on the socket;
-there is no gRPC and no client library. Connecting works although the volume
-is mounted read-only. Each volume has its own socket, so the driver knows
-which pod and volume is speaking without any authentication; any container
-that mounts the volume may report, which also lets a sidecar report on behalf
-of an application that cannot be changed.
+**Socket.** The driver serves `ApplicationService`
+([`app.proto`](../api/chandler/v1/app.proto)) on the socket. The proto is the
+contract: the manifest file and every request and response are its messages.
+The service is reachable in two ways on the same socket, told apart by the
+`Content-Type` of the request:
 
-| Request | Purpose |
-|---|---|
-| `GET /v1/config` | The manifest, plus the state the driver has recorded for each source (`pending`, `loaded`, `rejected`) |
-| `POST /v1/reports` | Report the outcome of loading a generation |
+- **HTTP with JSON bodies**, over HTTP/1.1 or HTTP/2, on the paths the proto
+  gives each RPC with `google.api.http`. No client library is needed. The
+  JSON is protobuf's JSON mapping: an enum by the name of its value, and a
+  field at its default left out. A field the proto does not have is refused.
+- **gRPC** (`Content-Type: application/grpc`, HTTP/2 without TLS), for an
+  application that prefers a generated client.
+
+Connecting works although the volume is mounted read-only. Each volume has
+its own socket, so the driver knows which pod and volume is speaking without
+any authentication; any container that mounts the volume may report, which
+also lets a sidecar report on behalf of an application that cannot be
+changed.
+
+| HTTP | RPC | Purpose |
+|---|---|---|
+| `GET /v1/config` | `GetConfig` | The manifest, plus the state the driver has recorded for each source (`STATE_PENDING`, `STATE_LOADED`, `STATE_REJECTED`) |
+| `POST /v1/reports` | `Report` | Report the outcome of loading a generation |
 
 A report names the generation the application read and gives a state for all
 of it, or for individual sources:
 
 ```json
-{"generation": "g-5d41402abc4b2a76", "state": "loaded"}
+{"generation": "g-5d41402abc4b2a76", "state": "STATE_LOADED"}
 ```
 
 ```json
 {
   "generation": "g-5d41402abc4b2a76",
   "sources": [
-    {"name": "app",   "state": "loaded"},
-    {"name": "flags", "state": "rejected", "message": "unknown flag 'checkout.v3'"}
+    {"name": "app",   "state": "STATE_LOADED"},
+    {"name": "flags", "state": "STATE_REJECTED", "message": "unknown flag 'checkout.v3'"}
   ]
 }
 ```
 
 ```
 curl --unix-socket /etc/payments/..chandler.sock \
-  -d '{"generation":"g-5d41402abc4b2a76","state":"loaded"}' http://chandler/v1/reports
+  -d '{"generation":"g-5d41402abc4b2a76","state":"STATE_LOADED"}' http://chandler/v1/reports
 ```
 
 - With `sources`, only the listed sources are affected; the others stay
-  `pending`. An application whose components load different sources at
+  `STATE_PENDING`. An application whose components load different sources at
   different times sends several reports and they accumulate.
 - Without `sources`, the top-level `state` applies to every source.
 - The driver resolves the generation to source versions and records each
   verdict against `(source, version)`, so a report stays meaningful for the
   sources that did not change when a newer generation has arrived meanwhile.
-- Responses: `204` accepted; `400` malformed; `404` unknown source name;
-  `409` when the generation is neither the current nor the previous one, with
-  the current manifest in the body so the application can reload and retry.
+- Responses, as HTTP status and gRPC code: `204` (`OK`) accepted, with no
+  body; `400` (`INVALID_ARGUMENT`) malformed; `404` (`NOT_FOUND`) unknown
+  source name; `409` (`ABORTED`) when the generation is neither the current
+  nor the previous one. An error's body is a `google.rpc.Status` (`code`,
+  `message`, `details`); for `409` its `details` hold the current manifest,
+  so the application can reload and retry.
 
 **What the driver does with a verdict.**
 
@@ -842,7 +858,7 @@ What exists today, against the design above.
 | Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy: UseCached`, volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, eviction of unused entries to stay within a quota, `no_store` kept in memory only | Authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected, overdue), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, rejections and overdue reports, and S3 metadata overrides | |
-| Application acknowledgement | `appAck: "true"`, the manifest in every generation, the HTTP API on the socket (`GET /v1/config`, `POST /v1/reports`, per generation or per source), local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |
+| Application acknowledgement | `appAck: "true"`, the manifest in every generation, `ApplicationService` on the socket, defined in `app.proto` and served as HTTP with JSON (`GET /v1/config`, `POST /v1/reports`) and as gRPC, per generation or per source, local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |
 | Replicas | `PeerSync`: warm-up from every ready peer before reporting ready, anti-entropy with one peer every 30s, the merge rules (own live watch wins, else the most recently confirmed entry; last-referenced merged by maximum), bytes verified on receipt. Headless Service, PodDisruptionBudget, spread constraints, surge-only rolling update | |
 | Providers | File provider; S3 provider (objects and prefixes, bucket allow-list, S3-compatible endpoints) | |
 | Security | Mutual TLS on every connection, from certificate files re-read on rotation or from a SPIFFE Workload API; peers authorised by identity per service; a chart-issued private authority by default, whose certificates an upgrade renews before they expire, your own Secrets, or SPIRE. The pod's identity verified offline from its service account token | Authorisation of URIs (open question 2) |

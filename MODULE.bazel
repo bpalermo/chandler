@@ -1,5 +1,5 @@
 module(
-    name = "chandler",
+    name = "stevedore",
     version = "0.0.0",
 )
 
@@ -28,7 +28,7 @@ bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "rules_img_signer_cosign", version = "0.0.1")
 
 # grpc-gateway, for the HTTP side of the application API: its generator
-# (go_gen_grpc_gateway_opaque, used by //api/chandler/v1) and the runtime the
+# (go_gen_grpc_gateway_opaque, used by //api/stevedore/v1) and the runtime the
 # generated code calls. Gazelle uses this module in place of the Go module of
 # the same name, so the version here and the one in go.mod have to agree.
 #
@@ -49,7 +49,7 @@ archive_override(
 
 bazel_dep(name = "googleapis", version = "0.0.0-20260929-28769825")
 
-# buf lints the protos and checks them for breaking changes (//api/chandler/v1
+# buf lints the protos and checks them for breaking changes (//api/stevedore/v1
 # and scripts/proto-breaking.sh). Only its checks are used: protoc still
 # compiles, and rules_go still generates.
 bazel_dep(name = "rules_buf", version = "0.5.4")

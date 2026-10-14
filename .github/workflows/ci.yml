@@ -78,7 +78,7 @@ jobs:
             //csi:image_push //csi:image_index \
             //providers/s3:image_push //providers/s3:image_index \
             //providers/file:image_push //providers/file:image_index \
-            //charts/chandler:chandler //charts/chandler:chandler.push_registry \
+            //charts/stevedore:stevedore //charts/stevedore:stevedore.push_registry \
             //bazel/cosign //bazel/cosign:verify_image
 
       # Includes the linters: the Go analyzers of //:nogo run as part of
@@ -139,7 +139,7 @@ jobs:
       # e2e/run.sh uses a cluster of this name if one exists.
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
-          cluster_name: chandler-e2e
+          cluster_name: stevedore-e2e
 
       - name: e2e/run.sh
         run: e2e/run.sh --config=ci
@@ -167,7 +167,7 @@ jobs:
 
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
-          cluster_name: chandler-e2e
+          cluster_name: stevedore-e2e
 
       - name: e2e/run.sh with SPIFFE identities
         run: E2E_TLS=spiffe e2e/run.sh --config=ci

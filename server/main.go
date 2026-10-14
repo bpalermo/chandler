@@ -1,4 +1,4 @@
-// Command chandler-server is the Chandler config server. CSI drivers
+// Command stevedore-server is the Stevedore config server. CSI drivers
 // subscribe to it for the configuration of the pods on their node, and it
 // watches the registered providers on their behalf.
 package main
@@ -21,13 +21,13 @@ import (
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/telemetry"
-	"github.com/bpalermo/chandler/common/transport"
-	"github.com/bpalermo/chandler/common/version"
-	"github.com/bpalermo/chandler/server/internal/hub"
-	"github.com/bpalermo/chandler/server/internal/identity"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/telemetry"
+	"github.com/bpalermo/stevedore/common/transport"
+	"github.com/bpalermo/stevedore/common/version"
+	"github.com/bpalermo/stevedore/server/internal/hub"
+	"github.com/bpalermo/stevedore/server/internal/identity"
 )
 
 // providerFlags collects repeated --provider name=target flags.
@@ -60,7 +60,7 @@ func main() {
 	flag.StringVar(&sec.healthListen, "health-listen", ":9001", "address of the gRPC health service, served without TLS for kubelet's probes")
 	flag.Var(&sec.drivers, "driver-identity", "an identity (DNS name or SPIFFE ID) a CSI driver's certificate may carry. Repeatable; required with TLS")
 	flag.Var(&sec.peers, "peer-identity", "an identity another replica's certificate may carry. Repeatable; required with TLS when peer sync is on")
-	flag.StringVar(&sec.tokenAudience, "pod-token-audience", "chandler", "the audience the pods' service account tokens must have been issued for")
+	flag.StringVar(&sec.tokenAudience, "pod-token-audience", "stevedore", "the audience the pods' service account tokens must have been issued for")
 	flag.StringVar(&sec.tokenKeys, "pod-token-keys", identity.InClusterJWKS, "where the cluster's token signing keys are: a URL, read with this pod's service account, or a file")
 	flag.BoolVar(&sec.trustDriver, "trust-driver-identity", false, "do not verify the pods' tokens: believe the namespace, service account and pod a driver reports")
 	flag.DurationVar(&sec.maxConnectionAge, "max-connection-age", 30*time.Minute, "how long a driver's connection lives before it is closed so that the driver reconnects, possibly to another replica; 0 never closes one")
@@ -88,7 +88,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("chandler-server %s\n", version.Version)
+		fmt.Printf("stevedore-server %s\n", version.Version)
 		return
 	}
 
@@ -101,7 +101,7 @@ func main() {
 		err = errors.New("--max-keys-per-provider and --max-bytes-per-provider must be positive")
 	}
 	if err != nil {
-		log.Error("chandler-server failed", "error", err)
+		log.Error("stevedore-server failed", "error", err)
 		os.Exit(1)
 	}
 	cfg := hub.Config{
@@ -116,7 +116,7 @@ func main() {
 	}
 	peers := hub.Peers{Service: *peerService, Self: *peerSelf, Interval: *peerInterval, WarmUp: *peerWarmUp}
 	if err := run(log, *listen, cfg, peers, providers, sec); err != nil {
-		log.Error("chandler-server failed", "error", err)
+		log.Error("stevedore-server failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -272,14 +272,14 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 	// Drivers may subscribe, replicas may sync, and neither may do the
 	// other's part.
 	options := transport.Serve(src, func(method string) []string {
-		if strings.HasPrefix(method, "/"+chandlerv1.PeerSync_ServiceDesc.ServiceName+"/") {
+		if strings.HasPrefix(method, "/"+stevedorev1.PeerSync_ServiceDesc.ServiceName+"/") {
 			return peerIdentities
 		}
 		return drivers
 	})
 	server := grpc.NewServer(append(options, transport.ServerKeepalive(sec.maxConnectionAge)...)...)
-	chandlerv1.RegisterConfigDiscoveryServiceServer(server, h)
-	chandlerv1.RegisterPeerSyncServer(server, h)
+	stevedorev1.RegisterConfigDiscoveryServiceServer(server, h)
+	stevedorev1.RegisterPeerSyncServer(server, h)
 	// Not ready until the cache is warm: a rolling restart must not move on
 	// from a replica that holds nothing.
 	healthServer, stopHealth, err := transport.Health(sec.healthListen)
@@ -295,7 +295,7 @@ func run(log *slog.Logger, listen string, cfg hub.Config, peers hub.Peers, provi
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	stopTelemetry, err := telemetry.Setup(ctx, "chandler-server", version.Version)
+	stopTelemetry, err := telemetry.Setup(ctx, "stevedore-server", version.Version)
 	if err != nil {
 		return err
 	}

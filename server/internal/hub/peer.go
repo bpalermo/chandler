@@ -16,8 +16,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
 // Peers configures how a replica finds the others.
@@ -39,17 +39,17 @@ type Peers struct {
 	Resolve func(ctx context.Context) ([]string, error)
 }
 
-// ListKeys implements chandlerv1.PeerSyncServer: everything this replica
+// ListKeys implements stevedorev1.PeerSyncServer: everything this replica
 // holds, one entry per key.
-func (h *Hub) ListKeys(_ *chandlerv1.ListKeysRequest, stream chandlerv1.PeerSync_ListKeysServer) error {
+func (h *Hub) ListKeys(_ *stevedorev1.ListKeysRequest, stream stevedorev1.PeerSync_ListKeysServer) error {
 	h.mu.Lock()
-	aliases := make(map[entryKey][]*chandlerv1.Alias)
+	aliases := make(map[entryKey][]*stevedorev1.Alias)
 	for _, a := range h.aliases {
 		key := entryKey{a.Provider, a.CacheKey}
-		aliases[key] = append(aliases[key], chandlerv1.Alias_builder{Uri: proto.String(a.URI), Attributes: a.Attributes}.Build())
+		aliases[key] = append(aliases[key], stevedorev1.Alias_builder{Uri: proto.String(a.URI), Attributes: a.Attributes}.Build())
 	}
 	now := h.now()
-	entries := make([]*chandlerv1.KeyEntry, 0, len(h.entries))
+	entries := make([]*stevedorev1.KeyEntry, 0, len(h.entries))
 	for key, e := range h.entries {
 		// What is live or referenced right now is so as of now.
 		refreshed, referenced := e.lastRefreshed, e.lastReferenced
@@ -59,7 +59,7 @@ func (h *Hub) ListKeys(_ *chandlerv1.ListKeysRequest, stream chandlerv1.PeerSync
 				refreshed = now
 			}
 		}
-		ke := chandlerv1.KeyEntry_builder{
+		ke := stevedorev1.KeyEntry_builder{
 			Provider:       proto.String(key.provider),
 			CacheKey:       proto.String(key.cacheKey),
 			CurrentVersion: proto.String(e.current().Version),
@@ -74,7 +74,7 @@ func (h *Hub) ListKeys(_ *chandlerv1.ListKeysRequest, stream chandlerv1.PeerSync
 			ke.CandidateBasisPoints = proto.Uint32(e.share)
 		}
 		for _, v := range e.all() {
-			ke.Versions = append(ke.Versions, chandlerv1.KeyVersion_builder{
+			ke.Versions = append(ke.Versions, stevedorev1.KeyVersion_builder{
 				Version: proto.String(v.Version), Revision: proto.String(v.Revision),
 			}.Build())
 		}
@@ -90,13 +90,13 @@ func (h *Hub) ListKeys(_ *chandlerv1.ListKeysRequest, stream chandlerv1.PeerSync
 	return nil
 }
 
-// GetBundle implements chandlerv1.PeerSyncServer.
-func (h *Hub) GetBundle(_ context.Context, req *chandlerv1.GetBundleRequest) (*chandlerv1.GetBundleResponse, error) {
+// GetBundle implements stevedorev1.PeerSyncServer.
+func (h *Hub) GetBundle(_ context.Context, req *stevedorev1.GetBundleRequest) (*stevedorev1.GetBundleResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, e := range h.entries {
 		if b, ok := e.bundles[req.GetVersion()]; ok {
-			return chandlerv1.GetBundleResponse_builder{Bundle: b}.Build(), nil
+			return stevedorev1.GetBundleResponse_builder{Bundle: b}.Build(), nil
 		}
 	}
 	return nil, grpcstatus.Errorf(codes.NotFound, "version %s is not held", req.GetVersion())
@@ -197,9 +197,9 @@ func (h *Hub) syncWith(ctx context.Context, address string, identities []string)
 		return err
 	}
 	defer conn.Close()
-	client := chandlerv1.NewPeerSyncClient(conn)
+	client := stevedorev1.NewPeerSyncClient(conn)
 
-	stream, err := client.ListKeys(ctx, chandlerv1.ListKeysRequest_builder{ServerId: proto.String(h.id)}.Build())
+	stream, err := client.ListKeys(ctx, stevedorev1.ListKeysRequest_builder{ServerId: proto.String(h.id)}.Build())
 	if err != nil {
 		return err
 	}
@@ -227,7 +227,7 @@ func (h *Hub) syncWith(ctx context.Context, address string, identities []string)
 // Otherwise the entry most recently confirmed with the provider wins. The
 // last-referenced time is merged by taking the later, so that every replica
 // drops an unused key at the same moment and none brings it back.
-func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *chandlerv1.KeyEntry) error {
+func (h *Hub) adopt(ctx context.Context, client stevedorev1.PeerSyncClient, ke *stevedorev1.KeyEntry) error {
 	key := entryKey{ke.GetProvider(), ke.GetCacheKey()}
 	refreshed, referenced := ke.GetLastRefreshed().AsTime(), ke.GetLastReferenced().AsTime()
 	stable := ke.GetCurrentVersion()
@@ -270,9 +270,9 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 
 	// Fetch outside the lock; verify before trusting: a peer cannot hand
 	// over altered bytes.
-	fetched := make(map[string]*chandlerv1.Bundle, len(missing))
+	fetched := make(map[string]*stevedorev1.Bundle, len(missing))
 	for _, version := range missing {
-		resp, err := client.GetBundle(ctx, chandlerv1.GetBundleRequest_builder{Version: proto.String(version)}.Build())
+		resp, err := client.GetBundle(ctx, stevedorev1.GetBundleRequest_builder{Version: proto.String(version)}.Build())
 		if err != nil {
 			if version == stable {
 				return fmt.Errorf("fetch %s: %w", version, err)
@@ -301,12 +301,12 @@ func (h *Hub) adopt(ctx context.Context, client chandlerv1.PeerSyncClient, ke *c
 		return nil // the provider, or a fresher peer, got here first
 	}
 	if e == nil {
-		e = &entry{key: key, bundles: make(map[string]*chandlerv1.Bundle), refs: make(map[*resource]struct{})}
+		e = &entry{key: key, bundles: make(map[string]*stevedorev1.Bundle), refs: make(map[*resource]struct{})}
 	}
 	// The stable version first, then the older ones; the candidate apart.
 	var versions []held
 	var candidate *held
-	bundles := make(map[string]*chandlerv1.Bundle)
+	bundles := make(map[string]*stevedorev1.Bundle)
 	peerVersions := ke.GetVersions()
 	sort.SliceStable(peerVersions, func(i, j int) bool {
 		return peerVersions[i].GetVersion() == stable && peerVersions[j].GetVersion() != stable

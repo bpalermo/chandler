@@ -27,11 +27,11 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/telemetry"
-	"github.com/bpalermo/chandler/common/uri"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/telemetry"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 var (
@@ -75,9 +75,9 @@ type State struct {
 	// Revision is the origin's change marker.
 	Revision string
 	// Bundle is the content, or nil when Revision is the known one.
-	Bundle *chandlerv1.Bundle
+	Bundle *stevedorev1.Bundle
 	// CacheControl is the resource's caching directives, or nil.
-	CacheControl *chandlerv1.CacheControl
+	CacheControl *stevedorev1.CacheControl
 
 	// Since is when the revision appeared at the origin; the ramp is
 	// measured from it. The zero time releases the revision to everyone at
@@ -93,7 +93,7 @@ type State struct {
 
 // Server serves ConfigProvider for an Origin.
 type Server struct {
-	chandlerv1.UnimplementedConfigProviderServer
+	stevedorev1.UnimplementedConfigProviderServer
 
 	// Name is the provider's registered name: the scheme of the URIs it serves.
 	Name string
@@ -122,7 +122,7 @@ type Server struct {
 	mu sync.Mutex
 	// feedback is the latest report of each connected server replica, by
 	// revision.
-	feedback map[revisionKey]map[string]*chandlerv1.Feedback
+	feedback map[revisionKey]map[string]*stevedorev1.Feedback
 	// held is the share each revision was held at when too many
 	// subscriptions refused it, and heldAt when that was last so.
 	held   map[revisionKey]uint32
@@ -139,11 +139,11 @@ type Server struct {
 func (s *Server) instrument() {
 	s.instruments.Do(func() {
 		m := telemetry.Meter()
-		s.updates = telemetry.Must(m.Int64Counter("chandler.provider.updates",
+		s.updates = telemetry.Must(m.Int64Counter("stevedore.provider.updates",
 			metric.WithDescription("Updates sent to config servers, by kind: bundle, not_modified or deleted.")))
-		s.failures = telemetry.Must(m.Int64Counter("chandler.provider.failures",
+		s.failures = telemetry.Must(m.Int64Counter("stevedore.provider.failures",
 			metric.WithDescription("Watches the provider could not serve, by gRPC code.")))
-		s.watching = telemetry.Must(m.Int64UpDownCounter("chandler.provider.watches",
+		s.watching = telemetry.Must(m.Int64UpDownCounter("stevedore.provider.watches",
 			metric.WithDescription("Watches config servers hold on this provider.")))
 	})
 }
@@ -174,12 +174,12 @@ func (s *Server) now() time.Time {
 }
 
 // record keeps a server replica's latest report on a revision.
-func (s *Server) record(serverID string, f *chandlerv1.Feedback) {
+func (s *Server) record(serverID string, f *stevedorev1.Feedback) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := revisionKey{f.GetCacheKey(), f.GetRevision()}
 	if s.feedback == nil {
-		s.feedback = make(map[revisionKey]map[string]*chandlerv1.Feedback)
+		s.feedback = make(map[revisionKey]map[string]*stevedorev1.Feedback)
 	}
 	if f.GetAssigned() == 0 {
 		delete(s.feedback[key], serverID)
@@ -189,7 +189,7 @@ func (s *Server) record(serverID string, f *chandlerv1.Feedback) {
 		return
 	}
 	if s.feedback[key] == nil {
-		s.feedback[key] = make(map[string]*chandlerv1.Feedback)
+		s.feedback[key] = make(map[string]*stevedorev1.Feedback)
 	}
 	s.feedback[key][serverID] = f
 }
@@ -267,8 +267,8 @@ func (s *Server) share(key revisionKey, state State, last uint32) uint32 {
 	return max(share, last)
 }
 
-// StreamConfigs implements chandlerv1.ConfigProviderServer.
-func (s *Server) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConfigsServer) error {
+// StreamConfigs implements stevedorev1.ConfigProviderServer.
+func (s *Server) StreamConfigs(stream stevedorev1.ConfigProvider_StreamConfigsServer) error {
 	s.instrument()
 	first, err := stream.Recv()
 	if err != nil {
@@ -294,7 +294,7 @@ func (s *Server) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConfigsSer
 	defer cancel()
 
 	// Watches produce concurrently; one goroutine owns stream.Send.
-	out := make(chan *chandlerv1.ProviderResponse)
+	out := make(chan *stevedorev1.ProviderResponse)
 	sendErr := make(chan error, 1)
 	go func() {
 		for {
@@ -316,8 +316,8 @@ func (s *Server) StreamConfigs(stream chandlerv1.ConfigProvider_StreamConfigsSer
 		log:    log,
 		out:    out,
 	}
-	session.send(ctx, chandlerv1.ProviderResponse_builder{
-		Hello: chandlerv1.ProviderHello_builder{Name: proto.String(s.Name)}.Build(),
+	session.send(ctx, stevedorev1.ProviderResponse_builder{
+		Hello: stevedorev1.ProviderHello_builder{Name: proto.String(s.Name)}.Build(),
 	}.Build())
 
 	var wg sync.WaitGroup
@@ -376,13 +376,13 @@ type session struct {
 	server *Server
 	limits bundle.Limits
 	log    *slog.Logger
-	out    chan<- *chandlerv1.ProviderResponse
+	out    chan<- *stevedorev1.ProviderResponse
 
 	mu    sync.Mutex
 	nonce uint64
 }
 
-func (s *session) send(ctx context.Context, msg *chandlerv1.ProviderResponse) {
+func (s *session) send(ctx context.Context, msg *stevedorev1.ProviderResponse) {
 	select {
 	case s.out <- msg:
 	case <-ctx.Done():
@@ -404,22 +404,22 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 	defer s.server.watching.Add(context.Background(), -1, provider)
 	fail := func(code codes.Code, msg string) {
 		s.server.count(s.server.failures, "code", code.String())
-		s.send(ctx, chandlerv1.ProviderResponse_builder{
-			Error: chandlerv1.WatchError_builder{
+		s.send(ctx, stevedorev1.ProviderResponse_builder{
+			Error: stevedorev1.WatchError_builder{
 				WatchId: proto.String(id),
 				Status:  &status.Status{Code: int32(code), Message: msg},
 			}.Build(),
 		}.Build())
 	}
-	update := func(key, revision string) chandlerv1.ResourceUpdate_builder {
-		return chandlerv1.ResourceUpdate_builder{
+	update := func(key, revision string) stevedorev1.ResourceUpdate_builder {
+		return stevedorev1.ResourceUpdate_builder{
 			WatchId:  proto.String(id),
 			Nonce:    proto.String(s.nextNonce()),
 			CacheKey: proto.String(key),
 			Revision: proto.String(revision),
 		}
 	}
-	emit := func(b chandlerv1.ResourceUpdate_builder) {
+	emit := func(b stevedorev1.ResourceUpdate_builder) {
 		kind := "bundle"
 		switch {
 		case b.NotModified != nil:
@@ -428,7 +428,7 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 			kind = "deleted"
 		}
 		s.server.count(s.server.updates, "kind", kind)
-		s.send(ctx, chandlerv1.ProviderResponse_builder{Update: b.Build()}.Build())
+		s.send(ctx, stevedorev1.ProviderResponse_builder{Update: b.Build()}.Build())
 	}
 
 	resource, err := s.server.resolve(rawURI)
@@ -459,7 +459,7 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 			u := update(key, state.Revision)
 			u.CacheControl = state.CacheControl
 			if now < rollout.Everyone {
-				u.Rollout = chandlerv1.Rollout_builder{BasisPoints: proto.Uint32(now)}.Build()
+				u.Rollout = stevedorev1.Rollout_builder{BasisPoints: proto.Uint32(now)}.Build()
 			}
 			switch {
 			case state.Bundle != nil:
@@ -468,7 +468,7 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 			case (first && known != "") || now != share:
 				// Confirming a known revision, or moving its rollout on:
 				// no bytes either way.
-				u.NotModified = &chandlerv1.NotModified{}
+				u.NotModified = &stevedorev1.NotModified{}
 				emit(u)
 			}
 			revision, share, reported = state.Revision, now, codes.OK
@@ -478,7 +478,7 @@ func (s *session) watch(ctx context.Context, id, rawURI, known string) {
 		case errors.Is(err, ErrNotFound) && revision != "":
 			// It existed and is gone.
 			u := update(key, revision)
-			u.Deleted = &chandlerv1.Deleted{}
+			u.Deleted = &stevedorev1.Deleted{}
 			emit(u)
 			revision, share, reported = "", 0, codes.NotFound
 		default:

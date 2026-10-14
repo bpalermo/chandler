@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "rollout",
     srcs = ["rollout.go"],
-    importpath = "github.com/bpalermo/chandler/common/rollout",
+    importpath = "github.com/bpalermo/stevedore/common/rollout",
     visibility = ["//visibility:public"],
 )
 

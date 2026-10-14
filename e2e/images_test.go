@@ -16,7 +16,7 @@ func TestImagesRunInCluster(t *testing.T) {
 	defer cancel()
 	ns := newNamespace(ctx, t)
 
-	for _, name := range []string{"chandler-server", "chandler-csi", "chandler-provider-s3", "chandler-provider-file"} {
+	for _, name := range []string{"stevedore-server", "stevedore-csi", "stevedore-provider-s3", "stevedore-provider-file"} {
 		t.Run(name, func(t *testing.T) {
 			mustKubectl(ctx, t, "run", name, "-n", ns,
 				"--image="+image(name),

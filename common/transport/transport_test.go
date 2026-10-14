@@ -144,8 +144,8 @@ func call(t *testing.T, target string, src Source, serverIdentities ...string) c
 }
 
 func TestMutualTLS(t *testing.T) {
-	ca, other := newAuthority(t, "chandler"), newAuthority(t, "someone else")
-	const server, driver = "chandler-server.chandler-system.svc", "spiffe://example.org/ns/chandler-system/sa/chandler-csi"
+	ca, other := newAuthority(t, "stevedore"), newAuthority(t, "someone else")
+	const server, driver = "stevedore-server.stevedore-system.svc", "spiffe://example.org/ns/stevedore-system/sa/stevedore-csi"
 	target := serve(t, ca.issue(t, server), []string{driver})
 
 	// The right identities on both sides: by DNS name or by SPIFFE ID alike.
@@ -155,7 +155,7 @@ func TestMutualTLS(t *testing.T) {
 
 	// A valid certificate is not enough: the identity must be one the
 	// server allows for the call.
-	if got := call(t, target, ca.issue(t, "chandler-provider-file.chandler-system.svc"), server); got != codes.PermissionDenied {
+	if got := call(t, target, ca.issue(t, "stevedore-provider-file.stevedore-system.svc"), server); got != codes.PermissionDenied {
 		t.Errorf("a client with another identity: %s, want PermissionDenied", got)
 	}
 	// A client from another authority does not get as far as a call.
@@ -164,7 +164,7 @@ func TestMutualTLS(t *testing.T) {
 	}
 	// The client refuses a server that is not who it expects, although the
 	// certificate is valid and the address is the one it dialled.
-	if got := call(t, target, ca.issue(t, driver), "chandler-provider-s3.chandler-system.svc"); got != codes.Unavailable {
+	if got := call(t, target, ca.issue(t, driver), "stevedore-provider-s3.stevedore-system.svc"); got != codes.Unavailable {
 		t.Errorf("a server with another identity: %s, want Unavailable", got)
 	}
 	// And one whose certificate it cannot verify.
@@ -178,7 +178,7 @@ func TestMutualTLS(t *testing.T) {
 // A certificate that is replaced on disk is used from the next handshake on,
 // with no restart.
 func TestFilesReload(t *testing.T) {
-	ca := newAuthority(t, "chandler")
+	ca := newAuthority(t, "stevedore")
 	serverFiles := ca.issue(t, "old-name")
 	target := serve(t, serverFiles, []string{"client"})
 	client := ca.issue(t, "client")

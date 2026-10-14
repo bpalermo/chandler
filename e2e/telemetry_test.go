@@ -34,28 +34,28 @@ func TestMetricsReachTheCollector(t *testing.T) {
 
 	want := []string{
 		// Who sent them.
-		"service.name: Str(chandler-server)",
-		"service.name: Str(chandler-csi)",
-		"service.name: Str(chandler-provider-file)",
-		"service.name: Str(chandler-provider-s3)",
-		"k8s.cluster.name: Str(chandler-e2e)",
+		"service.name: Str(stevedore-server)",
+		"service.name: Str(stevedore-csi)",
+		"service.name: Str(stevedore-provider-file)",
+		"service.name: Str(stevedore-provider-s3)",
+		"k8s.cluster.name: Str(stevedore-e2e)",
 		// The server: what it serves, holds and hears back.
-		"chandler.server.subscriptions",
-		"chandler.server.provider.connected",
-		"chandler.server.cache.keys",
-		"chandler.server.acks",
-		"chandler.server.cache.keys.limit",
-		"chandler.server.cache.uri_variants",
-		"chandler.server.namespace_uris",
-		"chandler.server.peer.sync_age",
+		"stevedore.server.subscriptions",
+		"stevedore.server.provider.connected",
+		"stevedore.server.cache.keys",
+		"stevedore.server.acks",
+		"stevedore.server.cache.keys.limit",
+		"stevedore.server.cache.uri_variants",
+		"stevedore.server.namespace_uris",
+		"stevedore.server.peer.sync_age",
 		// The driver: mounts and writes.
-		"chandler.csi.volumes",
-		"chandler.csi.publish.duration",
-		"chandler.csi.apply.duration",
-		"chandler.csi.cache.bytes",
+		"stevedore.csi.volumes",
+		"stevedore.csi.publish.duration",
+		"stevedore.csi.apply.duration",
+		"stevedore.csi.cache.bytes",
 		// The providers: watches and what they emit.
-		"chandler.provider.watches",
-		"chandler.provider.updates",
+		"stevedore.provider.watches",
+		"stevedore.provider.updates",
 	}
 	// Every component reports the version it was built from, the one
 	// e2e/run.sh stamped the images with.
@@ -63,7 +63,7 @@ func TestMetricsReachTheCollector(t *testing.T) {
 	if version == "" || version == "dev" {
 		t.Fatalf("E2E_VERSION is %q: run the suite through e2e/run.sh", version)
 	}
-	services := []string{"chandler-server", "chandler-csi", "chandler-provider-file", "chandler-provider-s3"}
+	services := []string{"stevedore-server", "stevedore-csi", "stevedore-provider-file", "stevedore-provider-s3"}
 	err := eventually(ctx, func() error {
 		logs, err := kubectl(ctx, "logs", "-n", driverNamespace, "deployment/otel-collector", "--tail=-1")
 		if err != nil {

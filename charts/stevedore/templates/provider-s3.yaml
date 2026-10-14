@@ -1,7 +1,7 @@
 {{- if .Values.providers.s3.enabled -}}
 {{- $selector := dict "root" . "component" "provider-s3" -}}
 {{- $s3 := .Values.providers.s3 -}}
-{{- $serviceAccount := default (printf "%s-provider-s3" (include "chandler.name" .)) $s3.serviceAccount.name -}}
+{{- $serviceAccount := default (printf "%s-provider-s3" (include "stevedore.name" .)) $s3.serviceAccount.name -}}
 {{- if $s3.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
@@ -9,7 +9,7 @@ metadata:
   name: {{ $serviceAccount }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: provider-s3
   {{- with $s3.serviceAccount.annotations }}
   annotations:
@@ -21,20 +21,20 @@ automountServiceAccountToken: false
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "chandler.name" . }}-provider-s3
+  name: {{ include "stevedore.name" . }}-provider-s3
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: provider-s3
 spec:
   replicas: 1
   selector:
     matchLabels:
-      {{- include "chandler.selectorLabels" $selector | nindent 6 }}
+      {{- include "stevedore.selectorLabels" $selector | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "chandler.labels" . | nindent 8 }}
+        {{- include "stevedore.labels" . | nindent 8 }}
         app.kubernetes.io/component: provider-s3
       {{- with $s3.podAnnotations }}
       annotations:
@@ -59,13 +59,13 @@ spec:
       {{- end }}
       containers:
         - name: provider
-          image: {{ include "chandler.image" (dict "root" . "image" $s3.image) }}
+          image: {{ include "stevedore.image" (dict "root" . "image" $s3.image) }}
           imagePullPolicy: {{ $s3.image.pullPolicy }}
           args:
             - --listen=:{{ $s3.port }}
             - --health-listen=:{{ add (int $s3.port) 1 }}
-            {{- include "chandler.tlsArgs" $selector | nindent 12 }}
-            - --server-identity={{ include "chandler.identity" (dict "root" . "component" "server") }}
+            {{- include "stevedore.tlsArgs" $selector | nindent 12 }}
+            - --server-identity={{ include "stevedore.identity" (dict "root" . "component" "server") }}
             - --name={{ $s3.name }}
             - --poll-interval={{ $s3.pollInterval }}
             {{- range $s3.rollouts }}
@@ -84,7 +84,7 @@ spec:
             {{- end }}
           {{- if or $s3.region $s3.env .Values.telemetry.otlpEndpoint }}
           env:
-            {{- include "chandler.telemetryEnv" . | nindent 12 }}
+            {{- include "stevedore.telemetryEnv" . | nindent 12 }}
             {{- with $s3.region }}
             - name: AWS_REGION
               value: {{ . | quote }}
@@ -107,19 +107,19 @@ spec:
               port: {{ add (int $s3.port) 1 }}
             periodSeconds: 10
           securityContext:
-            {{- include "chandler.restrictedSecurityContext" . | nindent 12 }}
+            {{- include "stevedore.restrictedSecurityContext" . | nindent 12 }}
           {{- with $s3.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with (include "chandler.tlsVolumeMount" $selector) }}
+          {{- with (include "stevedore.tlsVolumeMount" $selector) }}
           volumeMounts:
             {{- . | nindent 12 }}
           {{- end }}
         {{- with $s3.extraContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with (include "chandler.tlsVolume" $selector) }}
+      {{- with (include "stevedore.tlsVolume" $selector) }}
       volumes:
         {{- . | nindent 8 }}
       {{- end }}
@@ -127,14 +127,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "chandler.name" . }}-provider-s3
+  name: {{ include "stevedore.name" . }}-provider-s3
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: provider-s3
 spec:
   selector:
-    {{- include "chandler.selectorLabels" $selector | nindent 4 }}
+    {{- include "stevedore.selectorLabels" $selector | nindent 4 }}
   ports:
     - name: grpc
       port: {{ $s3.port }}

@@ -1,7 +1,7 @@
 apiVersion: v2
-name: chandler
+name: stevedore
 description: |
-  Chandler delivers configuration files to pods through a CSI driver. A pod
+  Stevedore delivers configuration files to pods through a CSI driver. A pod
   names what it wants with URIs in an inline volume; the driver mounts the
   files read-only and replaces them atomically when they change.
 
@@ -22,4 +22,4 @@ keywords:
   - configuration
   - csi
 sources:
-  - https://github.com/bpalermo/chandler
+  - https://github.com/bpalermo/stevedore

@@ -10,13 +10,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
 // seed gives a hub one entry for file:///app.yaml through its provider, with
 // no subscription left on it.
-func seed(t *testing.T, h harness, revision string, b *chandlerv1.Bundle) {
+func seed(t *testing.T, h harness, revision string, b *stevedorev1.Bundle) {
 	t.Helper()
 	n := h.connect(t)
 	n.subscribe(t, "seed/0", "file:///app.yaml", "")
@@ -124,12 +124,12 @@ func TestAntiEntropyPropagatesANewerVersion(t *testing.T) {
 
 // fakePeer is a PeerSync server that says whatever the test tells it to.
 type fakePeer struct {
-	chandlerv1.UnimplementedPeerSyncServer
-	entries []*chandlerv1.KeyEntry
-	bundles map[string]*chandlerv1.Bundle
+	stevedorev1.UnimplementedPeerSyncServer
+	entries []*stevedorev1.KeyEntry
+	bundles map[string]*stevedorev1.Bundle
 }
 
-func (f *fakePeer) ListKeys(_ *chandlerv1.ListKeysRequest, stream chandlerv1.PeerSync_ListKeysServer) error {
+func (f *fakePeer) ListKeys(_ *stevedorev1.ListKeysRequest, stream stevedorev1.PeerSync_ListKeysServer) error {
 	for _, e := range f.entries {
 		if err := stream.Send(e); err != nil {
 			return err
@@ -138,19 +138,19 @@ func (f *fakePeer) ListKeys(_ *chandlerv1.ListKeysRequest, stream chandlerv1.Pee
 	return nil
 }
 
-func (f *fakePeer) GetBundle(_ context.Context, req *chandlerv1.GetBundleRequest) (*chandlerv1.GetBundleResponse, error) {
-	return chandlerv1.GetBundleResponse_builder{Bundle: f.bundles[req.GetVersion()]}.Build(), nil
+func (f *fakePeer) GetBundle(_ context.Context, req *stevedorev1.GetBundleRequest) (*stevedorev1.GetBundleResponse, error) {
+	return stevedorev1.GetBundleResponse_builder{Bundle: f.bundles[req.GetVersion()]}.Build(), nil
 }
 
-func keyEntry(cacheKey, uri string, b *chandlerv1.Bundle, refreshed, referenced time.Time) *chandlerv1.KeyEntry {
-	return chandlerv1.KeyEntry_builder{
+func keyEntry(cacheKey, uri string, b *stevedorev1.Bundle, refreshed, referenced time.Time) *stevedorev1.KeyEntry {
+	return stevedorev1.KeyEntry_builder{
 		Provider:       proto.String("file"),
 		CacheKey:       proto.String(cacheKey),
 		CurrentVersion: proto.String(bundle.Version(b)),
-		Versions: []*chandlerv1.KeyVersion{
-			chandlerv1.KeyVersion_builder{Version: proto.String(bundle.Version(b)), Revision: proto.String("peer")}.Build(),
+		Versions: []*stevedorev1.KeyVersion{
+			stevedorev1.KeyVersion_builder{Version: proto.String(bundle.Version(b)), Revision: proto.String("peer")}.Build(),
 		},
-		Aliases:        []*chandlerv1.Alias{chandlerv1.Alias_builder{Uri: proto.String(uri)}.Build()},
+		Aliases:        []*stevedorev1.Alias{stevedorev1.Alias_builder{Uri: proto.String(uri)}.Build()},
 		LastRefreshed:  timestamppb.New(refreshed),
 		LastReferenced: timestamppb.New(referenced),
 	}.Build()
@@ -182,20 +182,20 @@ func TestAdoptRules(t *testing.T) {
 	theirs, tampered := oneFile("theirs"), oneFile("tampered")
 	later, earlier := now.Now().Add(time.Minute), now.Now().Add(-time.Minute)
 	peer := &fakePeer{
-		entries: []*chandlerv1.KeyEntry{
+		entries: []*stevedorev1.KeyEntry{
 			keyEntry("/live.yaml", "file:///live.yaml", theirs, later, later),                                 // we have a live watch
 			keyEntry("/idle.yaml", "file:///idle.yaml", theirs, earlier, later),                               // confirmed before ours
 			keyEntry("/forgotten.yaml", "file:///forgotten.yaml", theirs, later, now.Now().Add(-2*time.Hour)), // past the grace period
 			keyEntry("/new.yaml", "file:///new.yaml", theirs, later, later),                                   // adopted
-			chandlerv1.KeyEntry_builder{ // a provider this replica does not have
+			stevedorev1.KeyEntry_builder{ // a provider this replica does not have
 				Provider: proto.String("s3"), CacheKey: proto.String("bucket/x"),
-				Versions:      []*chandlerv1.KeyVersion{chandlerv1.KeyVersion_builder{Version: proto.String(bundle.Version(theirs))}.Build()},
+				Versions:      []*stevedorev1.KeyVersion{stevedorev1.KeyVersion_builder{Version: proto.String(bundle.Version(theirs))}.Build()},
 				LastRefreshed: timestamppb.New(later), LastReferenced: timestamppb.New(later),
 			}.Build(),
 		},
-		bundles: map[string]*chandlerv1.Bundle{bundle.Version(theirs): theirs},
+		bundles: map[string]*stevedorev1.Bundle{bundle.Version(theirs): theirs},
 	}
-	target, _ := serve(t, func(s *grpc.Server) { chandlerv1.RegisterPeerSyncServer(s, peer) })
+	target, _ := serve(t, func(s *grpc.Server) { stevedorev1.RegisterPeerSyncServer(s, peer) })
 
 	sync := func() {
 		t.Helper()
@@ -229,7 +229,7 @@ func TestAdoptRules(t *testing.T) {
 	}
 
 	// A peer that sends bytes that are not the version is not believed.
-	peer.entries = []*chandlerv1.KeyEntry{keyEntry("/tampered.yaml", "file:///tampered.yaml", theirs, later, later)}
+	peer.entries = []*stevedorev1.KeyEntry{keyEntry("/tampered.yaml", "file:///tampered.yaml", theirs, later, later)}
 	peer.bundles[bundle.Version(theirs)] = tampered
 	sync()
 	if got := current("/tampered.yaml"); got != "" {

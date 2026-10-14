@@ -62,8 +62,8 @@ func TestUnusedCacheEntriesMakeRoom(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if !strings.Contains(logs, "chandler.server.cache.evictions") || !strings.Contains(logs, "reason: Str(pressure)") {
-			return fmt.Errorf("the collector has not received chandler.server.cache.evictions with reason pressure")
+		if !strings.Contains(logs, "stevedore.server.cache.evictions") || !strings.Contains(logs, "reason: Str(pressure)") {
+			return fmt.Errorf("the collector has not received stevedore.server.cache.evictions with reason pressure")
 		}
 		return nil
 	})

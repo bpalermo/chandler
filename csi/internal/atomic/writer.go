@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
 const (

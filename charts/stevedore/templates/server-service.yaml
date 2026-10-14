@@ -2,14 +2,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "chandler.name" . }}-server
+  name: {{ include "stevedore.name" . }}-server
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
   selector:
-    {{- include "chandler.selectorLabels" $selector | nindent 4 }}
+    {{- include "stevedore.selectorLabels" $selector | nindent 4 }}
   ports:
     - name: grpc
       port: {{ .Values.server.port }}
@@ -21,15 +21,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "chandler.name" . }}-server-peers
+  name: {{ include "stevedore.name" . }}-server-peers
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
   clusterIP: None
   selector:
-    {{- include "chandler.selectorLabels" $selector | nindent 4 }}
+    {{- include "stevedore.selectorLabels" $selector | nindent 4 }}
   ports:
     - name: grpc
       port: {{ .Values.server.port }}
@@ -40,17 +40,17 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "chandler.name" . }}-server
+  name: {{ include "stevedore.name" . }}-server
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
   # One at a time, so there is always a replica holding the cache.
   maxUnavailable: 1
   selector:
     matchLabels:
-      {{- include "chandler.selectorLabels" $selector | nindent 6 }}
+      {{- include "stevedore.selectorLabels" $selector | nindent 6 }}
 {{- end }}
 ---
 # The server holds no permissions of its own. Its service account exists so
@@ -59,9 +59,9 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "chandler.name" . }}-server
+  name: {{ include "stevedore.name" . }}-server
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 automountServiceAccountToken: false

@@ -17,11 +17,11 @@ edition = "2024";
 // The JSON is the canonical protobuf JSON mapping of these messages: field
 // names in lowerCamelCase, enum values by name, and fields at their default
 // left out.
-package chandler.v1;
+package stevedore.v1;
 
 import "google/api/annotations.proto";
 
-option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
+option go_package = "github.com/bpalermo/stevedore/api/stevedore/v1;stevedorev1";
 
 // ApplicationService is served by the CSI driver to the containers that mount
 // a volume with application acknowledgement.
@@ -69,7 +69,7 @@ service ApplicationService {
 // source it holds. A volume can combine sources from several providers, so
 // each is listed with its own version.
 //
-// The driver also writes it, as JSON, to the file ..chandler.json at the root
+// The driver also writes it, as JSON, to the file ..stevedore.json at the root
 // of the volume. The file is replaced atomically together with the content it
 // describes.
 message Manifest {

@@ -2,10 +2,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "chandler.name" . }}-server
+  name: {{ include "stevedore.name" . }}-server
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
   replicas: {{ .Values.server.replicas }}
@@ -19,18 +19,18 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      {{- include "chandler.selectorLabels" $selector | nindent 6 }}
+      {{- include "stevedore.selectorLabels" $selector | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "chandler.labels" . | nindent 8 }}
+        {{- include "stevedore.labels" . | nindent 8 }}
         app.kubernetes.io/component: server
       {{- with .Values.server.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "chandler.name" . }}-server
+      serviceAccountName: {{ include "stevedore.name" . }}-server
       # Used for one thing: reading the cluster's public token signing keys.
       automountServiceAccountToken: {{ and .Values.server.podIdentity.verify (not .Values.server.podIdentity.keys) }}
       {{- with .Values.imagePullSecrets }}
@@ -47,13 +47,13 @@ spec:
       {{- end }}
       containers:
         - name: server
-          image: {{ include "chandler.image" (dict "root" . "image" .Values.server.image) }}
+          image: {{ include "stevedore.image" (dict "root" . "image" .Values.server.image) }}
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           args:
             - --listen=:{{ .Values.server.port }}
             - --health-listen=:{{ add (int .Values.server.port) 1 }}
             - --max-connection-age={{ .Values.server.maxConnectionAge }}
-            {{- include "chandler.tlsArgs" $selector | nindent 12 }}
+            {{- include "stevedore.tlsArgs" $selector | nindent 12 }}
             {{- if .Values.server.podIdentity.verify }}
             - --pod-token-audience={{ .Values.server.podIdentity.audience }}
             {{- with .Values.server.podIdentity.keys }}
@@ -62,12 +62,12 @@ spec:
             {{- else }}
             - --trust-driver-identity
             {{- end }}
-            - --driver-identity={{ include "chandler.identity" (dict "root" . "component" "csi") }}
-            - --peer-identity={{ include "chandler.identity" $selector }}
-            - --peer-service={{ include "chandler.name" . }}-server-peers.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
+            - --driver-identity={{ include "stevedore.identity" (dict "root" . "component" "csi") }}
+            - --peer-identity={{ include "stevedore.identity" $selector }}
+            - --peer-service={{ include "stevedore.name" . }}-server-peers.{{ .Release.Namespace }}.svc:{{ .Values.server.port }}
             - --peer-sync-interval={{ .Values.server.peerSync.interval }}
             - --peer-warm-up={{ .Values.server.peerSync.warmUp }}
-            - --cache-dir=/var/cache/chandler
+            - --cache-dir=/var/cache/stevedore
             - --cache-grace={{ .Values.server.cache.grace }}
             - --negative-ttl={{ .Values.server.cache.negativeTtl }}
             - --max-keys-per-provider={{ int64 .Values.server.cache.maxKeysPerProvider }}
@@ -83,12 +83,12 @@ spec:
             - --max-bundle-bytes={{ int64 .Values.server.maxBundleBytes }}
             - --max-bundle-files={{ int64 .Values.server.maxBundleFiles }}
             {{- if .Values.providers.file.enabled }}
-            - --provider={{ .Values.providers.file.name }}={{ include "chandler.name" . }}-provider-file.{{ .Release.Namespace }}.svc:{{ .Values.providers.file.port }}
-            - --provider-identity={{ .Values.providers.file.name }}={{ include "chandler.identity" (dict "root" . "component" "provider-file") }}
+            - --provider={{ .Values.providers.file.name }}={{ include "stevedore.name" . }}-provider-file.{{ .Release.Namespace }}.svc:{{ .Values.providers.file.port }}
+            - --provider-identity={{ .Values.providers.file.name }}={{ include "stevedore.identity" (dict "root" . "component" "provider-file") }}
             {{- end }}
             {{- if .Values.providers.s3.enabled }}
-            - --provider={{ .Values.providers.s3.name }}={{ include "chandler.name" . }}-provider-s3.{{ .Release.Namespace }}.svc:{{ .Values.providers.s3.port }}
-            - --provider-identity={{ .Values.providers.s3.name }}={{ include "chandler.identity" (dict "root" . "component" "provider-s3") }}
+            - --provider={{ .Values.providers.s3.name }}={{ include "stevedore.name" . }}-provider-s3.{{ .Release.Namespace }}.svc:{{ .Values.providers.s3.port }}
+            - --provider-identity={{ .Values.providers.s3.name }}={{ include "stevedore.identity" (dict "root" . "component" "provider-s3") }}
             {{- end }}
             {{- range $provider := .Values.server.providers }}
             - --provider={{ required "server.providers[].name is required" $provider.name }}={{ required "server.providers[].target is required" $provider.target }}
@@ -105,7 +105,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            {{- include "chandler.telemetryEnv" . | nindent 12 }}
+            {{- include "stevedore.telemetryEnv" . | nindent 12 }}
           ports:
             - name: grpc
               containerPort: {{ .Values.server.port }}
@@ -125,15 +125,15 @@ spec:
               service: live
             periodSeconds: 10
           securityContext:
-            {{- include "chandler.restrictedSecurityContext" . | nindent 12 }}
+            {{- include "stevedore.restrictedSecurityContext" . | nindent 12 }}
           {{- with .Values.server.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
             - name: cache
-              mountPath: /var/cache/chandler
-            {{- include "chandler.tlsVolumeMount" $selector | nindent 12 }}
+              mountPath: /var/cache/stevedore
+            {{- include "stevedore.tlsVolumeMount" $selector | nindent 12 }}
       securityContext:
         # The image's user; makes the emptyDir writable by it.
         fsGroup: 65532
@@ -144,15 +144,15 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              {{- include "chandler.selectorLabels" $selector | nindent 14 }}
+              {{- include "stevedore.selectorLabels" $selector | nindent 14 }}
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              {{- include "chandler.selectorLabels" $selector | nindent 14 }}
+              {{- include "stevedore.selectorLabels" $selector | nindent 14 }}
       volumes:
         - name: cache
           emptyDir:
             sizeLimit: {{ .Values.server.cache.sizeLimit }}
-        {{- include "chandler.tlsVolume" $selector | nindent 8 }}
+        {{- include "stevedore.tlsVolume" $selector | nindent 8 }}

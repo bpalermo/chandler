@@ -5,10 +5,10 @@ load("//bazel/image:defs.bzl", "go_image")
 go_library(
     name = "s3_lib",
     srcs = ["main.go"],
-    importpath = "github.com/bpalermo/chandler/providers/s3",
+    importpath = "github.com/bpalermo/stevedore/providers/s3",
     visibility = ["//visibility:private"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/provider",
         "//common/rollout",
         "//common/telemetry",
@@ -23,7 +23,7 @@ go_library(
 
 go_binary(
     name = "s3",
-    basename = "chandler-provider-s3",
+    basename = "stevedore-provider-s3",
     embed = [":s3_lib"],
     # Pure Go: the image binary is cross-built for linux with cgo off.
     pure = "on",
@@ -34,8 +34,8 @@ go_image(
     name = "image",
     base = "@distroless_static",
     binary = ":s3",
-    load_tag = "localhost/chandler-provider-s3:e2e",
-    path = "/chandler-provider-s3",
+    load_tag = "localhost/stevedore-provider-s3:e2e",
+    path = "/stevedore-provider-s3",
     registry = IMAGE_REGISTRY,
     repository = image_repository("provider-s3"),
 )

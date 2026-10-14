@@ -15,27 +15,27 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
 )
 
 const wait = 10 * time.Second
 
 // fakeServer is a ConfigDiscoveryService driven by the test.
 type fakeServer struct {
-	chandlerv1.UnimplementedConfigDiscoveryServiceServer
-	requests  chan *chandlerv1.ConfigRequest
-	responses chan *chandlerv1.ConfigResponse
+	stevedorev1.UnimplementedConfigDiscoveryServiceServer
+	requests  chan *stevedorev1.ConfigRequest
+	responses chan *stevedorev1.ConfigResponse
 	hangup    chan struct{}
 }
 
-func (f *fakeServer) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_StreamConfigsServer) error {
+func (f *fakeServer) StreamConfigs(stream stevedorev1.ConfigDiscoveryService_StreamConfigsServer) error {
 	hello, err := stream.Recv()
 	if err != nil {
 		return err
 	}
 	f.requests <- hello
-	err = stream.Send(chandlerv1.ConfigResponse_builder{
-		Hello: chandlerv1.ServerHello_builder{ServerId: proto.String("server-1")}.Build(),
+	err = stream.Send(stevedorev1.ConfigResponse_builder{
+		Hello: stevedorev1.ServerHello_builder{ServerId: proto.String("server-1")}.Build(),
 	}.Build())
 	if err != nil {
 		return err
@@ -63,7 +63,7 @@ func (f *fakeServer) StreamConfigs(stream chandlerv1.ConfigDiscoveryService_Stre
 	}
 }
 
-func (f *fakeServer) next(t *testing.T) *chandlerv1.ConfigRequest {
+func (f *fakeServer) next(t *testing.T) *stevedorev1.ConfigRequest {
 	t.Helper()
 	select {
 	case req := <-f.requests:
@@ -75,12 +75,12 @@ func (f *fakeServer) next(t *testing.T) *chandlerv1.ConfigRequest {
 }
 
 func (f *fakeServer) update(id, nonce, version string) {
-	f.responses <- chandlerv1.ConfigResponse_builder{
-		Update: chandlerv1.ConfigUpdate_builder{
+	f.responses <- stevedorev1.ConfigResponse_builder{
+		Update: stevedorev1.ConfigUpdate_builder{
 			SubscriptionId: proto.String(id),
 			Nonce:          proto.String(nonce),
 			Version:        proto.String(version),
-			Bundle:         &chandlerv1.Bundle{},
+			Bundle:         &stevedorev1.Bundle{},
 		}.Build(),
 	}.Build()
 }
@@ -93,7 +93,7 @@ type handler struct {
 	failed  chan *status.Status
 }
 
-func (h *handler) Apply(u *chandlerv1.ConfigUpdate) error {
+func (h *handler) Apply(u *stevedorev1.ConfigUpdate) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.refuse[u.GetVersion()]; err != nil {
@@ -120,8 +120,8 @@ func (h *handler) Applied() string {
 func start(t *testing.T) (*fakeServer, *Client) {
 	t.Helper()
 	f := &fakeServer{
-		requests:  make(chan *chandlerv1.ConfigRequest, 64),
-		responses: make(chan *chandlerv1.ConfigResponse),
+		requests:  make(chan *stevedorev1.ConfigRequest, 64),
+		responses: make(chan *stevedorev1.ConfigResponse),
 		hangup:    make(chan struct{}),
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -129,7 +129,7 @@ func start(t *testing.T) (*fakeServer, *Client) {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer()
-	chandlerv1.RegisterConfigDiscoveryServiceServer(server, f)
+	stevedorev1.RegisterConfigDiscoveryServiceServer(server, f)
 	go server.Serve(listener)
 	t.Cleanup(server.Stop)
 
@@ -159,7 +159,7 @@ func TestSubscribeAckNackAndResync(t *testing.T) {
 		refuse: map[string]error{"v2": grpcstatus.Error(codes.ResourceExhausted, "disk full")},
 		failed: make(chan *status.Status, 1),
 	}
-	workload := chandlerv1.Workload_builder{PodName: proto.String("web-0")}.Build()
+	workload := stevedorev1.Workload_builder{PodName: proto.String("web-0")}.Build()
 	c.Subscribe(Subscription{ID: "vol/0", URI: "file:///app.yaml", Workload: workload, Handler: h})
 
 	sub := f.next(t).GetSubscribe()
@@ -185,8 +185,8 @@ func TestSubscribeAckNackAndResync(t *testing.T) {
 	}
 
 	// An error from the server reaches the handler.
-	f.responses <- chandlerv1.ConfigResponse_builder{
-		Error: chandlerv1.SubscriptionError_builder{
+	f.responses <- stevedorev1.ConfigResponse_builder{
+		Error: stevedorev1.SubscriptionError_builder{
 			SubscriptionId: proto.String("vol/0"),
 			Status:         &status.Status{Code: int32(codes.NotFound), Message: "gone"},
 		}.Build(),

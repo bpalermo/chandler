@@ -3,9 +3,9 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "bundle",
     srcs = ["bundle.go"],
-    importpath = "github.com/bpalermo/chandler/common/bundle",
+    importpath = "github.com/bpalermo/stevedore/common/bundle",
     visibility = ["//visibility:public"],
-    deps = ["//api/chandler/v1:chandler"],
+    deps = ["//api/stevedore/v1:stevedore"],
 )
 
 go_test(
@@ -13,7 +13,7 @@ go_test(
     srcs = ["bundle_test.go"],
     embed = [":bundle"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "@org_golang_google_protobuf//proto",
     ],
 )

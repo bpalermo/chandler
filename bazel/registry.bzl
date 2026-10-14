@@ -1,9 +1,9 @@
-"""Where chandler's images and chart are published: ONE setting.
+"""Where stevedore's images and chart are published: ONE setting.
 
 Every published coordinate is derived from the constants below -- the
 `image_push` of each `go_image` (//server:image_push, //csi:image_push,
-//providers/s3:image_push, //providers/file:image_push), the chart push (//charts/chandler:chandler.push_registry),
-the chart's default image repositories (charts/chandler/values.yaml, which
+//providers/s3:image_push, //providers/file:image_push), the chart push (//charts/stevedore:stevedore.push_registry),
+the chart's default image repositories (charts/stevedore/values.yaml, which
 takes each from its image_push), and -- through scripts/registry.sh, which parses THIS
 file -- every workflow step and verifier. Nothing else may spell the registry
 out: scripts/check-registry-config.sh fails CI on a literal anywhere outside
@@ -15,10 +15,10 @@ The coordinates:
     <IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/csi
     <IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/provider-s3
     <IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/provider-file
-    oci://<IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/chandler        (the chart)
+    oci://<IMAGE_REGISTRY>/<IMAGE_NAMESPACE>/stevedore        (the chart)
 
 Repositories are not prefixed with the project name: the namespace already is
-the project. The chart is `chandler` because no image is.
+the project. The chart is `stevedore` because no image is.
 
 scripts/registry.sh reads the assignments below with a strict, line-anchored
 grep: keep each on ONE line, exactly `NAME = "value"`.
@@ -29,7 +29,7 @@ IMAGE_REGISTRY = "quay.io"
 
 # Organization under the host. Quay has NO nested repositories: everything is
 # `<host>/<namespace>/<name>`, one path segment after the org.
-IMAGE_NAMESPACE = "shipchandler"
+IMAGE_NAMESPACE = "stevedore"
 
 # Where cosign's keyless signature lands on IMAGE_REGISTRY, which the publish
 # workflow ASSERTS for every digest it signs: "referrer" (an OCI 1.1 referrer
@@ -44,7 +44,7 @@ def image_repository(component):
       component: "server", "csi", "provider-s3" or "provider-file".
 
     Returns:
-      e.g. "shipchandler/csi".
+      e.g. "stevedore/csi".
     """
     return "{}/{}".format(IMAGE_NAMESPACE, component)
 
@@ -55,7 +55,7 @@ def image_reference(component):
       component: "server", "csi", "provider-s3" or "provider-file".
 
     Returns:
-      e.g. "quay.io/shipchandler/csi".
+      e.g. "quay.io/stevedore/csi".
     """
     return "{}/{}".format(IMAGE_REGISTRY, image_repository(component))
 
@@ -67,7 +67,7 @@ def chart_push_url():
     chart_registry_url(<name>).
 
     Returns:
-      "oci://quay.io/shipchandler".
+      "oci://quay.io/stevedore".
     """
     return "oci://{}/{}".format(IMAGE_REGISTRY, IMAGE_NAMESPACE)
 
@@ -77,9 +77,9 @@ def chart_registry_url(chart):
     Consumers pull it with `helm pull oci://<this> --version <X.Y.Z>`.
 
     Args:
-      chart: the Chart.yaml name, "chandler".
+      chart: the Chart.yaml name, "stevedore".
 
     Returns:
-      e.g. "quay.io/shipchandler/chandler".
+      e.g. "quay.io/stevedore/stevedore".
     """
     return "{}/{}/{}".format(IMAGE_REGISTRY, IMAGE_NAMESPACE, chart)

@@ -21,9 +21,9 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/queue"
-	"github.com/bpalermo/chandler/common/transport"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/queue"
+	"github.com/bpalermo/stevedore/common/transport"
 )
 
 const (
@@ -37,7 +37,7 @@ type Handler interface {
 	// Apply writes an update. A nil error is ACKed. Any other error is
 	// NACKed with its gRPC status code, and must have left the previously
 	// written version untouched.
-	Apply(update *chandlerv1.ConfigUpdate) error
+	Apply(update *stevedorev1.ConfigUpdate) error
 	// Fail reports that the server cannot produce a version for now.
 	Fail(st *status.Status)
 	// Applied returns the version currently written, "" for none.
@@ -63,7 +63,7 @@ type Subscription struct {
 	// ID is unique on the node: "<csi-volume-id>/<source-index>".
 	ID       string
 	URI      string
-	Workload *chandlerv1.Workload
+	Workload *stevedorev1.Workload
 	// AppAck is set when the application reports on the versions written.
 	AppAck  bool
 	Handler Handler
@@ -89,7 +89,7 @@ type Client struct {
 	mu   sync.Mutex
 	subs map[string]Subscription
 	// out queues requests for the current stream; nil while disconnected.
-	out *queue.Queue[*chandlerv1.ConfigRequest]
+	out *queue.Queue[*stevedorev1.ConfigRequest]
 	// lastErr is why the client is disconnected.
 	lastErr error
 }
@@ -123,8 +123,8 @@ func (c *Client) Unsubscribe(id string) {
 	}
 	delete(c.subs, id)
 	if c.out != nil {
-		c.out.Push(chandlerv1.ConfigRequest_builder{
-			Unsubscribe: chandlerv1.Unsubscribe_builder{SubscriptionId: proto.String(id)}.Build(),
+		c.out.Push(stevedorev1.ConfigRequest_builder{
+			Unsubscribe: stevedorev1.Unsubscribe_builder{SubscriptionId: proto.String(id)}.Build(),
 		}.Build())
 	}
 }
@@ -132,11 +132,11 @@ func (c *Client) Unsubscribe(id string) {
 // Report relays what an application said about a version. It is dropped when
 // the client is not connected: the next Subscribe carries the loaded version,
 // and a rejected version is refused by the driver itself if it comes again.
-func (c *Client) Report(report *chandlerv1.AppReport) {
+func (c *Client) Report(report *stevedorev1.AppReport) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.out != nil {
-		c.out.Push(chandlerv1.ConfigRequest_builder{AppReport: report}.Build())
+		c.out.Push(stevedorev1.ConfigRequest_builder{AppReport: report}.Build())
 	}
 }
 
@@ -150,17 +150,17 @@ func (c *Client) Err() error {
 	return c.lastErr
 }
 
-func subscribeRequest(s Subscription) *chandlerv1.ConfigRequest {
+func subscribeRequest(s Subscription) *stevedorev1.ConfigRequest {
 	// The token is read now, not when the volume was mounted: kubelet
 	// replaces it before it expires.
 	workload := proto.CloneOf(s.Workload)
 	if workload == nil {
-		workload = &chandlerv1.Workload{}
+		workload = &stevedorev1.Workload{}
 	}
 	if token := s.Handler.Token(); token != "" {
 		workload.SetServiceAccountToken(token)
 	}
-	subscribe := chandlerv1.Subscribe_builder{
+	subscribe := stevedorev1.Subscribe_builder{
 		SubscriptionId: proto.String(s.ID),
 		Uri:            proto.String(s.URI),
 		Workload:       workload,
@@ -184,7 +184,7 @@ func subscribeRequest(s Subscription) *chandlerv1.ConfigRequest {
 			subscribe.OverdueVersion = proto.String(overdue)
 		}
 	}
-	return chandlerv1.ConfigRequest_builder{Subscribe: subscribe.Build()}.Build()
+	return stevedorev1.ConfigRequest_builder{Subscribe: subscribe.Build()}.Build()
 }
 
 // Run keeps a stream to the server open until ctx ends, reconnecting with
@@ -204,7 +204,7 @@ func (c *Client) Run(ctx context.Context) {
 		return
 	}
 	defer conn.Close()
-	client := chandlerv1.NewConfigDiscoveryServiceClient(conn)
+	client := stevedorev1.NewConfigDiscoveryServiceClient(conn)
 
 	backoff := reconnectBase
 	for ctx.Err() == nil {
@@ -228,7 +228,7 @@ func (c *Client) Run(ctx context.Context) {
 
 // stream runs one stream until it fails. It reports whether the handshake
 // completed.
-func (c *Client) stream(ctx context.Context, client chandlerv1.ConfigDiscoveryServiceClient, log *slog.Logger) (established bool, err error) {
+func (c *Client) stream(ctx context.Context, client stevedorev1.ConfigDiscoveryServiceClient, log *slog.Logger) (established bool, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer func() {
@@ -242,8 +242,8 @@ func (c *Client) stream(ctx context.Context, client chandlerv1.ConfigDiscoverySe
 	if err != nil {
 		return false, err
 	}
-	err = stream.Send(chandlerv1.ConfigRequest_builder{
-		Hello: chandlerv1.NodeHello_builder{
+	err = stream.Send(stevedorev1.ConfigRequest_builder{
+		Hello: stevedorev1.NodeHello_builder{
 			NodeId:        proto.String(c.cfg.NodeID),
 			DriverVersion: proto.String(c.cfg.Version),
 		}.Build(),
@@ -261,7 +261,7 @@ func (c *Client) stream(ctx context.Context, client chandlerv1.ConfigDiscoverySe
 
 	// A reconnect is a full resync: everything is subscribed again, each
 	// with the version it already has.
-	out := queue.New[*chandlerv1.ConfigRequest]()
+	out := queue.New[*stevedorev1.ConfigRequest]()
 	c.mu.Lock()
 	c.out = out
 	for _, s := range c.subs {
@@ -312,7 +312,7 @@ func (c *Client) subscription(id string) (Subscription, bool) {
 
 // apply hands an update to its subscription and answers the server: ACK when
 // it was written, NACK with the reason when it was not.
-func (c *Client) apply(out *queue.Queue[*chandlerv1.ConfigRequest], update *chandlerv1.ConfigUpdate, log *slog.Logger) {
+func (c *Client) apply(out *queue.Queue[*stevedorev1.ConfigRequest], update *stevedorev1.ConfigUpdate, log *slog.Logger) {
 	id := update.GetSubscriptionId()
 	s, ok := c.subscription(id)
 	if !ok {
@@ -321,8 +321,8 @@ func (c *Client) apply(out *queue.Queue[*chandlerv1.ConfigRequest], update *chan
 	err := s.Handler.Apply(update)
 	if err == nil {
 		log.Info("wrote a version", "subscription", id, "uri", s.URI, "version", update.GetVersion())
-		out.Push(chandlerv1.ConfigRequest_builder{
-			Ack: chandlerv1.Ack_builder{
+		out.Push(stevedorev1.ConfigRequest_builder{
+			Ack: stevedorev1.Ack_builder{
 				SubscriptionId: proto.String(id),
 				Nonce:          proto.String(update.GetNonce()),
 				Version:        proto.String(update.GetVersion()),
@@ -338,7 +338,7 @@ func (c *Client) apply(out *queue.Queue[*chandlerv1.ConfigRequest], update *chan
 	}
 	log.Error("could not write a version; the previous one stays", "subscription", id, "uri", s.URI,
 		"version", update.GetVersion(), "code", code.String(), "error", st.Message())
-	nack := chandlerv1.Nack_builder{
+	nack := stevedorev1.Nack_builder{
 		SubscriptionId: proto.String(id),
 		Nonce:          proto.String(update.GetNonce()),
 		Version:        proto.String(update.GetVersion()),
@@ -347,5 +347,5 @@ func (c *Client) apply(out *queue.Queue[*chandlerv1.ConfigRequest], update *chan
 	if applied := s.Handler.Applied(); applied != "" {
 		nack.AppliedVersion = proto.String(applied)
 	}
-	out.Push(chandlerv1.ConfigRequest_builder{Nack: nack.Build()}.Build())
+	out.Push(stevedorev1.ConfigRequest_builder{Nack: nack.Build()}.Build())
 }

@@ -3,7 +3,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel:registry.bzl", "chart_push_url", "chart_registry_url", "image_reference")
 
 # The chart package, built with the pinned helm toolchain:
-# bazel-bin/charts/chandler/chandler.tgz.
+# bazel-bin/charts/stevedore/stevedore.tgz.
 #
 # `images` pins the digest of each component's image_push into values.yaml at
 # package time ({@//csi:image_push.digest}), so the chart and the images it
@@ -11,12 +11,12 @@ load("//bazel:registry.bzl", "chart_push_url", "chart_registry_url", "image_refe
 # target ({@//csi:image_push.repository}), which takes it from
 # bazel/registry.bzl.
 #
-# Published by :chandler.push_registry: plain `helm push` of the package to
-# chart_push_url() lands it in chart_registry_url("chandler"), since helm
+# Published by :stevedore.push_registry: plain `helm push` of the package to
+# chart_push_url() lands it in chart_registry_url("stevedore"), since helm
 # appends the chart's `name:` and the chart is named after its repository. Run
 # it with HELM_REGISTRY_USERNAME and HELM_REGISTRY_PASSWORD set (rules_helm
 # logs in with them), after the image it pins has been pushed and signed. Never
-# use :chandler.push, which pushes the images too.
+# use :stevedore.push, which pushes the images too.
 # The components whose images the chart deploys, as bazel/registry.bzl names
 # them. Keep in step with `images` below.
 PINNED_COMPONENTS = [
@@ -27,7 +27,7 @@ PINNED_COMPONENTS = [
 ]
 
 helm_chart(
-    name = "chandler",
+    name = "stevedore",
     chart = "Chart.yaml",
     images = [
         "//csi:image_push",
@@ -42,30 +42,30 @@ helm_chart(
 )
 
 helm_lint_test(
-    name = "chandler_lint_test",
+    name = "stevedore_lint_test",
     size = "small",
-    chart = ":chandler",
+    chart = ":stevedore",
 )
 
 helm_template_test(
-    name = "chandler_template_test",
+    name = "stevedore_template_test",
     size = "small",
-    chart = ":chandler",
+    chart = ":stevedore",
 )
 
 # Every non-default knob: kubeletDir, stateDir, image.digest, nodeSelector,
 # resources, imagePullSecrets.
 helm_template_test(
-    name = "chandler_overrides_template_test",
+    name = "stevedore_overrides_template_test",
     size = "small",
-    chart = ":chandler",
+    chart = ":stevedore",
     values = ["test/overrides.yaml"],
 )
 
 helm_lint_test(
-    name = "chandler_overrides_lint_test",
+    name = "stevedore_overrides_lint_test",
     size = "small",
-    chart = ":chandler",
+    chart = ":stevedore",
     values = ["test/overrides.yaml"],
 )
 
@@ -78,14 +78,14 @@ sh_test(
     size = "small",
     srcs = ["pin_test.sh"],
     data = [
-        ":chandler",
+        ":stevedore",
         "//scripts:chart-pin.sh",
     ],
     env = {
-        "CHART_RLOCATIONPATH": "$(rlocationpath :chandler)",
+        "CHART_RLOCATIONPATH": "$(rlocationpath :stevedore)",
         "CHART_PIN_RLOCATIONPATH": "$(rlocationpath //scripts:chart-pin.sh)",
         "EXPECT_REPOSITORIES": " ".join([image_reference(c) for c in PINNED_COMPONENTS]),
-        "EXPECT_CHART_REPOSITORY": chart_registry_url("chandler"),
+        "EXPECT_CHART_REPOSITORY": chart_registry_url("stevedore"),
     },
     deps = ["@bazel_tools//tools/bash/runfiles"],
 )

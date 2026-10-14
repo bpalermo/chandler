@@ -1,6 +1,6 @@
 edition = "2024";
 
-// Types shared by every Chandler protocol.
+// Types shared by every Stevedore protocol.
 //
 // Two conventions hold across the whole package:
 //
@@ -10,11 +10,11 @@ edition = "2024";
 //   * A "version" is always a content address of a Bundle, written
 //     "sha256:<hex>". A "revision" is a provider's own change marker (an ETag,
 //     an object version id). The two are never interchangeable.
-package chandler.v1;
+package stevedore.v1;
 
 import "google/protobuf/duration.proto";
 
-option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
+option go_package = "github.com/bpalermo/stevedore/api/stevedore/v1;stevedorev1";
 
 // File is one regular file inside a Bundle.
 message File {

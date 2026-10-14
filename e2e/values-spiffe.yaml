@@ -8,7 +8,7 @@ tls:
         path: /run/spire/agent-sockets
         type: Directory
   identities:
-    csi: spiffe://chandler.test/chandler/csi
-    server: spiffe://chandler.test/chandler/server
-    providerFile: spiffe://chandler.test/chandler/provider-file
-    providerS3: spiffe://chandler.test/chandler/provider-s3
+    csi: spiffe://stevedore.test/stevedore/csi
+    server: spiffe://stevedore.test/stevedore/server
+    providerFile: spiffe://stevedore.test/stevedore/provider-file
+    providerS3: spiffe://stevedore.test/stevedore/provider-s3

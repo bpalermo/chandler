@@ -6,7 +6,7 @@ go_library(
         "mount.go",
         "mount_linux.go",
     ],
-    importpath = "github.com/bpalermo/chandler/csi/internal/mount",
+    importpath = "github.com/bpalermo/stevedore/csi/internal/mount",
     visibility = ["//csi:__subpackages__"],
     deps = select({
         "@rules_go//go/platform:android": [

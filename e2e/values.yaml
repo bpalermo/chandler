@@ -5,20 +5,20 @@
 # registry until it is published).
 # Metrics go to the collector run.sh deploys, often, so the tests can see them.
 telemetry:
-  otlpEndpoint: http://otel-collector.chandler-system.svc:4317
+  otlpEndpoint: http://otel-collector.stevedore-system.svc:4317
   exportIntervalSeconds: 5
   resourceAttributes:
-    k8s.cluster.name: chandler-e2e
+    k8s.cluster.name: stevedore-e2e
 csi:
   image: &local
-    repository: localhost/chandler-csi
+    repository: localhost/stevedore-csi
     tag: e2e
     digest: ""
     pullPolicy: Never
 server:
   image:
     <<: *local
-    repository: localhost/chandler-server
+    repository: localhost/stevedore-server
   # Two replicas on the one node, syncing often so the tests do not wait.
   replicas: 2
   # Connections are cut every half minute, so the whole suite runs with
@@ -31,8 +31,8 @@ server:
   # what the eviction test fills.
   providers:
     - name: small
-      target: chandler-provider-small.chandler-system.svc:9100
-      identity: chandler-provider-file.chandler-system.svc
+      target: stevedore-provider-small.stevedore-system.svc:9100
+      identity: stevedore-provider-file.stevedore-system.svc
   cache:
     providerQuotas:
       small:
@@ -43,10 +43,10 @@ providers:
     enabled: true
     image:
       <<: *local
-      repository: localhost/chandler-provider-file
+      repository: localhost/stevedore-provider-file
     source:
       configMap:
-        name: chandler-e2e-config
+        name: stevedore-e2e-config
     pollInterval: 500ms
     # Keys the rollout test uses are released to half the pods for a while;
     # everything else goes to every pod at once.
@@ -62,9 +62,9 @@ providers:
     enabled: true
     image:
       <<: *local
-      repository: localhost/chandler-provider-s3
+      repository: localhost/stevedore-provider-s3
     buckets:
-      - chandler-e2e
+      - stevedore-e2e
     region: us-east-1
     endpointUrl: http://localhost:4566
     pathStyle: true

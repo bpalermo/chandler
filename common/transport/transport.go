@@ -1,4 +1,4 @@
-// Package transport secures the gRPC connections between Chandler's
+// Package transport secures the gRPC connections between Stevedore's
 // components with mutual TLS.
 //
 // Both ends present a certificate. Each verifies that the other's chains to a

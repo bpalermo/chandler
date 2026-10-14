@@ -34,14 +34,14 @@ spec:
 	}
 
 	for name, port := range map[string]int{
-		"chandler-server":        9000,
-		"chandler-provider-file": 9100,
-		"chandler-provider-s3":   9100,
+		"stevedore-server":        9000,
+		"stevedore-provider-file": 9100,
+		"stevedore-provider-s3":   9100,
 	} {
 		host := fmt.Sprintf("%s.%s.svc:%d", name, driverNamespace, port)
-		method := "chandler.v1.ConfigProvider/StreamConfigs"
-		if name == "chandler-server" {
-			method = "chandler.v1.ConfigDiscoveryService/StreamConfigs"
+		method := "stevedore.v1.ConfigProvider/StreamConfigs"
+		if name == "stevedore-server" {
+			method = "stevedore.v1.ConfigDiscoveryService/StreamConfigs"
 		}
 
 		// In the clear: the server only speaks TLS.

@@ -9,31 +9,31 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: chandler-provider-small
+  name: stevedore-provider-small
   labels:
-    app.kubernetes.io/name: chandler-provider-small
+    app.kubernetes.io/name: stevedore-provider-small
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: chandler-provider-small
+      app.kubernetes.io/name: stevedore-provider-small
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: chandler-provider-small
+        app.kubernetes.io/name: stevedore-provider-small
     spec:
       automountServiceAccountToken: false
       containers:
         - name: provider
-          image: localhost/chandler-provider-file:e2e
+          image: localhost/stevedore-provider-file:e2e
           imagePullPolicy: Never
           args:
             - --listen=:9100
             - --health-listen=:9101
-            - --tls-cert=/etc/chandler/tls/tls.crt
-            - --tls-key=/etc/chandler/tls/tls.key
-            - --tls-ca=/etc/chandler/tls/ca.crt
-            - --server-identity=chandler-server.chandler-system.svc
+            - --tls-cert=/etc/stevedore/tls/tls.crt
+            - --tls-key=/etc/stevedore/tls/tls.key
+            - --tls-ca=/etc/stevedore/tls/ca.crt
+            - --server-identity=stevedore-server.stevedore-system.svc
             - --name=small
             - --root=/config
             - --poll-interval=500ms
@@ -60,23 +60,23 @@ spec:
               mountPath: /config
               readOnly: true
             - name: tls
-              mountPath: /etc/chandler/tls
+              mountPath: /etc/stevedore/tls
               readOnly: true
       volumes:
         - name: config
           configMap:
-            name: chandler-e2e-config
+            name: stevedore-e2e-config
         - name: tls
           secret:
-            secretName: chandler-provider-file-tls
+            secretName: stevedore-provider-file-tls
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: chandler-provider-small
+  name: stevedore-provider-small
 spec:
   selector:
-    app.kubernetes.io/name: chandler-provider-small
+    app.kubernetes.io/name: stevedore-provider-small
   ports:
     - name: grpc
       port: 9100

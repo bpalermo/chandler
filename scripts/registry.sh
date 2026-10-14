@@ -19,7 +19,7 @@
 #       CSI_IMAGE                image_reference("csi")
 #       PROVIDER_S3_IMAGE        image_reference("provider-s3")
 #       PROVIDER_FILE_IMAGE      image_reference("provider-file")
-#       CHART_REPOSITORY         chart_registry_url("chandler")
+#       CHART_REPOSITORY         chart_registry_url("stevedore")
 #       IMAGE_SIGNATURE_LAYOUT   referrer | tag
 #   registry.sh host                the registry host alone
 #   registry.sh repo <component>    image_repository(component)
@@ -69,7 +69,7 @@ env)
 	printf 'CSI_IMAGE=%s/%s/csi\n' "$host" "$namespace"
 	printf 'PROVIDER_S3_IMAGE=%s/%s/provider-s3\n' "$host" "$namespace"
 	printf 'PROVIDER_FILE_IMAGE=%s/%s/provider-file\n' "$host" "$namespace"
-	printf 'CHART_REPOSITORY=%s/%s/chandler\n' "$host" "$namespace"
+	printf 'CHART_REPOSITORY=%s/%s/stevedore\n' "$host" "$namespace"
 	printf 'IMAGE_SIGNATURE_LAYOUT=%s\n' "$layout"
 	;;
 host) printf '%s\n' "$host" ;;

@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
 )
 
 const (
@@ -62,7 +62,7 @@ func DefaultLimits() Limits {
 
 // Mode returns the permission bits a file is created with: the low nine bits
 // of its mode, or DefaultMode when it has none.
-func Mode(f *chandlerv1.File) fs.FileMode {
+func Mode(f *stevedorev1.File) fs.FileMode {
 	if m := fs.FileMode(f.GetMode()) & fs.ModePerm; m != 0 {
 		return m
 	}
@@ -70,7 +70,7 @@ func Mode(f *chandlerv1.File) fs.FileMode {
 }
 
 // Size returns the total content size of the bundle in bytes.
-func Size(b *chandlerv1.Bundle) uint64 {
+func Size(b *stevedorev1.Bundle) uint64 {
 	var n uint64
 	for _, f := range b.GetFiles() {
 		n += uint64(len(f.GetContent()))
@@ -84,8 +84,8 @@ func Size(b *chandlerv1.Bundle) uint64 {
 // uint32 path length, the path, a big-endian uint32 of its effective mode and
 // the SHA-256 of its content. File order in the message does not matter, and
 // an unset mode hashes the same as an explicit DefaultMode.
-func Version(b *chandlerv1.Bundle) string {
-	files := append([]*chandlerv1.File(nil), b.GetFiles()...)
+func Version(b *stevedorev1.Bundle) string {
+	files := append([]*stevedorev1.File(nil), b.GetFiles()...)
 	sort.SliceStable(files, func(i, j int) bool { return files[i].GetPath() < files[j].GetPath() })
 
 	h := sha256.New()
@@ -104,7 +104,7 @@ func Version(b *chandlerv1.Bundle) string {
 }
 
 // Verify reports whether the bundle's content address equals version.
-func Verify(b *chandlerv1.Bundle, version string) bool {
+func Verify(b *stevedorev1.Bundle, version string) bool {
 	return Version(b) == version
 }
 
@@ -138,7 +138,7 @@ func ValidatePath(path string) error {
 // Validate checks the bundle's envelope: every path is safe, no two files
 // conflict, and size and file count are within limits. It is the whole of what
 // the server and the driver verify before delivering a bundle.
-func Validate(b *chandlerv1.Bundle, limits Limits) error {
+func Validate(b *stevedorev1.Bundle, limits Limits) error {
 	files := b.GetFiles()
 	if limits.MaxFiles > 0 && len(files) > limits.MaxFiles {
 		return fmt.Errorf("%w: %d files, limit %d", ErrTooManyFiles, len(files), limits.MaxFiles)

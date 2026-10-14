@@ -5,10 +5,10 @@ load("//bazel/image:defs.bzl", "go_image")
 go_library(
     name = "server_lib",
     srcs = ["main.go"],
-    importpath = "github.com/bpalermo/chandler/server",
+    importpath = "github.com/bpalermo/stevedore/server",
     visibility = ["//visibility:private"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/telemetry",
         "//common/transport",
@@ -23,7 +23,7 @@ go_library(
 
 go_binary(
     name = "server",
-    basename = "chandler-server",
+    basename = "stevedore-server",
     embed = [":server_lib"],
     # Pure Go: the image binary is cross-built for linux with cgo off.
     pure = "on",
@@ -34,8 +34,8 @@ go_image(
     name = "image",
     base = "@distroless_static",
     binary = ":server",
-    load_tag = "localhost/chandler-server:e2e",
-    path = "/chandler-server",
+    load_tag = "localhost/stevedore-server:e2e",
+    path = "/stevedore-server",
     registry = IMAGE_REGISTRY,
     repository = image_repository("server"),
 )

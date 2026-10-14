@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/provider"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/uri"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/provider"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 func resolve(t *testing.T, root, raw string) (provider.Resource, error) {

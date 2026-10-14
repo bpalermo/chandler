@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bpalermo/chandler/common/bundle"
+	"github.com/bpalermo/stevedore/common/bundle"
 )
 
 func files(kv ...string) map[string]File {
@@ -192,7 +192,7 @@ func TestForeignReservedEntriesSurvive(t *testing.T) {
 
 	// Entries the driver places next to the content, such as the
 	// acknowledgement socket, are not the writer's to remove.
-	if err := os.WriteFile(filepath.Join(dir, "..chandler.sock"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "..stevedore.sock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(dir, "..not_a_generation"), 0o755); err != nil {
@@ -203,7 +203,7 @@ func TestForeignReservedEntriesSurvive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"..chandler.sock", "..not_a_generation"} {
+	for _, name := range []string{"..stevedore.sock", "..not_a_generation"} {
 		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("%s was removed: %v", name, err)
 		}

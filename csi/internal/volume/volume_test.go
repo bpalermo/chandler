@@ -14,9 +14,9 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/csi/internal/cache"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/csi/internal/cache"
 )
 
 func TestParseSpec(t *testing.T) {
@@ -68,13 +68,13 @@ func TestParseSpecRejects(t *testing.T) {
 	}
 }
 
-func file(path, content string) *chandlerv1.File {
-	return chandlerv1.File_builder{Path: proto.String(path), Content: []byte(content)}.Build()
+func file(path, content string) *stevedorev1.File {
+	return stevedorev1.File_builder{Path: proto.String(path), Content: []byte(content)}.Build()
 }
 
-func bundleUpdate(files ...*chandlerv1.File) *chandlerv1.ConfigUpdate {
-	b := chandlerv1.Bundle_builder{Files: files}.Build()
-	return chandlerv1.ConfigUpdate_builder{Version: proto.String(bundle.Version(b)), Bundle: b}.Build()
+func bundleUpdate(files ...*stevedorev1.File) *stevedorev1.ConfigUpdate {
+	b := stevedorev1.Bundle_builder{Files: files}.Build()
+	return stevedorev1.ConfigUpdate_builder{Version: proto.String(bundle.Version(b)), Bundle: b}.Build()
 }
 
 func newTestCache(t *testing.T) *cache.Cache {
@@ -162,14 +162,14 @@ func TestApplyRefusals(t *testing.T) {
 
 	tampered := bundleUpdate(file("app.yaml", "tampered"))
 	tampered.SetVersion(good.GetVersion())
-	unknown := chandlerv1.ConfigUpdate_builder{
+	unknown := stevedorev1.ConfigUpdate_builder{
 		Version:   proto.String("sha256:" + strings.Repeat("0", 64)),
-		UseCached: &chandlerv1.UseCached{},
+		UseCached: &stevedorev1.UseCached{},
 	}.Build()
 
 	for name, tc := range map[string]struct {
 		source int
-		update *chandlerv1.ConfigUpdate
+		update *stevedorev1.ConfigUpdate
 		want   codes.Code
 	}{
 		"digest mismatch":                 {0, tampered, codes.DataLoss},
@@ -191,9 +191,9 @@ func TestApplyRefusals(t *testing.T) {
 	}
 
 	// UseCached of the version that is written needs no bytes.
-	cached := chandlerv1.ConfigUpdate_builder{
+	cached := stevedorev1.ConfigUpdate_builder{
 		Version:   proto.String(good.GetVersion()),
-		UseCached: &chandlerv1.UseCached{},
+		UseCached: &stevedorev1.UseCached{},
 	}.Build()
 	if err := v.Apply(0, cached); err != nil {
 		t.Errorf("UseCached of the written version: %v", err)
@@ -270,8 +270,8 @@ func TestLoadRestoresWhatWasWritten(t *testing.T) {
 	}
 }
 
-func useCached(version string) *chandlerv1.ConfigUpdate {
-	return chandlerv1.ConfigUpdate_builder{Version: proto.String(version), UseCached: &chandlerv1.UseCached{}}.Build()
+func useCached(version string) *stevedorev1.ConfigUpdate {
+	return stevedorev1.ConfigUpdate_builder{Version: proto.String(version), UseCached: &stevedorev1.UseCached{}}.Build()
 }
 
 // What one volume wrote, another on the same node can apply without bytes:
@@ -281,7 +281,7 @@ func TestNodeCache(t *testing.T) {
 	first, _ := newTestVolumeWith(t, c)
 	v1 := bundleUpdate(file("app.yaml", "v1"))
 	v2 := bundleUpdate(file("app.yaml", "v2"))
-	for _, u := range []*chandlerv1.ConfigUpdate{v1, v2} {
+	for _, u := range []*stevedorev1.ConfigUpdate{v1, v2} {
 		if err := first.Apply(0, u); err != nil {
 			t.Fatal(err)
 		}
@@ -325,7 +325,7 @@ func TestNodeCache(t *testing.T) {
 
 func TestNoStoreBypassesTheCache(t *testing.T) {
 	u := bundleUpdate(file("app.yaml", "secret"))
-	u.SetCacheControl(chandlerv1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
+	u.SetCacheControl(stevedorev1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
 
 	// A volume on the node's disk does not take it at all.
 	disk, dir := newTestVolume(t)
@@ -405,9 +405,9 @@ func TestOverdueReports(t *testing.T) {
 	if err := v.Apply(0, second); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := v.Report(chandlerv1.ReportRequest_builder{
+	if _, _, err := v.Report(stevedorev1.ReportRequest_builder{
 		Generation: proto.String(v.Config().GetGeneration()),
-		State:      chandlerv1.Manifest_STATE_LOADED.Enum(),
+		State:      stevedorev1.Manifest_STATE_LOADED.Enum(),
 	}.Build()); err != nil {
 		t.Fatal(err)
 	}

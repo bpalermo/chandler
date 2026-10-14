@@ -10,10 +10,10 @@ go_library(
         "persist.go",
         "upstream.go",
     ],
-    importpath = "github.com/bpalermo/chandler/server/internal/hub",
+    importpath = "github.com/bpalermo/stevedore/server/internal/hub",
     visibility = ["//server:__subpackages__"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/cas",
         "//common/queue",
@@ -46,7 +46,7 @@ go_test(
     ],
     embed = [":hub"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/rollout",
         "@io_opentelemetry_go_otel//:otel",

@@ -11,8 +11,8 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/uri"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 const (

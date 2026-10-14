@@ -1,12 +1,12 @@
 edition = "2024";
 
 // The protocol between the CSI node driver and the config server.
-package chandler.v1;
+package stevedore.v1;
 
-import "chandler/v1/common.proto";
 import "google/rpc/status.proto";
+import "stevedore/v1/common.proto";
 
-option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
+option go_package = "github.com/bpalermo/stevedore/api/stevedore/v1;stevedorev1";
 
 // ConfigDiscoveryService is spoken between the CSI node driver (client) and
 // the config server. One long-lived stream per node multiplexes every

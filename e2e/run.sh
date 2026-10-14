@@ -10,8 +10,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-cluster="${KIND_CLUSTER:-chandler-e2e}"
-images=(chandler-server chandler-csi chandler-provider-s3 chandler-provider-file)
+cluster="${KIND_CLUSTER:-stevedore-e2e}"
+images=(stevedore-server stevedore-csi stevedore-provider-s3 stevedore-provider-file)
 load_targets=(//server:image_load //csi:image_load //providers/s3:image_load //providers/file:image_load)
 
 created=0
@@ -44,20 +44,20 @@ done
 # needed). The release is created or upgraded in place, so a kept cluster is
 # reused; the image tag is fixed, so restart every workload afterwards to make
 # a pod from an earlier run pick up the image just loaded.
-bazel build "$@" //charts/chandler:chandler @helm//:helm
+bazel build "$@" //charts/stevedore:stevedore @helm//:helm
 bin="$(bazel info "$@" bazel-bin)"
 helm="$(bazel cquery "$@" @helm//:helm --output=files 2>/dev/null)"
 helm="$(bazel info "$@" execution_root)/${helm}"
 
 # The origin of the chart's file provider: a ConfigMap the tests add keys to.
 # Recreated, so a kept cluster starts each run without the last run's keys.
-kubectl create namespace chandler-system --dry-run=client -o yaml | kubectl apply -f -
-kubectl delete configmap chandler-e2e-config -n chandler-system --ignore-not-found
-kubectl create configmap chandler-e2e-config -n chandler-system
+kubectl create namespace stevedore-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl delete configmap stevedore-e2e-config -n stevedore-system --ignore-not-found
+kubectl create configmap stevedore-e2e-config -n stevedore-system
 
 # A collector for the components to push their metrics to. It prints what it
 # receives, which is what the telemetry test reads.
-kubectl apply -n chandler-system -f e2e/otel-collector.yaml
+kubectl apply -n stevedore-system -f e2e/otel-collector.yaml
 
 # E2E_TLS=spiffe runs the components on identities from a SPIRE agent instead
 # of the chart's own certificates, and only the tests that tell whether that
@@ -74,24 +74,24 @@ if [[ "${E2E_TLS:-generated}" == spiffe ]]; then
 	tests=(--test_filter='TestDriverRegistersWithKubelet|TestConfigIsDeliveredAndUpdated|TestS3Provider|TestServerCacheSurvivesARollingRestart|TestServerRefusesClientsWithoutACertificate')
 fi
 
-"${helm}" upgrade --install chandler "${bin}/charts/chandler/chandler.tgz" \
-	--namespace chandler-system \
+"${helm}" upgrade --install stevedore "${bin}/charts/stevedore/stevedore.tgz" \
+	--namespace stevedore-system \
 	"${values[@]}" \
 	--wait --timeout 300s
-workloads=(daemonset/chandler-csi deployment/chandler-server deployment/chandler-provider-file deployment/chandler-provider-s3)
+workloads=(daemonset/stevedore-csi deployment/stevedore-server deployment/stevedore-provider-file deployment/stevedore-provider-s3)
 # The provider with a small quota, for the eviction test. It runs on the
 # certificate the chart issued to the file provider, so only where the chart
 # issues certificates.
 if [[ "${E2E_TLS:-generated}" == generated ]]; then
-	kubectl apply -n chandler-system -f e2e/small-provider.yaml
-	workloads+=(deployment/chandler-provider-small)
+	kubectl apply -n stevedore-system -f e2e/small-provider.yaml
+	workloads+=(deployment/stevedore-provider-small)
 fi
 for workload in "${workloads[@]}"; do
-	kubectl rollout restart "${workload}" -n chandler-system
+	kubectl rollout restart "${workload}" -n stevedore-system
 done
 # The suite checks the driver's rollout itself too.
 for workload in "${workloads[@]}"; do
-	kubectl rollout status "${workload}" -n chandler-system --timeout=300s
+	kubectl rollout status "${workload}" -n stevedore-system --timeout=300s
 done
 
 # The version the images were stamped with, for the suite to look for.
@@ -100,5 +100,5 @@ bazel test "$@" --config=e2e --test_env=E2E_VERSION="${version}" "${tests[@]}" /
 
 # The chart's own certificates: renewal on upgrade, picked up with no restart.
 if [[ "${E2E_TLS:-generated}" == generated ]]; then
-	e2e/rotate.sh "${helm}" "${bin}/charts/chandler/chandler.tgz" "$@"
+	e2e/rotate.sh "${helm}" "${bin}/charts/stevedore/stevedore.tgz" "$@"
 fi

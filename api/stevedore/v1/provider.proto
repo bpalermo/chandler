@@ -1,12 +1,12 @@
 edition = "2024";
 
 // The protocol between the config server and a configuration provider.
-package chandler.v1;
+package stevedore.v1;
 
-import "chandler/v1/common.proto";
 import "google/rpc/status.proto";
+import "stevedore/v1/common.proto";
 
-option go_package = "github.com/bpalermo/chandler/api/chandler/v1;chandlerv1";
+option go_package = "github.com/bpalermo/stevedore/api/stevedore/v1;stevedorev1";
 
 // ConfigProvider is implemented by every configuration provider. The config
 // server is the client and dials one stream per registered provider; built-in

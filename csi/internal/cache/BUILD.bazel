@@ -3,10 +3,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cache",
     srcs = ["cache.go"],
-    importpath = "github.com/bpalermo/chandler/csi/internal/cache",
+    importpath = "github.com/bpalermo/stevedore/csi/internal/cache",
     visibility = ["//csi:__subpackages__"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/cas",
     ],
 )
@@ -16,7 +16,7 @@ go_test(
     srcs = ["cache_test.go"],
     embed = [":cache"],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "@org_golang_google_protobuf//proto",
     ],

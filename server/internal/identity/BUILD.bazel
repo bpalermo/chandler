@@ -6,7 +6,7 @@ go_library(
         "identity.go",
         "jwks.go",
     ],
-    importpath = "github.com/bpalermo/chandler/server/internal/identity",
+    importpath = "github.com/bpalermo/stevedore/server/internal/identity",
     visibility = ["//server:__subpackages__"],
 )
 

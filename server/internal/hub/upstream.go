@@ -17,11 +17,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/queue"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/transport"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/queue"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/transport"
 )
 
 const (
@@ -37,7 +37,7 @@ type upstream struct {
 	target string
 
 	// out queues requests for the current stream; nil while disconnected.
-	out *queue.Queue[*chandlerv1.ProviderRequest]
+	out *queue.Queue[*stevedorev1.ProviderRequest]
 	// generation counts the streams, so that what was told on an earlier one
 	// is told again.
 	generation uint64
@@ -50,12 +50,12 @@ type upstream struct {
 	// which resource a subscription belongs to.
 	varyOn []string
 	// defaultCacheControl applies to updates that carry none.
-	defaultCacheControl *chandlerv1.CacheControl
+	defaultCacheControl *stevedorev1.CacheControl
 }
 
 // project returns the values of the provider's vary attributes for one
 // subscriber. An attribute with no value is absent.
-func (u *upstream) project(w *chandlerv1.Workload, cluster string) map[string]string {
+func (u *upstream) project(w *stevedorev1.Workload, cluster string) map[string]string {
 	if len(u.varyOn) == 0 {
 		return nil
 	}
@@ -139,7 +139,7 @@ func (u *upstream) watchLocked(r *resource) {
 	r.watchID = strconv.FormatUint(u.hub.watchSeq, 10)
 	r.failure, r.answered, r.live = nil, false, false
 	u.watches[r.watchID] = r
-	watch := chandlerv1.Watch_builder{
+	watch := stevedorev1.Watch_builder{
 		WatchId:    proto.String(r.watchID),
 		Uri:        proto.String(r.uri),
 		Attributes: r.attributes,
@@ -147,7 +147,7 @@ func (u *upstream) watchLocked(r *resource) {
 	if r.entry != nil {
 		watch.KnownRevision = proto.String(r.entry.newest().Revision)
 	}
-	u.out.Push(chandlerv1.ProviderRequest_builder{Watch: watch.Build()}.Build())
+	u.out.Push(stevedorev1.ProviderRequest_builder{Watch: watch.Build()}.Build())
 }
 
 func (u *upstream) unwatchLocked(r *resource) {
@@ -156,8 +156,8 @@ func (u *upstream) unwatchLocked(r *resource) {
 	}
 	delete(u.watches, r.watchID)
 	if u.connected() {
-		u.out.Push(chandlerv1.ProviderRequest_builder{
-			Unwatch: chandlerv1.Unwatch_builder{WatchId: proto.String(r.watchID)}.Build(),
+		u.out.Push(stevedorev1.ProviderRequest_builder{
+			Unwatch: stevedorev1.Unwatch_builder{WatchId: proto.String(r.watchID)}.Build(),
 		}.Build())
 	}
 	r.watchID, r.live, r.answered = "", false, false
@@ -172,7 +172,7 @@ func (u *upstream) run(ctx context.Context) {
 		return
 	}
 	defer conn.Close()
-	client := chandlerv1.NewConfigProviderClient(conn)
+	client := stevedorev1.NewConfigProviderClient(conn)
 
 	backoff := reconnectBase
 	for ctx.Err() == nil {
@@ -196,7 +196,7 @@ func (u *upstream) run(ctx context.Context) {
 
 // stream runs one stream to the provider until it fails. It reports whether
 // the handshake completed.
-func (u *upstream) stream(ctx context.Context, client chandlerv1.ConfigProviderClient) (bool, error) {
+func (u *upstream) stream(ctx context.Context, client stevedorev1.ConfigProviderClient) (bool, error) {
 	h := u.hub
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -205,8 +205,8 @@ func (u *upstream) stream(ctx context.Context, client chandlerv1.ConfigProviderC
 	if err != nil {
 		return false, err
 	}
-	err = stream.Send(chandlerv1.ProviderRequest_builder{
-		Hello: chandlerv1.WatcherHello_builder{
+	err = stream.Send(stevedorev1.ProviderRequest_builder{
+		Hello: stevedorev1.WatcherHello_builder{
 			ServerId:       proto.String(h.id),
 			MaxBundleBytes: proto.Uint64(h.limits.MaxBytes),
 			MaxBundleFiles: proto.Uint32(uint32(h.limits.MaxFiles)),
@@ -236,7 +236,7 @@ func (u *upstream) stream(ctx context.Context, client chandlerv1.ConfigProviderC
 	}
 	h.log.Info("provider connected", "provider", u.name, "vary_on", strings.Join(varyOn, ","))
 
-	out := queue.New[*chandlerv1.ProviderRequest]()
+	out := queue.New[*stevedorev1.ProviderRequest]()
 	h.mu.Lock()
 	u.out = out
 	u.generation++
@@ -326,7 +326,7 @@ func (h *Hub) regroupLocked(u *upstream) {
 
 // shareOf returns the share of subscribers an update releases its revision
 // to, in basis points.
-func shareOf(update *chandlerv1.ResourceUpdate) uint32 {
+func shareOf(update *stevedorev1.ResourceUpdate) uint32 {
 	if !update.HasRollout() {
 		return rollout.Everyone
 	}
@@ -358,7 +358,7 @@ func (e *entry) pruneLocked() {
 }
 
 // fromProvider handles one message of a provider stream.
-func (h *Hub) fromProvider(u *upstream, msg *chandlerv1.ProviderResponse) {
+func (h *Hub) fromProvider(u *upstream, msg *stevedorev1.ProviderResponse) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -400,11 +400,11 @@ func (h *Hub) failLocked(r *resource, st *status.Status) {
 	h.serveAllLocked(r)
 }
 
-func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.ResourceUpdate) {
+func (h *Hub) updateLocked(u *upstream, r *resource, update *stevedorev1.ResourceUpdate) {
 	log := h.log.With("provider", u.name, "uri", r.uri, "revision", update.GetRevision())
 	ack := func() {
-		u.out.Push(chandlerv1.ProviderRequest_builder{
-			Ack: chandlerv1.ProviderAck_builder{
+		u.out.Push(stevedorev1.ProviderRequest_builder{
+			Ack: stevedorev1.ProviderAck_builder{
 				WatchId:  proto.String(update.GetWatchId()),
 				Nonce:    proto.String(update.GetNonce()),
 				Revision: proto.String(update.GetRevision()),
@@ -415,8 +415,8 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 		log.Error("refused a bundle from the provider", "code", code.String(), "error", err)
 		h.metrics.refusedBundles.Add(context.Background(), 1, metric.WithAttributes(
 			attribute.String("provider", u.name), attribute.String("code", code.String())))
-		u.out.Push(chandlerv1.ProviderRequest_builder{
-			Nack: chandlerv1.ProviderNack_builder{
+		u.out.Push(stevedorev1.ProviderRequest_builder{
+			Nack: stevedorev1.ProviderNack_builder{
 				WatchId:     proto.String(update.GetWatchId()),
 				Nonce:       proto.String(update.GetNonce()),
 				Revision:    proto.String(update.GetRevision()),
@@ -459,7 +459,7 @@ func (h *Hub) updateLocked(u *upstream, r *resource, update *chandlerv1.Resource
 			}
 		}
 		if e == nil {
-			e = &entry{key: key, bundles: make(map[string]*chandlerv1.Bundle), refs: make(map[*resource]struct{})}
+			e = &entry{key: key, bundles: make(map[string]*stevedorev1.Bundle), refs: make(map[*resource]struct{})}
 			h.entries[key] = e
 		}
 		newest := held{Version: version, Revision: update.GetRevision(), Bytes: size}

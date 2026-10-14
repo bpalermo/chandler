@@ -15,13 +15,13 @@ never renewed here.
 {{- $now := now | unixEpoch -}}
 {{- $validity := mul (int .Values.tls.generated.validityDays) 86400 -}}
 {{- $renewBefore := mul (int .Values.tls.generated.renewBeforeDays) 86400 -}}
-{{- $caName := printf "%s-ca" (include "chandler.name" .) -}}
+{{- $caName := printf "%s-ca" (include "stevedore.name" .) -}}
 {{- $caSecret := lookup "v1" "Secret" .Release.Namespace $caName -}}
 {{- $ca := "" -}}
 {{- if and $caSecret (index $caSecret.data "tls.crt") }}
 {{- $ca = buildCustomCert (index $caSecret.data "tls.crt") (index $caSecret.data "tls.key") -}}
 {{- else }}
-{{- $ca = genCA (printf "%s certificate authority" (include "chandler.name" .)) 3650 -}}
+{{- $ca = genCA (printf "%s certificate authority" (include "stevedore.name" .)) 3650 -}}
 {{- end }}
 apiVersion: v1
 kind: Secret
@@ -29,7 +29,7 @@ metadata:
   name: {{ $caName }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "chandler.labels" . | nindent 4 }}
+    {{- include "stevedore.labels" . | nindent 4 }}
 type: kubernetes.io/tls
 data:
   tls.crt: {{ $ca.Cert | b64enc }}
@@ -39,8 +39,8 @@ data:
 {{- if .Values.providers.s3.enabled }}{{ $components = append $components "provider-s3" }}{{ end }}
 {{- range $component := $components }}
 {{- $args := dict "root" $root "component" $component }}
-{{- $name := include "chandler.tlsSecret" $args }}
-{{- $identity := include "chandler.identity" $args }}
+{{- $name := include "stevedore.tlsSecret" $args }}
+{{- $identity := include "stevedore.identity" $args }}
 {{- $existing := lookup "v1" "Secret" $root.Release.Namespace $name }}
 {{- /*
 Keep the certificate that is there if it was issued by the authority that is
@@ -53,8 +53,8 @@ existed and is replaced.
 {{- $notAfter := add $now $validity }}
 {{- if and $existing (index $existing.data "tls.crt") $caSecret (index $caSecret.data "tls.crt") }}
 {{- $annotations := $existing.metadata.annotations | default dict }}
-{{- $recorded := index $annotations "chandler.dev/tls-not-after" }}
-{{- if and $recorded (eq (index $annotations "chandler.dev/tls-identity") $identity) }}
+{{- $recorded := index $annotations "stevedore.dev/tls-not-after" }}
+{{- if and $recorded (eq (index $annotations "stevedore.dev/tls-identity") $identity) }}
 {{- if gt (sub (int64 $recorded) $now) (int64 $renewBefore) }}
 {{- $keep = true }}
 {{- $notAfter = int64 $recorded }}
@@ -68,13 +68,13 @@ metadata:
   name: {{ $name }}
   namespace: {{ $root.Release.Namespace }}
   labels:
-    {{- include "chandler.labels" $root | nindent 4 }}
+    {{- include "stevedore.labels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ $component }}
   annotations:
     # When the certificate expires, in seconds since 1970, and for whom it
     # was issued: what the next upgrade decides renewal on.
-    chandler.dev/tls-not-after: {{ $notAfter | quote }}
-    chandler.dev/tls-identity: {{ $identity | quote }}
+    stevedore.dev/tls-not-after: {{ $notAfter | quote }}
+    stevedore.dev/tls-identity: {{ $identity | quote }}
 type: kubernetes.io/tls
 data:
   {{- if $keep }}

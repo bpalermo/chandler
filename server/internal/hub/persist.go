@@ -12,8 +12,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/cas"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/cas"
 )
 
 const (
@@ -69,14 +69,14 @@ func (h *Hub) load() error {
 	for _, ie := range idx.Entries {
 		e := &entry{
 			key:            entryKey{ie.Provider, ie.CacheKey},
-			bundles:        make(map[string]*chandlerv1.Bundle),
+			bundles:        make(map[string]*stevedorev1.Bundle),
 			lastRefreshed:  ie.LastRefreshed,
 			lastReferenced: ie.LastReferenced,
 			orphaned:       ie.Orphaned,
 			refs:           make(map[*resource]struct{}),
 		}
 		if ie.MaxAge != nil || ie.StaleIfError != nil {
-			var cc chandlerv1.CacheControl_builder
+			var cc stevedorev1.CacheControl_builder
 			if ie.MaxAge != nil {
 				cc.MaxAge = durationpb.New(time.Duration(*ie.MaxAge) * time.Second)
 			}

@@ -5,7 +5,7 @@ load("//bazel/image:defs.bzl", "go_image")
 go_library(
     name = "csi_lib",
     srcs = ["main.go"],
-    importpath = "github.com/bpalermo/chandler/csi",
+    importpath = "github.com/bpalermo/stevedore/csi",
     visibility = ["//visibility:private"],
     deps = [
         "//common/telemetry",
@@ -24,7 +24,7 @@ go_library(
 
 go_binary(
     name = "csi",
-    basename = "chandler-csi",
+    basename = "stevedore-csi",
     embed = [":csi_lib"],
     # Pure Go: the image binary is cross-built for linux with cgo off.
     pure = "on",
@@ -35,8 +35,8 @@ go_image(
     name = "image",
     base = "@distroless_static",
     binary = ":csi",
-    load_tag = "localhost/chandler-csi:e2e",
-    path = "/chandler-csi",
+    load_tag = "localhost/stevedore-csi:e2e",
+    path = "/stevedore-csi",
     registry = IMAGE_REGISTRY,
     repository = image_repository("csi"),
     # Mounts into kubelet pod directories from a privileged DaemonSet.

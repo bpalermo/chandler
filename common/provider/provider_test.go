@@ -15,10 +15,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/rollout"
-	"github.com/bpalermo/chandler/common/uri"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/rollout"
+	"github.com/bpalermo/stevedore/common/uri"
 )
 
 const wait = 10 * time.Second
@@ -88,8 +88,8 @@ func (r memoryResource) Fetch(_ context.Context, known string, limits bundle.Lim
 	if revision == known {
 		return state, nil
 	}
-	b := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
-		chandlerv1.File_builder{Path: proto.String("f"), Content: []byte(content)}.Build(),
+	b := stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
+		stevedorev1.File_builder{Path: proto.String("f"), Content: []byte(content)}.Build(),
 	}}.Build()
 	state.Bundle = b
 	return state, nil
@@ -97,8 +97,8 @@ func (r memoryResource) Fetch(_ context.Context, known string, limits bundle.Lim
 
 type watcher struct {
 	t      *testing.T
-	stream chandlerv1.ConfigProvider_StreamConfigsClient
-	in     chan *chandlerv1.ProviderResponse
+	stream stevedorev1.ConfigProvider_StreamConfigsClient
+	in     chan *stevedorev1.ProviderResponse
 }
 
 // start serves origin as provider "file" and opens a stream to it with the
@@ -119,7 +119,7 @@ func start(t *testing.T, origin Origin, maxBytes uint64, configure ...func(*Serv
 	for _, c := range configure {
 		c(provider)
 	}
-	chandlerv1.RegisterConfigProviderServer(server, provider)
+	stevedorev1.RegisterConfigProviderServer(server, provider)
 	go server.Serve(listener)
 	t.Cleanup(server.Stop)
 
@@ -130,13 +130,13 @@ func start(t *testing.T, origin Origin, maxBytes uint64, configure ...func(*Serv
 	t.Cleanup(func() { conn.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stream, err := chandlerv1.NewConfigProviderClient(conn).StreamConfigs(ctx)
+	stream, err := stevedorev1.NewConfigProviderClient(conn).StreamConfigs(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := &watcher{t: t, stream: stream, in: make(chan *chandlerv1.ProviderResponse, 64)}
-	w.send(chandlerv1.ProviderRequest_builder{
-		Hello: chandlerv1.WatcherHello_builder{
+	w := &watcher{t: t, stream: stream, in: make(chan *stevedorev1.ProviderResponse, 64)}
+	w.send(stevedorev1.ProviderRequest_builder{
+		Hello: stevedorev1.WatcherHello_builder{
 			ServerId:       proto.String("server-1"),
 			MaxBundleBytes: proto.Uint64(maxBytes),
 		}.Build(),
@@ -156,7 +156,7 @@ func start(t *testing.T, origin Origin, maxBytes uint64, configure ...func(*Serv
 	return w
 }
 
-func (w *watcher) send(req *chandlerv1.ProviderRequest) {
+func (w *watcher) send(req *stevedorev1.ProviderRequest) {
 	w.t.Helper()
 	if err := w.stream.Send(req); err != nil {
 		w.t.Fatal(err)
@@ -165,14 +165,14 @@ func (w *watcher) send(req *chandlerv1.ProviderRequest) {
 
 func (w *watcher) watch(id, uri, known string) {
 	w.t.Helper()
-	watch := chandlerv1.Watch_builder{WatchId: proto.String(id), Uri: proto.String(uri)}
+	watch := stevedorev1.Watch_builder{WatchId: proto.String(id), Uri: proto.String(uri)}
 	if known != "" {
 		watch.KnownRevision = proto.String(known)
 	}
-	w.send(chandlerv1.ProviderRequest_builder{Watch: watch.Build()}.Build())
+	w.send(stevedorev1.ProviderRequest_builder{Watch: watch.Build()}.Build())
 }
 
-func (w *watcher) next() *chandlerv1.ProviderResponse {
+func (w *watcher) next() *stevedorev1.ProviderResponse {
 	w.t.Helper()
 	select {
 	case msg := <-w.in:
@@ -183,7 +183,7 @@ func (w *watcher) next() *chandlerv1.ProviderResponse {
 	}
 }
 
-func (w *watcher) update(id string) *chandlerv1.ResourceUpdate {
+func (w *watcher) update(id string) *stevedorev1.ResourceUpdate {
 	w.t.Helper()
 	msg := w.next()
 	if !msg.HasUpdate() || msg.GetUpdate().GetWatchId() != id {
@@ -242,8 +242,8 @@ func TestWatchFollowsAFile(t *testing.T) {
 	}
 
 	// After an unwatch the provider says nothing more about it.
-	w.send(chandlerv1.ProviderRequest_builder{
-		Unwatch: chandlerv1.Unwatch_builder{WatchId: proto.String("1")}.Build(),
+	w.send(stevedorev1.ProviderRequest_builder{
+		Unwatch: stevedorev1.Unwatch_builder{WatchId: proto.String("1")}.Build(),
 	}.Build())
 	time.Sleep(50 * time.Millisecond)
 	origin.put("/app.yaml", "v4")
@@ -319,7 +319,7 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-func share(u *chandlerv1.ResourceUpdate) uint32 {
+func share(u *stevedorev1.ResourceUpdate) uint32 {
 	if !u.HasRollout() {
 		return rollout.Everyone
 	}
@@ -413,8 +413,8 @@ func TestRampHeldWhenPodsRefuse(t *testing.T) {
 	first := w.update("1")
 	overdue := uint32(0)
 	report := func(refused, rejected uint32) {
-		w.send(chandlerv1.ProviderRequest_builder{
-			Feedback: chandlerv1.Feedback_builder{
+		w.send(stevedorev1.ProviderRequest_builder{
+			Feedback: stevedorev1.Feedback_builder{
 				CacheKey: proto.String("/app.yaml"),
 				Revision: proto.String(first.GetRevision()),
 				Assigned: proto.Uint32(5),

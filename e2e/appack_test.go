@@ -10,9 +10,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/common/rollout"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/common/rollout"
 )
 
 // curl 8.16.0, pinned: the application side of the acknowledgement API is any
@@ -75,7 +75,7 @@ type ackConfig struct {
 func ackGet(ctx context.Context, t *testing.T, ns, pod string) ackConfig {
 	t.Helper()
 	out := mustKubectl(ctx, t, "exec", pod, "-n", ns, "--",
-		"curl", "-sS", "--unix-socket", mountPath+"/..chandler.sock", "http://chandler/v1/config")
+		"curl", "-sS", "--unix-socket", mountPath+"/..stevedore.sock", "http://stevedore/v1/config")
 	var config ackConfig
 	if err := json.Unmarshal([]byte(out), &config); err != nil {
 		t.Fatalf("GET /v1/config returned %q: %v", out, err)
@@ -88,7 +88,7 @@ func ackReport(ctx context.Context, t *testing.T, ns, pod, body string) string {
 	t.Helper()
 	return mustKubectl(ctx, t, "exec", pod, "-n", ns, "--",
 		"curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
-		"--unix-socket", mountPath+"/..chandler.sock", "-d", body, "http://chandler/v1/reports")
+		"--unix-socket", mountPath+"/..stevedore.sock", "-d", body, "http://stevedore/v1/reports")
 }
 
 // Application acknowledgement, from the application's side: it finds the
@@ -108,9 +108,9 @@ func TestApplicationAcknowledgement(t *testing.T) {
 
 	// The manifest file is in the volume and agrees with the API.
 	var manifest ackConfig
-	raw := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "cat", mountPath+"/..chandler.json")
+	raw := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "cat", mountPath+"/..stevedore.json")
 	if err := json.Unmarshal([]byte(raw), &manifest); err != nil {
-		t.Fatalf("..chandler.json = %q: %v", raw, err)
+		t.Fatalf("..stevedore.json = %q: %v", raw, err)
 	}
 	first := ackGet(ctx, t, ns, "app")
 	if first.Generation == "" || first.Generation != manifest.Generation || len(first.Sources) != 1 ||
@@ -128,9 +128,9 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	// GetConfigRequest, framed by hand, comes back with the generation and a
 	// status of OK in the trailers.
 	out := mustKubectl(ctx, t, "exec", "app", "-n", ns, "--", "sh", "-c", fmt.Sprintf(
-		`printf '\000\000\000\000\000' | curl -sS --http2-prior-knowledge --unix-socket %s/..chandler.sock `+
+		`printf '\000\000\000\000\000' | curl -sS --http2-prior-knowledge --unix-socket %s/..stevedore.sock `+
 			`-H 'Content-Type: application/grpc' -H 'TE: trailers' --data-binary @- -D /tmp/headers -o /tmp/body `+
-			`http://chandler/chandler.v1.ApplicationService/GetConfig && cat /tmp/headers && grep -c %s /tmp/body`,
+			`http://stevedore/stevedore.v1.ApplicationService/GetConfig && cat /tmp/headers && grep -c %s /tmp/body`,
 		mountPath, first.Generation))
 	if !strings.Contains(out, "application/grpc") || !strings.Contains(out, "grpc-status: 0") || !strings.HasSuffix(strings.TrimSpace(out), "1") {
 		t.Errorf("GetConfig over gRPC returned %q, want a gRPC response with status 0 and the generation", out)
@@ -201,8 +201,8 @@ func TestRolloutHoldsWhileApplicationsStaySilent(t *testing.T) {
 	key := ns + ".staged.yaml"
 	sources := fmt.Sprintf("- name: app\n  uri: file:///%s\n  path: app.yaml\n", key)
 
-	next := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
-		chandlerv1.File_builder{Path: proto.String(key), Mode: proto.Uint32(0o644), Content: []byte("v2")}.Build(),
+	next := stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
+		stevedorev1.File_builder{Path: proto.String(key), Mode: proto.Uint32(0o644), Content: []byte("v2")}.Build(),
 	}}.Build()
 	version := bundle.Version(next)
 

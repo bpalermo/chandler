@@ -7,7 +7,7 @@ import (
 
 const mountinfo = `22 28 0:21 / /sys rw,nosuid,nodev,noexec,relatime shared:7 - sysfs sysfs rw
 28 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
-950 28 8:1 /var/lib/chandler/volumes/csi-1/data /var/lib/kubelet/pods/a/volumes/kubernetes.io~csi/config/mount ro,relatime shared:1 - ext4 /dev/sda1 rw
+950 28 8:1 /var/lib/stevedore/volumes/csi-1/data /var/lib/kubelet/pods/a/volumes/kubernetes.io~csi/config/mount ro,relatime shared:1 - ext4 /dev/sda1 rw
 951 28 8:1 /x /mnt/with\040space\011tab\134slash rw - ext4 /dev/sda1 rw
 short line
 `
@@ -27,7 +27,7 @@ func TestMountPoints(t *testing.T) {
 		}
 	}
 	// The mount source is not a mount point.
-	if _, ok := points["/var/lib/chandler/volumes/csi-1/data"]; ok {
+	if _, ok := points["/var/lib/stevedore/volumes/csi-1/data"]; ok {
 		t.Error("a mount source was reported as a mount point")
 	}
 	if len(points) != 4 {

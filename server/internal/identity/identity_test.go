@@ -34,7 +34,7 @@ func b64(v any) string {
 // podClaims is what kubelet's token for a CSI driver carries.
 func podClaims() map[string]any {
 	return map[string]any{
-		"aud": []string{"chandler"},
+		"aud": []string{"stevedore"},
 		"exp": now.Add(time.Hour).Unix(),
 		"nbf": now.Add(-time.Minute).Unix(),
 		"iss": "https://kubernetes.default.svc.cluster.local",
@@ -80,7 +80,7 @@ func TestVerify(t *testing.T) {
 	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	otherKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	v := Verifier{
-		Audience: "chandler",
+		Audience: "stevedore",
 		Keys:     staticKeys{"rsa": &rsaKey.PublicKey, "ec": &ecKey.PublicKey},
 		Now:      func() time.Time { return now },
 	}
@@ -96,7 +96,7 @@ func TestVerify(t *testing.T) {
 	}
 	// "aud" may be a single string.
 	single := podClaims()
-	single["aud"] = "chandler"
+	single["aud"] = "stevedore"
 	if _, err := v.Verify(signRSA(t, rsaKey, "rsa", single)); err != nil {
 		t.Errorf("a single-string audience: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestJWKSFromFile(t *testing.T) {
 	if err := keys.Load(); err != nil {
 		t.Fatal(err)
 	}
-	v := Verifier{Audience: "chandler", Keys: keys, Now: func() time.Time { return now }}
+	v := Verifier{Audience: "stevedore", Keys: keys, Now: func() time.Time { return now }}
 	if _, err := v.Verify(signRSA(t, rsaKey, "rsa", podClaims())); err != nil {
 		t.Errorf("a token signed with the published RSA key: %v", err)
 	}

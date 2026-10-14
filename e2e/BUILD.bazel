@@ -20,7 +20,7 @@ go_test(
         "local",
     ],
     deps = [
-        "//api/chandler/v1:chandler",
+        "//api/stevedore/v1:stevedore",
         "//common/bundle",
         "//common/rollout",
         "@org_golang_google_protobuf//proto",

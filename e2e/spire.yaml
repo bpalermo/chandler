@@ -23,7 +23,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: chandler-e2e-spire-server
+  name: stevedore-e2e-spire-server
 rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
@@ -35,11 +35,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: chandler-e2e-spire-server
+  name: stevedore-e2e-spire-server
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: chandler-e2e-spire-server
+  name: stevedore-e2e-spire-server
 subjects:
   - kind: ServiceAccount
     name: spire-server
@@ -49,7 +49,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: chandler-e2e-spire-agent
+  name: stevedore-e2e-spire-agent
 rules:
   - apiGroups: [""]
     resources: ["pods", "nodes", "nodes/proxy"]
@@ -58,11 +58,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: chandler-e2e-spire-agent
+  name: stevedore-e2e-spire-agent
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: chandler-e2e-spire-agent
+  name: stevedore-e2e-spire-agent
 subjects:
   - kind: ServiceAccount
     name: spire-agent
@@ -78,7 +78,7 @@ data:
     server {
       bind_address = "0.0.0.0"
       bind_port = "8081"
-      trust_domain = "chandler.test"
+      trust_domain = "stevedore.test"
       data_dir = "/run/spire/data"
       log_level = "INFO"
       ca_ttl = "24h"
@@ -94,7 +94,7 @@ data:
       NodeAttestor "k8s_psat" {
         plugin_data {
           clusters = {
-            "chandler-e2e" = {
+            "stevedore-e2e" = {
               service_account_allow_list = ["spire:spire-agent"]
             }
           }
@@ -125,7 +125,7 @@ data:
       server_address = "spire-server.spire.svc"
       server_port = "8081"
       socket_path = "/run/spire/sockets/spire-agent.sock"
-      trust_domain = "chandler.test"
+      trust_domain = "stevedore.test"
       # For a throwaway cluster: trust the server on first contact rather
       # than distributing its bundle first.
       insecure_bootstrap = true
@@ -133,7 +133,7 @@ data:
     plugins {
       NodeAttestor "k8s_psat" {
         plugin_data {
-          cluster = "chandler-e2e"
+          cluster = "stevedore-e2e"
         }
       }
       KeyManager "memory" {

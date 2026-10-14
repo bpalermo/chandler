@@ -24,11 +24,11 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	chandlerv1 "github.com/bpalermo/chandler/api/chandler/v1"
-	"github.com/bpalermo/chandler/common/bundle"
-	"github.com/bpalermo/chandler/csi/internal/cache"
-	"github.com/bpalermo/chandler/csi/internal/client"
-	"github.com/bpalermo/chandler/csi/internal/events"
+	stevedorev1 "github.com/bpalermo/stevedore/api/stevedore/v1"
+	"github.com/bpalermo/stevedore/common/bundle"
+	"github.com/bpalermo/stevedore/csi/internal/cache"
+	"github.com/bpalermo/stevedore/csi/internal/client"
+	"github.com/bpalermo/stevedore/csi/internal/events"
 )
 
 // fakeMounter records mounts instead of performing them.
@@ -78,7 +78,7 @@ type fakeServer struct {
 	// noStore marks what is delivered at subscribe as no_store.
 	noStore bool
 	subs    map[string]client.Subscription
-	reports []*chandlerv1.AppReport
+	reports []*stevedorev1.AppReport
 	applied map[string]string // subscription ID -> applied version it subscribed with
 	down    error
 }
@@ -92,11 +92,11 @@ func newFakeServer() *fakeServer {
 	}
 }
 
-func update(id, content string) *chandlerv1.ConfigUpdate {
-	b := chandlerv1.Bundle_builder{Files: []*chandlerv1.File{
-		chandlerv1.File_builder{Path: proto.String("origin-name"), Content: []byte(content)}.Build(),
+func update(id, content string) *stevedorev1.ConfigUpdate {
+	b := stevedorev1.Bundle_builder{Files: []*stevedorev1.File{
+		stevedorev1.File_builder{Path: proto.String("origin-name"), Content: []byte(content)}.Build(),
 	}}.Build()
-	return chandlerv1.ConfigUpdate_builder{
+	return stevedorev1.ConfigUpdate_builder{
 		SubscriptionId: proto.String(id),
 		Nonce:          proto.String("1"),
 		Version:        proto.String(bundle.Version(b)),
@@ -134,7 +134,7 @@ func (f *fakeServer) Unsubscribe(id string) {
 
 func (f *fakeServer) Err() error { return f.down }
 
-func (f *fakeServer) Report(r *chandlerv1.AppReport) {
+func (f *fakeServer) Report(r *stevedorev1.AppReport) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reports = append(f.reports, r)
@@ -242,7 +242,7 @@ func publishRequest(volumeID, target, sources string) *csi.NodePublishVolumeRequ
 			podNameKey:      "web-0",
 			podNamespaceKey: "shop",
 			podUIDKey:       "uid-1",
-			tokensKey:       `{"chandler":{"token":"token-1","expirationTimestamp":"2030-01-01T00:00:00Z"},"other":{"token":"not-ours"}}`,
+			tokensKey:       `{"stevedore":{"token":"token-1","expirationTimestamp":"2030-01-01T00:00:00Z"},"other":{"token":"not-ours"}}`,
 		},
 	}
 }
@@ -369,7 +369,7 @@ func TestPublishFailsWithoutMounting(t *testing.T) {
 		"an unreachable server": {
 			prepare: func(s *fakeServer) {
 				s.content = map[string]string{}
-				s.down = errors.New("config server chandler:9000 is unreachable: connection refused")
+				s.down = errors.New("config server stevedore:9000 is unreachable: connection refused")
 			},
 			code:    codes.Unavailable,
 			message: "connection refused",
@@ -632,7 +632,7 @@ func call(t *testing.T, socket, method, path, body string) (int, string) {
 		},
 	}}
 	defer client.CloseIdleConnections()
-	req, err := http.NewRequest(method, "http://chandler"+path, strings.NewReader(body))
+	req, err := http.NewRequest(method, "http://stevedore"+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,14 +654,14 @@ func firstDetail(st *status.Status) any {
 }
 
 // dialApp connects to a volume's acknowledgement socket as a gRPC client.
-func dialApp(t *testing.T, socket string) chandlerv1.ApplicationServiceClient {
+func dialApp(t *testing.T, socket string) stevedorev1.ApplicationServiceClient {
 	t.Helper()
 	conn, err := grpc.NewClient("unix://"+shortSocket(t, socket), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	return chandlerv1.NewApplicationServiceClient(conn)
+	return stevedorev1.NewApplicationServiceClient(conn)
 }
 
 // A volume with appAck gets a socket the application reports on; a rejection
@@ -676,14 +676,14 @@ func TestApplicationAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := f.mounts.mounts[target]
-	socket := filepath.Join(data, "..chandler.sock")
+	socket := filepath.Join(data, "..stevedore.sock")
 
 	// The manifest file and the API agree on the generation.
 	var manifest, config struct {
 		Generation string
 		Sources    []struct{ Name, Version, State string }
 	}
-	if err := json.Unmarshal([]byte(read(t, filepath.Join(data, "..chandler.json"))), &manifest); err != nil {
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(data, "..stevedore.json"))), &manifest); err != nil {
 		t.Fatal(err)
 	}
 	code, body := call(t, socket, http.MethodGet, "/v1/config", "")
@@ -698,12 +698,12 @@ func TestApplicationAcknowledgement(t *testing.T) {
 
 	// The same service over gRPC, on the same socket.
 	app := dialApp(t, socket)
-	viaGRPC, err := app.GetConfig(ctx, &chandlerv1.GetConfigRequest{})
+	viaGRPC, err := app.GetConfig(ctx, &stevedorev1.GetConfigRequest{})
 	if err != nil {
 		t.Fatalf("GetConfig over gRPC: %v", err)
 	}
 	if m := viaGRPC.GetConfig(); m.GetGeneration() != config.Generation || len(m.GetSources()) != 1 ||
-		m.GetSources()[0].GetVersion() != first || m.GetSources()[0].GetState() != chandlerv1.Manifest_STATE_PENDING {
+		m.GetSources()[0].GetVersion() != first || m.GetSources()[0].GetState() != stevedorev1.Manifest_STATE_PENDING {
 		t.Errorf("GetConfig over gRPC = %v, want what HTTP returned", m)
 	}
 
@@ -730,11 +730,11 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	}
 	// What the application sees now: the version it loaded, in a new
 	// generation.
-	reverted, err := app.GetConfig(ctx, &chandlerv1.GetConfigRequest{})
+	reverted, err := app.GetConfig(ctx, &stevedorev1.GetConfigRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if src := reverted.GetConfig().GetSources()[0]; src.GetVersion() != first || src.GetState() != chandlerv1.Manifest_STATE_LOADED {
+	if src := reverted.GetConfig().GetSources()[0]; src.GetVersion() != first || src.GetState() != stevedorev1.Manifest_STATE_LOADED {
 		t.Errorf("after the rejection the config is %v, want the first version, loaded", reverted.GetConfig())
 	}
 	if got := read(t, filepath.Join(data, "app.yaml")); got != "a: 1\n" {
@@ -747,7 +747,7 @@ func TestApplicationAcknowledgement(t *testing.T) {
 	if len(reports) != 2 {
 		t.Fatalf("%d reports reached the server, want 2", len(reports))
 	}
-	if r := reports[1]; r.GetState() != chandlerv1.AppReport_STATE_REJECTED || r.GetVersion() != second.GetVersion() ||
+	if r := reports[1]; r.GetState() != stevedorev1.AppReport_STATE_REJECTED || r.GetVersion() != second.GetVersion() ||
 		r.GetAppliedVersion() != first || r.GetMessage() != "cannot parse" || r.GetSubscriptionId() != "csi-ack/0" {
 		t.Errorf("rejection report = %v", r)
 	}
@@ -777,20 +777,20 @@ func TestApplicationAcknowledgement(t *testing.T) {
 		}
 	}
 	// The same over gRPC, with the current manifest in the status.
-	_, err = app.Report(ctx, chandlerv1.ReportRequest_builder{
+	_, err = app.Report(ctx, stevedorev1.ReportRequest_builder{
 		Generation: proto.String("g-0000"),
-		State:      chandlerv1.Manifest_STATE_LOADED.Enum(),
+		State:      stevedorev1.Manifest_STATE_LOADED.Enum(),
 	}.Build())
 	st := status.Convert(err)
-	current, _ := firstDetail(st).(*chandlerv1.Manifest)
+	current, _ := firstDetail(st).(*stevedorev1.Manifest)
 	if st.Code() != codes.Aborted || current.GetGeneration() != reverted.GetConfig().GetGeneration() {
 		t.Errorf("a stale generation over gRPC = %v with %v, want Aborted with the current manifest", err, current)
 	}
-	_, err = app.Report(ctx, chandlerv1.ReportRequest_builder{
+	_, err = app.Report(ctx, stevedorev1.ReportRequest_builder{
 		Generation: proto.String(config.Generation),
-		Sources: []*chandlerv1.SourceReport{chandlerv1.SourceReport_builder{
+		Sources: []*stevedorev1.SourceReport{stevedorev1.SourceReport_builder{
 			Name:  proto.String("nope"),
-			State: chandlerv1.Manifest_STATE_LOADED.Enum(),
+			State: stevedorev1.Manifest_STATE_LOADED.Enum(),
 		}.Build()},
 	}.Build())
 	if status.Code(err) != codes.NotFound {
@@ -822,7 +822,7 @@ func TestNoAcknowledgementUnlessAsked(t *testing.T) {
 	if _, err := f.driver.NodePublishVolume(context.Background(), publishRequest("csi-plain", target, twoSources)); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"..chandler.json", "..chandler.sock"} {
+	for _, name := range []string{"..stevedore.json", "..stevedore.sock"} {
 		if _, err := os.Lstat(filepath.Join(f.mounts.mounts[target], name)); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s exists in a volume without appAck: %v", name, err)
 		}
@@ -854,7 +854,7 @@ func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 	// kubelet publishes again with a renewed token: nothing is remounted or
 	// resubscribed, as the server has refused nothing.
 	f.server.subs = map[string]client.Subscription{}
-	req.VolumeContext[tokensKey] = `{"chandler":{"token":"token-2"}}`
+	req.VolumeContext[tokensKey] = `{"stevedore":{"token":"token-2"}}`
 	if _, err := f.driver.NodePublishVolume(ctx, req); err != nil {
 		t.Fatal(err)
 	}
@@ -925,8 +925,8 @@ func TestPodTokenIsPassedAndRenewed(t *testing.T) {
 	}
 }
 
-func noStore(u *chandlerv1.ConfigUpdate) *chandlerv1.ConfigUpdate {
-	u.SetCacheControl(chandlerv1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
+func noStore(u *stevedorev1.ConfigUpdate) *stevedorev1.ConfigUpdate {
+	u.SetCacheControl(stevedorev1.CacheControl_builder{NoStore: proto.Bool(true)}.Build())
 	return u
 }
 
@@ -1010,7 +1010,7 @@ func TestEventsOnThePod(t *testing.T) {
 		t.Fatal(err)
 	}
 	sub := f.server.subs["csi-events/0"]
-	socket := filepath.Join(f.mounts.mounts[target], "..chandler.sock")
+	socket := filepath.Join(f.mounts.mounts[target], "..stevedore.sock")
 	generation := func() string {
 		var config struct{ Generation string }
 		_, body := call(t, socket, http.MethodGet, "/v1/config", "")

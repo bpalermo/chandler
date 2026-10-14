@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/grpc/status"
 
-	"github.com/bpalermo/chandler/common/telemetry"
+	"github.com/bpalermo/stevedore/common/telemetry"
 )
 
 // metrics is what the driver measures. They cost nothing until the process
@@ -22,24 +22,24 @@ type metrics struct {
 func (d *Driver) instrument() {
 	m := telemetry.Meter()
 	d.metrics = metrics{
-		publishes: telemetry.Must(m.Float64Histogram("chandler.csi.publish.duration",
+		publishes: telemetry.Must(m.Float64Histogram("stevedore.csi.publish.duration",
 			metric.WithDescription("Time a pod's volume took to mount, most of it waiting for its sources, by outcome."),
 			metric.WithUnit("s"))),
-		applies: telemetry.Must(m.Float64Histogram("chandler.csi.apply.duration",
+		applies: telemetry.Must(m.Float64Histogram("stevedore.csi.apply.duration",
 			metric.WithDescription("Time to write one update into a volume, by outcome: OK, or the code it was NACKed with."),
 			metric.WithUnit("s"))),
-		fromCache: telemetry.Must(m.Int64Counter("chandler.csi.mounts_from_cache",
+		fromCache: telemetry.Must(m.Int64Counter("stevedore.csi.mounts_from_cache",
 			metric.WithDescription("Volumes mounted from the node cache because the server could not supply a source."))),
-		appReports: telemetry.Must(m.Int64Counter("chandler.csi.app_reports",
+		appReports: telemetry.Must(m.Int64Counter("stevedore.csi.app_reports",
 			metric.WithDescription("Verdicts applications reported on their volumes, by state."))),
 	}
-	volumes := telemetry.Must(m.Int64ObservableGauge("chandler.csi.volumes",
+	volumes := telemetry.Must(m.Int64ObservableGauge("stevedore.csi.volumes",
 		metric.WithDescription("Pod volumes this driver serves.")))
-	connected := telemetry.Must(m.Int64ObservableGauge("chandler.csi.server.connected",
+	connected := telemetry.Must(m.Int64ObservableGauge("stevedore.csi.server.connected",
 		metric.WithDescription("1 while the driver has a stream to a config server, else 0.")))
-	cacheURIs := telemetry.Must(m.Int64ObservableGauge("chandler.csi.cache.uris",
+	cacheURIs := telemetry.Must(m.Int64ObservableGauge("stevedore.csi.cache.uris",
 		metric.WithDescription("URIs the node cache holds versions for, counted once per namespace and service account that uses them.")))
-	cacheBytes := telemetry.Must(m.Int64ObservableGauge("chandler.csi.cache.bytes",
+	cacheBytes := telemetry.Must(m.Int64ObservableGauge("stevedore.csi.cache.bytes",
 		metric.WithDescription("Bytes of file content the node cache keeps on disk."), metric.WithUnit("By")))
 	telemetry.Must(m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		uris, bytes := d.cache.Stats()

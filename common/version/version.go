@@ -1,4 +1,4 @@
-// Package version exposes the build version shared by all Chandler binaries.
+// Package version exposes the build version shared by all Stevedore binaries.
 package version
 
 // Version is the build version: `git describe --tags --always --dirty` of

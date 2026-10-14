@@ -1,4 +1,4 @@
-// Command chandler-csi is the Chandler CSI node driver. It serves the CSI
+// Command stevedore-csi is the Stevedore CSI node driver. It serves the CSI
 // Identity and Node services to kubelet over a Unix socket.
 package main
 
@@ -20,22 +20,22 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/bpalermo/chandler/common/telemetry"
-	"github.com/bpalermo/chandler/common/transport"
-	"github.com/bpalermo/chandler/common/version"
-	"github.com/bpalermo/chandler/csi/internal/cache"
-	"github.com/bpalermo/chandler/csi/internal/client"
-	"github.com/bpalermo/chandler/csi/internal/driver"
-	"github.com/bpalermo/chandler/csi/internal/events"
-	"github.com/bpalermo/chandler/csi/internal/mount"
+	"github.com/bpalermo/stevedore/common/telemetry"
+	"github.com/bpalermo/stevedore/common/transport"
+	"github.com/bpalermo/stevedore/common/version"
+	"github.com/bpalermo/stevedore/csi/internal/cache"
+	"github.com/bpalermo/stevedore/csi/internal/client"
+	"github.com/bpalermo/stevedore/csi/internal/driver"
+	"github.com/bpalermo/stevedore/csi/internal/events"
+	"github.com/bpalermo/stevedore/csi/internal/mount"
 )
 
 func main() {
 	var (
 		endpoint       = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint; only unix:// sockets are supported")
 		nodeID         = flag.String("node-id", os.Getenv("NODE_NAME"), "Kubernetes node name (default $NODE_NAME)")
-		stateDir       = flag.String("state-dir", "/var/lib/chandler", "directory on the host where volumes are kept")
-		server         = flag.String("server", "", "gRPC target of the config server, e.g. dns:///chandler-server.chandler-system.svc:9000")
+		stateDir       = flag.String("state-dir", "/var/lib/stevedore", "directory on the host where volumes are kept")
+		server         = flag.String("server", "", "gRPC target of the config server, e.g. dns:///stevedore-server.stevedore-system.svc:9000")
 		serverIdentity = flag.String("server-identity", "", "the identity (DNS name or SPIFFE ID) the config server's certificate must carry (default: the host name in --server)")
 		tokenAudience  = flag.String("token-audience", driver.DefaultTokenAudience, "the audience of the pod token kubelet supplies for the config server; matches the CSIDriver object's tokenRequests")
 		podEvents      = flag.Bool("pod-events", true, "record Kubernetes events on pods when their configuration is refused, rejected, late or served from a cache; needs permission to create events")
@@ -46,14 +46,14 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("chandler-csi %s\n", version.Version)
+		fmt.Printf("stevedore-csi %s\n", version.Version)
 		return
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	src, err := tls.Source(context.Background())
 	if err != nil {
-		log.Error("chandler-csi failed", "error", err)
+		log.Error("stevedore-csi failed", "error", err)
 		os.Exit(1)
 	}
 	if src == nil {
@@ -64,7 +64,7 @@ func main() {
 		identity = transport.HostIdentity(*server)
 	}
 	if err := run(log, *endpoint, *nodeID, *stateDir, *server, transport.Dial(src, []string{identity}), *tokenAudience, *podEvents); err != nil {
-		log.Error("chandler-csi failed", "error", err)
+		log.Error("stevedore-csi failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -81,7 +81,7 @@ func run(log *slog.Logger, endpoint, nodeID, stateDir, serverTarget string, cred
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	stopTelemetry, err := telemetry.Setup(ctx, "chandler-csi", version.Version)
+	stopTelemetry, err := telemetry.Setup(ctx, "stevedore-csi", version.Version)
 	if err != nil {
 		return err
 	}

@@ -356,8 +356,8 @@ func TestWritableVolumeIsRefused(t *testing.T) {
 }
 
 // The node cache: with the config server gone, a pod that allows it starts
-// from what the node already holds, a pod that does not waits, and both get
-// the server's version once it is back.
+// from what the node already holds for its namespace, a pod that does not
+// waits, and all get the server's version once it is back.
 func TestPodStartsFromTheNodeCache(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -419,6 +419,25 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	if phase := mustKubectl(ctx, t, "get", "pod", "strict", "-n", ns, "-o", "jsonpath={.status.phase}"); phase != "Pending" {
 		t.Errorf("the pod that must not use the cache is %q, want Pending", phase)
 	}
+	// What the node holds for one namespace is not given to a pod of
+	// another, which a provider may serve differently.
+	other := newNamespace(ctx, t)
+	mustApply(ctx, t, other, consumerPodWithPolicy("elsewhere", true, sources, "UseCached"))
+	err = eventually(ctx, func() error {
+		events, err := kubectl(ctx, "get", "events", "-n", other,
+			"--field-selector", "involvedObject.name=elsewhere,reason=FailedMount",
+			"-o", "jsonpath={.items[*].message}")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(events, "nothing is cached") {
+			return fmt.Errorf("no FailedMount event saying nothing is cached for it yet; events: %q", events)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// The server returns: everything converges on what it serves.
 	if err := scale(ctx, serverReplicas); err != nil {
@@ -428,10 +447,12 @@ func TestPodStartsFromTheNodeCache(t *testing.T) {
 	for _, pod := range []string{"cached", "warm"} {
 		expectFile(ctx, t, ns, pod, "app.yaml", "v2")
 	}
-	if _, err := waitForPodPhase(ctx, ns, "strict", "Running"); err != nil {
-		t.Fatal(err)
+	for _, pod := range []struct{ ns, name string }{{ns, "strict"}, {other, "elsewhere"}} {
+		if _, err := waitForPodPhase(ctx, pod.ns, pod.name, "Running"); err != nil {
+			t.Fatal(err)
+		}
+		expectFile(ctx, t, pod.ns, pod.name, "app.yaml", "v2")
 	}
-	expectFile(ctx, t, ns, "strict", "app.yaml", "v2")
 }
 
 // The server cache: with the provider gone, a new pod is still given what the

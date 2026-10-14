@@ -38,7 +38,7 @@ func (d *Driver) instrument() {
 	connected := telemetry.Must(m.Int64ObservableGauge("chandler.csi.server.connected",
 		metric.WithDescription("1 while the driver has a stream to a config server, else 0.")))
 	cacheURIs := telemetry.Must(m.Int64ObservableGauge("chandler.csi.cache.uris",
-		metric.WithDescription("URIs the node cache holds versions for.")))
+		metric.WithDescription("URIs the node cache holds versions for, counted once per namespace and service account that uses them.")))
 	cacheBytes := telemetry.Must(m.Int64ObservableGauge("chandler.csi.cache.bytes",
 		metric.WithDescription("Bytes of file content the node cache keeps on disk."), metric.WithUnit("By")))
 	telemetry.Must(m.RegisterCallback(func(_ context.Context, o metric.Observer) error {

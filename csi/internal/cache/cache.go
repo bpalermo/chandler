@@ -3,8 +3,11 @@
 // again, and so that a pod can start from what the node already holds while
 // the server is unreachable.
 //
-// It is a bundle store (common/cas) and, beside it, index.json: for each
-// canonical URI, the versions held, newest first.
+// It is a bundle store (common/cas) and, beside it, index.json: for each key,
+// the versions held, newest first. A key is a canonical URI with the pod's
+// namespace and service account (csi/internal/volume), since a provider may
+// serve one URI differently to them; the cache treats it as opaque. Bundles
+// are shared between keys: they are stored by version.
 package cache
 
 import (
@@ -22,11 +25,11 @@ import (
 )
 
 const (
-	// VersionsPerURI is how many versions are kept for one URI: the current
+	// VersionsPerURI is how many versions are kept for one key: the current
 	// one and the one before it, so a rollback needs no bytes.
 	VersionsPerURI = 2
 
-	// DefaultGrace is how long the versions of a URI no volume uses are
+	// DefaultGrace is how long the versions of a key no volume uses are
 	// kept, so pods can restart through an outage.
 	DefaultGrace = 24 * time.Hour
 )
@@ -45,11 +48,11 @@ type Cache struct {
 	index map[string]*entry
 }
 
-// entry is what is held for one URI.
+// entry is what is held for one key.
 type entry struct {
 	// Versions is newest first, at most VersionsPerURI.
 	Versions []string `json:"versions"`
-	// LastUsed is when a volume last used the URI.
+	// LastUsed is when a volume last used the key.
 	LastUsed time.Time `json:"lastUsed"`
 }
 
@@ -72,24 +75,24 @@ func Open(dir string, grace time.Duration) (*Cache, error) {
 	return c, nil
 }
 
-// Put stores a bundle as the newest version of a URI. The bundle must already
+// Put stores a bundle as the newest version of a key. The bundle must already
 // be verified against version.
-func (c *Cache) Put(uri, version string, b *chandlerv1.Bundle) error {
+func (c *Cache) Put(key, version string, b *chandlerv1.Bundle) error {
 	if err := c.store.Put(version, b); err != nil {
 		return err
 	}
-	return c.Use(uri, version)
+	return c.Use(key, version)
 }
 
-// Use marks version as the newest of a URI without storing anything: the
-// version is already held, under this URI or another.
-func (c *Cache) Use(uri, version string) error {
+// Use marks version as the newest of a key without storing anything: the
+// version is already held, under this key or another.
+func (c *Cache) Use(key, version string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.index[uri]
+	e := c.index[key]
 	if e == nil {
 		e = &entry{}
-		c.index[uri] = e
+		c.index[key] = e
 	}
 	versions := []string{version}
 	for _, v := range e.Versions {
@@ -107,21 +110,21 @@ func (c *Cache) Get(version string) (*chandlerv1.Bundle, error) {
 	return c.store.Get(version)
 }
 
-// Versions returns the versions held for a URI, newest first.
-func (c *Cache) Versions(uri string) []string {
+// Versions returns the versions held for a key, newest first.
+func (c *Cache) Versions(key string) []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if e := c.index[uri]; e != nil {
+	if e := c.index[key]; e != nil {
 		return append([]string(nil), e.Versions...)
 	}
 	return nil
 }
 
-// Stats returns how many URIs the cache holds versions for, and how many
+// Stats returns how many keys the cache holds versions for, and how many
 // bytes of file content it keeps on disk.
-func (c *Cache) Stats() (uris int, bytes int64) {
+func (c *Cache) Stats() (keys int, bytes int64) {
 	c.mu.Lock()
-	uris = len(c.index)
+	keys = len(c.index)
 	c.mu.Unlock()
 	_ = filepath.WalkDir(filepath.Join(c.dir, "blobs"), func(_ string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -132,17 +135,17 @@ func (c *Cache) Stats() (uris int, bytes int64) {
 		}
 		return nil
 	})
-	return uris, bytes
+	return keys, bytes
 }
 
-// Touch records that the given URIs are in use now, so that Collect keeps
+// Touch records that the given keys are in use now, so that Collect keeps
 // them however old they are.
-func (c *Cache) Touch(uris ...string) {
+func (c *Cache) Touch(keys ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := false
-	for _, uri := range uris {
-		if e := c.index[uri]; e != nil {
+	for _, key := range keys {
+		if e := c.index[key]; e != nil {
 			e.LastUsed, changed = c.now(), true
 		}
 	}
@@ -151,21 +154,21 @@ func (c *Cache) Touch(uris ...string) {
 	}
 }
 
-// Collect removes what is no longer needed: URIs unused for longer than the
+// Collect removes what is no longer needed: keys unused for longer than the
 // grace period, then every bundle and blob nothing refers to. inUse is the
-// URIs of the volumes that exist now; they are never removed.
+// keys of the volumes that exist now; they are never removed.
 func (c *Cache) Collect(inUse []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	live := make(map[string]bool, len(inUse))
-	for _, uri := range inUse {
-		live[uri] = true
+	for _, key := range inUse {
+		live[key] = true
 	}
 	cutoff := c.now().Add(-c.grace)
-	for uri, e := range c.index {
-		if !live[uri] && e.LastUsed.Before(cutoff) {
-			delete(c.index, uri)
+	for key, e := range c.index {
+		if !live[key] && e.LastUsed.Before(cutoff) {
+			delete(c.index, key)
 		}
 	}
 	if err := c.saveLocked(); err != nil {

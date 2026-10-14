@@ -571,6 +571,15 @@ func TestPublishFromTheNodeCache(t *testing.T) {
 				t.Errorf("app.yaml after the server returned = %q", got)
 			}
 
+			// What was cached for one namespace is not given to a pod of
+			// another: a provider may serve the same URI differently to it.
+			elsewhere := publishRequest("csi-elsewhere", filepath.Join(t.TempDir(), "elsewhere"), twoSources)
+			elsewhere.VolumeContext["failurePolicy"] = "UseCached"
+			elsewhere.VolumeContext[podNamespaceKey] = "billing"
+			if _, err := f.driver.NodePublishVolume(ctx, elsewhere); status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "nothing is cached") {
+				t.Errorf("another namespace: got %v, want Unavailable, nothing cached for it", err)
+			}
+
 			// Nothing cached for a URI: UseCached cannot help.
 			cold := publishRequest("csi-cold", filepath.Join(t.TempDir(), "cold"), "- uri: file:///never-seen.yaml\n  path: x\n")
 			cold.VolumeContext["failurePolicy"] = "UseCached"

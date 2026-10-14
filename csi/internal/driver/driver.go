@@ -461,16 +461,16 @@ func (d *Driver) waitReady(ctx context.Context, v *volume.Volume, policy string)
 	}
 }
 
-// InUse returns the canonical URIs of the volumes on this node, which the
+// InUse returns the node cache keys of the volumes on this node, which the
 // node cache must keep.
 func (d *Driver) InUse() []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	var uris []string
+	var keys []string
 	for _, v := range d.published {
-		uris = append(uris, v.URIs()...)
+		keys = append(keys, v.CacheKeys()...)
 	}
-	return uris
+	return keys
 }
 
 // token returns the pod's service account token for the server's audience

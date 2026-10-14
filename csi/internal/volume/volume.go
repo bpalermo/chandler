@@ -98,8 +98,8 @@ type Volume struct {
 	dir    string
 	writer *atomic.Writer
 	cache  Cache
-	// uris is the canonical URI of each source: the node cache's key.
-	uris []string
+	// cacheKeys is each source's key in the node cache (see cacheKey).
+	cacheKeys []string
 
 	mu   sync.Mutex
 	meta Meta
@@ -228,26 +228,27 @@ func Load(dir string, cache Cache) (*Volume, error) {
 
 func newVolume(dir string, meta Meta, cache Cache) *Volume {
 	n := len(meta.Spec.Sources)
-	uris := make([]string, n)
+	keys := make([]string, n)
 	for i, source := range meta.Spec.Sources {
-		uris[i] = source.URI
+		canonical := source.URI
 		// The spec was validated when the volume was created; the canonical
 		// form makes two spellings of a URI share their cached versions.
 		if u, err := uri.Parse(source.URI); err == nil {
-			uris[i] = u.String()
+			canonical = u.String()
 		}
+		keys[i] = cacheKey(canonical, meta.Workload)
 	}
 	return &Volume{
-		dir:      dir,
-		writer:   atomic.NewWriter(filepath.Join(dir, dataDir)),
-		cache:    cache,
-		uris:     uris,
-		meta:     meta,
-		files:    make([]map[string]atomic.File, n),
-		failures: make([]*status.Status, n),
-		awaiting: make([]*time.Timer, n),
-		late:     make([]string, n),
-		changed:  make(chan struct{}),
+		dir:       dir,
+		writer:    atomic.NewWriter(filepath.Join(dir, dataDir)),
+		cache:     cache,
+		cacheKeys: keys,
+		meta:      meta,
+		files:     make([]map[string]atomic.File, n),
+		failures:  make([]*status.Status, n),
+		awaiting:  make([]*time.Timer, n),
+		late:      make([]string, n),
+		changed:   make(chan struct{}),
 	}
 }
 
@@ -371,9 +372,9 @@ func (v *Volume) Apply(i int, update *chandlerv1.ConfigUpdate) error {
 	// marked no_store never touches the cache.
 	switch {
 	case cached:
-		err = v.cache.Use(v.uris[i], version)
+		err = v.cache.Use(v.cacheKeys[i], version)
 	case !update.GetCacheControl().GetNoStore():
-		err = v.cache.Put(v.uris[i], version, b)
+		err = v.cache.Put(v.cacheKeys[i], version, b)
 	}
 	if err != nil {
 		return grpcstatus.Errorf(writeErrorCode(err), "%v", err)
@@ -478,17 +479,31 @@ func writeErrorCode(err error) codes.Code {
 	return codes.Internal
 }
 
-// CachedVersions returns the versions of source i the node cache holds,
-// newest first. The server can name any of them without sending bytes.
-func (v *Volume) CachedVersions(i int) []string {
-	return v.cache.Versions(v.uris[i])
+// cacheKey is the node cache's key for a source: its canonical URI, and the
+// pod's namespace and service account.
+//
+// A provider may serve different content for one URI to different pods (its
+// vary_on). Of the attributes it may vary on, the cluster, region and zone
+// are the same for every pod on a node, and the namespace and service
+// account are not. Keying by them keeps one pod from being given, from the
+// cache, the version of a URI the server sent to a pod in another namespace
+// or of another service account, which it would not have been sent itself.
+func cacheKey(canonicalURI string, w Workload) string {
+	return canonicalURI + " " + w.Namespace + "/" + w.ServiceAccount
 }
 
-// URIs returns the canonical URI of every source.
-func (v *Volume) URIs() []string { return append([]string(nil), v.uris...) }
+// CachedVersions returns the versions of source i the node cache holds for
+// this pod, newest first. The server can name any of them without sending
+// bytes.
+func (v *Volume) CachedVersions(i int) []string {
+	return v.cache.Versions(v.cacheKeys[i])
+}
+
+// CacheKeys returns the node cache's key for every source.
+func (v *Volume) CacheKeys() []string { return append([]string(nil), v.cacheKeys...) }
 
 // ApplyCached writes, for every source that has nothing written yet, the
-// newest version the node cache holds. It is how a volume is mounted while
+// newest version the node cache holds for this pod. It is how a volume is mounted while
 // the server cannot be reached. It fails, naming the source, if the cache has
 // nothing for one of them.
 func (v *Volume) ApplyCached() error {
@@ -496,7 +511,7 @@ func (v *Volume) ApplyCached() error {
 		if v.Applied(i) != "" {
 			continue
 		}
-		versions := v.cache.Versions(v.uris[i])
+		versions := v.cache.Versions(v.cacheKeys[i])
 		if len(versions) == 0 {
 			return grpcstatus.Errorf(codes.Unavailable, "source %q (%s): nothing is cached on this node", source.Name, source.URI)
 		}

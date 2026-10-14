@@ -28,7 +28,7 @@ E2E_TLS=spiffe e2e/run.sh   # the same on SPIRE-issued identities, transport tes
 scripts/proto-breaking.sh   # the protos against origin/main, for wire compatibility
 E2E_FILTER=TestName e2e/run.sh        # only the tests whose name matches
 E2E_KEEP_CLUSTER=1 e2e/run.sh         # leave the cluster up to look around
-E2E_CHART=oci://quay.io/stevedore/stevedore E2E_CHART_VERSION=0.1.0 e2e/run.sh  # a published chart
+E2E_CHART=oci://<chart repo> E2E_CHART_VERSION=0.1.0 e2e/run.sh  # a published chart
 ```
 
 Bazel is the only build. The Go packages for the protos exist only as Bazel

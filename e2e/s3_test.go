@@ -97,10 +97,10 @@ func TestS3Provider(t *testing.T) {
 
 	mustApply(ctx, t, ns, consumerPod("consumer", true, fmt.Sprintf(`
 - uri: s3://%[1]s/%[2]s/app.yaml
-  path: app.yaml
 - uri: s3://%[1]s/%[2]s/flags/
-  path: flags
 `, bucket, ns)))
+	// Where the provider's files are: under s3/, at the bucket and the key.
+	at := "s3/" + bucket + "/" + ns + "/"
 	if _, err := waitForPodPhase(ctx, ns, "consumer", "Running"); err != nil {
 		t.Fatal(err)
 	}
@@ -109,23 +109,23 @@ func TestS3Provider(t *testing.T) {
 		"flags/a.json":        `{"a": 1}`,
 		"flags/nested/b.json": `{"b": 1}`,
 	} {
-		if got := mustKubectl(ctx, t, "exec", "consumer", "-n", ns, "--", "cat", mountPath+"/"+file); got != want {
+		if got := mustKubectl(ctx, t, "exec", "consumer", "-n", ns, "--", "cat", mountPath+"/"+at+file); got != want {
 			t.Errorf("%s = %q on start, want %q", file, got, want)
 		}
 	}
 
 	// An object is replaced.
 	put("app.yaml", "replicas: 5\n")
-	expectFile(ctx, t, ns, "consumer", "app.yaml", "replicas: 5\n")
+	expectFile(ctx, t, ns, "consumer", at+"app.yaml", "replicas: 5\n")
 
 	// The directory follows the prefix: a change, an addition and a removal.
 	put("flags/a.json", `{"a": 2}`)
 	put("flags/c.json", `{"c": 1}`)
 	s3Do(ctx, t, http.MethodDelete, fmt.Sprintf("%s/%s/%s/flags/nested/b.json", endpoint, bucket, ns), "")
-	expectFile(ctx, t, ns, "consumer", "flags/a.json", `{"a": 2}`)
-	expectFile(ctx, t, ns, "consumer", "flags/c.json", `{"c": 1}`)
+	expectFile(ctx, t, ns, "consumer", at+"flags/a.json", `{"a": 2}`)
+	expectFile(ctx, t, ns, "consumer", at+"flags/c.json", `{"c": 1}`)
 	err := eventually(ctx, func() error {
-		if out, err := kubectl(ctx, "exec", "consumer", "-n", ns, "--", "ls", mountPath+"/flags/nested/b.json"); err == nil {
+		if out, err := kubectl(ctx, "exec", "consumer", "-n", ns, "--", "ls", mountPath+"/"+at+"flags/nested/b.json"); err == nil {
 			return fmt.Errorf("the removed object is still in the volume: %s", out)
 		}
 		return nil
@@ -136,7 +136,7 @@ func TestS3Provider(t *testing.T) {
 
 	// A bucket outside the provider's allow-list is refused, and the pod
 	// that asked for it is told why.
-	mustApply(ctx, t, ns, consumerPod("refused", true, "- uri: s3://someone-elses-bucket/app.yaml\n  path: app.yaml\n"))
+	mustApply(ctx, t, ns, consumerPod("refused", true, "- uri: s3://someone-elses-bucket/app.yaml\n"))
 	err = eventually(ctx, func() error {
 		events, err := kubectl(ctx, "get", "events", "-n", ns,
 			"--field-selector", "involvedObject.name=refused,reason=FailedMount",
@@ -163,7 +163,8 @@ func TestNoStoreStaysInMemory(t *testing.T) {
 	ns := newNamespace(ctx, t)
 	endpoint := s3Endpoint(ctx, t)
 	const secret = "token: 6f1c0e2d9a7b4c58"
-	sources := fmt.Sprintf("- uri: s3://%s/%s/secret.yaml\n  path: secret.yaml\n", bucket, ns)
+	sources := fmt.Sprintf("- uri: s3://%s/%s/secret.yaml\n", bucket, ns)
+	secretAt := fmt.Sprintf("s3/%s/%s/secret.yaml", bucket, ns)
 
 	s3Do(ctx, t, http.MethodPut, endpoint+"/"+bucket, "")
 	s3Do(ctx, t, http.MethodPut, fmt.Sprintf("%s/%s/%s/secret.yaml", endpoint, bucket, ns), secret, "Cache-Control", "no-store")
@@ -196,7 +197,7 @@ func TestNoStoreStaysInMemory(t *testing.T) {
 	if _, err := waitForPodPhase(ctx, ns, "inspector", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustKubectl(ctx, t, "exec", "in-memory", "-n", ns, "--", "cat", mountPath+"/secret.yaml"); got != secret {
+	if got := mustKubectl(ctx, t, "exec", "in-memory", "-n", ns, "--", "cat", mountPath+"/"+secretAt); got != secret {
 		t.Errorf("secret.yaml = %q", got)
 	}
 	// The pod sees a filesystem in memory...
@@ -217,17 +218,17 @@ func TestNoStoreStaysInMemory(t *testing.T) {
 
 	// An update is delivered like any other.
 	s3Do(ctx, t, http.MethodPut, fmt.Sprintf("%s/%s/%s/secret.yaml", endpoint, bucket, ns), secret+"-rotated", "Cache-Control", "no-store")
-	expectFile(ctx, t, ns, "in-memory", "secret.yaml", secret+"-rotated")
+	expectFile(ctx, t, ns, "in-memory", secretAt, secret+"-rotated")
 
 	// The memory outlives the driver: after a restart the pod still reads
 	// its file, and the new driver finds the volume and keeps updating it.
 	mustKubectl(ctx, t, "rollout", "restart", "daemonset/stevedore-csi", "-n", driverNamespace)
 	mustKubectl(ctx, t, "rollout", "status", "daemonset/stevedore-csi", "-n", driverNamespace, "--timeout=180s")
-	if got := mustKubectl(ctx, t, "exec", "in-memory", "-n", ns, "--", "cat", mountPath+"/secret.yaml"); got != secret+"-rotated" {
+	if got := mustKubectl(ctx, t, "exec", "in-memory", "-n", ns, "--", "cat", mountPath+"/"+secretAt); got != secret+"-rotated" {
 		t.Errorf("after a driver restart secret.yaml = %q", got)
 	}
 	s3Do(ctx, t, http.MethodPut, fmt.Sprintf("%s/%s/%s/secret.yaml", endpoint, bucket, ns), secret+"-again", "Cache-Control", "no-store")
-	expectFile(ctx, t, ns, "in-memory", "secret.yaml", secret+"-again")
+	expectFile(ctx, t, ns, "in-memory", secretAt, secret+"-again")
 
 	// And when the pod goes, so does its memory.
 	mustKubectl(ctx, t, "delete", "pod", "in-memory", "-n", ns, "--wait=true")

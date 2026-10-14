@@ -89,3 +89,16 @@ func (u URI) Query() url.Values { return u.u.Query() }
 
 // IsDir reports whether the URI names a directory, i.e. ends in a slash.
 func (u URI) IsDir() bool { return strings.HasSuffix(u.u.Path, "/") }
+
+// Location returns where the resource is placed in a pod's volume, relative
+// to its root: the provider, then the authority, then the path, with no
+// trailing slash. s3://acme-config/payments/app.yaml is at
+// s3/acme-config/payments/app.yaml, and file:///shared/flags/ is the
+// directory file/shared/flags, whose files the provider names.
+//
+// Neither the pod nor the provider chooses it: it follows from the URI alone,
+// so whoever knows the URI knows where its files are. The query takes no
+// part, so two URIs that differ only in their query have the same location.
+func (u URI) Location() string {
+	return path.Join(u.Provider, u.u.Host, u.u.Path)
+}

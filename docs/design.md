@@ -98,18 +98,36 @@ volumes:
       volumeAttributes:
         sources: |
           - uri: s3://acme-config/payments/app.yaml
-            path: app.yaml
           - uri: s3://acme-config/shared/flags/     # trailing slash: directory bundle
-            path: flags
         failurePolicy: Fail           # optional: wait for the server (default: UseCached)
         medium: Memory                # optional: keep the volume off the node's disk
 ```
 
-Each source has a `uri`, a `path` and an optional `name` (default: the path).
-The `path` is where the source appears in the volume, and sources may not
-overlap. For a URI naming one object it is the file itself, so the pod chooses
-the file name whatever the object is called at the origin. For a directory URI
-(trailing slash) it is the directory the bundle's files are placed in.
+Each source has a `uri` and an optional `name` (default: the canonical URI),
+which application reports use. The pod does not choose where a source goes or
+what its files are called: a source is placed at its URI's **location**, the
+provider's name, then the authority, then the path:
+
+```
+<mount>/
+  s3/acme-config/payments/app.yaml       s3://acme-config/payments/app.yaml
+  s3/acme-config/shared/flags/...        s3://acme-config/shared/flags/
+  file/payments/app.yaml                 file:///payments/app.yaml
+```
+
+For a URI naming one object the location is the file itself. For a directory
+URI (trailing slash) it is a directory, and the provider names the files in
+it, as the paths of its bundle's files. The query takes no part in the
+location.
+
+The location is a contract between the provider and whoever reads the files,
+typically a client library: knowing the URI is enough to find its files, in
+any pod, without asking the driver, and an application's code says which
+configuration it reads rather than a pod spec. Each provider has its own
+directory, so providers cannot collide. A volume refuses two sources at the
+same location or one inside another, such as a directory and an object in it.
+An application that needs a fixed file name of its own links to the location
+or points its configuration at it; `subPath` mounts do not see updates.
 
 The `CSIDriver` object sets `attachRequired: false`,
 `volumeLifecycleModes: [Ephemeral]`, `podInfoOnMount: true`, a
@@ -267,8 +285,8 @@ State lives under a hostPath so mounts and cache survive driver restarts:
       ..2026_10_12_07_51_00.123/      generation directory (current)
       ..2026_10_12_07_40_11.987/      generation directory (previous)
       ..data -> ..2026_10_12_07_51_00.123
-      app.yaml -> ..data/app.yaml
-      flags    -> ..data/flags
+      s3       -> ..data/s3                one entry per provider
+      file     -> ..data/file
       ..stevedore.json -> ..data/..stevedore.json   only with appAck
       ..stevedore.sock                             only with appAck
 ```
@@ -328,14 +346,14 @@ entries at the volume root:
 **Manifest.** Written into every generation directory, so it is swapped
 atomically with the content it describes. A volume can combine sources from
 several providers, so the manifest lists each one with its own version. A
-source's `name` comes from the volume attributes and defaults to its `path`.
+source's `name` comes from the volume attributes and defaults to its URI.
 
 ```json
 {
   "generation": "g-5d41402abc4b2a76",
   "sources": [
-    {"name": "app",   "uri": "s3://acme-config/payments/app.yaml", "path": "app.yaml", "version": "sha256:9f86d0..."},
-    {"name": "flags", "uri": "flagstore://payments/eu",            "path": "flags",    "version": "sha256:2c26b4..."}
+    {"name": "app",   "uri": "s3://acme-config/payments/app.yaml", "path": "s3/acme-config/payments/app.yaml", "version": "sha256:9f86d0..."},
+    {"name": "flags", "uri": "flagstore://payments/eu/",           "path": "flagstore/payments/eu",            "version": "sha256:2c26b4..."}
   ]
 }
 ```
@@ -870,7 +888,7 @@ What exists today, against the design above.
 | Area | Built | Not built yet |
 |---|---|---|
 | Driver ↔ server protocol | Hello, subscribe, unsubscribe, update, ACK and NACK with the per-code reactions, `UseCached` for any version the node holds, `cached_versions`, full resync on reconnect, `AppReport`, one resend of an update unanswered for 60s, keepalives, a max connection age that makes drivers reconnect and spread over replicas | |
-| Node | Multi-source volumes, atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, namespace and service account, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy` (`UseCached` by default, or `Fail`), volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
+| Node | Multi-source volumes, each source at its URI's location (`<provider>/<authority>/<path>`), atomic generations, mount only when every source is written, `meta.json`, resuming volumes after a driver restart, node cache (two versions per URI, namespace and service account, verified on read, collected after 24h unused), `UseCached` updates and `cached_versions`, `failurePolicy` (`UseCached` by default, or `Fail`), volumes in memory (`medium: Memory`) as the only place `no_store` content is written | |
 | Server | One watch per resource (canonical URI and `vary_on` attributes) shared by its subscriptions, envelope checks, provider reconnect with `known_revision`. Cache on an `emptyDir`: entries by provider cache key with two versions each, aliases, freshness (`stale`, expiry by `max_age` + `stale_if_error`), the four quotas, negative caching, collection after the grace period, eviction of unused entries to stay within a quota, `no_store` kept in memory only | Authorisation |
 | Rollouts | Provider-owned share in the protocol, placement by the hash rule, the three protective rules, taking back and superseding, feedback (assigned, written, refused, failing, loaded, rejected, overdue), rollout state persisted and copied between replicas. Reference ramp in `common/provider` with rules, hold on refusals, rejections and overdue reports, and S3 metadata overrides | |
 | Application acknowledgement | `appAck: "true"`, the manifest in every generation, `ApplicationService` on the socket, defined in `app.proto` and served as HTTP with JSON (`GET /v1/config`, `POST /v1/reports`) and as gRPC, per generation or per source, local revert on rejection, verdicts kept across driver restarts, `AppReport` to the server, a rejected version not sent or written again, `appAckTimeout` and overdue reports | |

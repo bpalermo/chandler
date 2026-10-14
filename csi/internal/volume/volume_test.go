@@ -22,10 +22,8 @@ import (
 func TestParseSpec(t *testing.T) {
 	spec, err := ParseSpec(map[string]string{"sources": `
 - uri: file:///app.yaml
-  path: app.yaml
 - name: flags
   uri: s3://bucket/flags/
-  path: etc/flags
 `})
 	if err != nil {
 		t.Fatal(err)
@@ -36,31 +34,30 @@ func TestParseSpec(t *testing.T) {
 	if len(spec.Sources) != 2 {
 		t.Fatalf("got %d sources", len(spec.Sources))
 	}
-	if s := spec.Sources[0]; s.Name != "app.yaml" || s.IsDir() {
-		t.Errorf("source 0 = %+v, want it named after its path and not a directory", s)
+	if s := spec.Sources[0]; s.Name != "file:///app.yaml" || s.Path != "file/app.yaml" || s.IsDir() {
+		t.Errorf("source 0 = %+v, want it named after its URI, at file/app.yaml, and not a directory", s)
 	}
-	if s := spec.Sources[1]; s.Name != "flags" || !s.IsDir() {
-		t.Errorf("source 1 = %+v, want a directory named flags", s)
+	if s := spec.Sources[1]; s.Name != "flags" || s.Path != "s3/bucket/flags" || !s.IsDir() {
+		t.Errorf("source 1 = %+v, want a directory named flags at s3/bucket/flags", s)
 	}
 }
 
 func TestParseSpecRejects(t *testing.T) {
 	for name, attributes := range map[string]map[string]string{
-		"no sources":       {},
-		"empty sources":    {"sources": "  "},
-		"empty list":       {"sources": "[]"},
-		"not a list":       {"sources": "uri: file:///a"},
-		"unknown field":    {"sources": "- {uri: file:///a, path: a, mode: 420}"},
-		"bad uri":          {"sources": "- {uri: /etc/passwd, path: a}"},
-		"no path":          {"sources": "- {uri: file:///a}"},
-		"absolute path":    {"sources": "- {uri: file:///a, path: /etc/a}"},
-		"escaping path":    {"sources": "- {uri: file:///a, path: ../a}"},
-		"reserved path":    {"sources": "- {uri: file:///a, path: ..data}"},
-		"same path twice":  {"sources": "- {uri: file:///a, path: a}\n- {uri: file:///b, path: a}"},
-		"nested paths":     {"sources": "- {uri: file:///a/, path: a}\n- {uri: file:///b, path: a/b}"},
-		"same name twice":  {"sources": "- {name: x, uri: file:///a, path: a}\n- {name: x, uri: file:///b, path: b}"},
-		"bad policy":       {"sources": "- {uri: file:///a, path: a}", "failurePolicy": "Ignore"},
-		"too many sources": {"sources": strings.Repeat("- {uri: file:///a, path: a}\n", maxSources+1)},
+		"no sources":    {},
+		"empty sources": {"sources": "  "},
+		"empty list":    {"sources": "[]"},
+		"not a list":    {"sources": "uri: file:///a"},
+		"unknown field": {"sources": "- {uri: file:///a, mode: 420}"},
+		"bad uri":       {"sources": "- {uri: /etc/passwd}"},
+		// The location follows from the URI; a pod cannot move or rename it.
+		"a path":                {"sources": "- {uri: file:///a, path: a}"},
+		"same uri twice":        {"sources": "- {uri: file:///a}\n- {uri: file:///a}"},
+		"same location twice":   {"sources": "- {uri: file:///a?x=1}\n- {uri: file:///a?x=2}"},
+		"a file in a directory": {"sources": "- {uri: file:///a/}\n- {uri: file:///a/b}"},
+		"same name twice":       {"sources": "- {name: x, uri: file:///a}\n- {name: x, uri: file:///b}"},
+		"bad policy":            {"sources": "- {uri: file:///a}", "failurePolicy": "Ignore"},
+		"too many sources":      {"sources": strings.Repeat("- {uri: file:///a}\n", maxSources+1)},
 	} {
 		if _, err := ParseSpec(attributes); !errors.Is(err, ErrInvalidSpec) {
 			t.Errorf("%s: got %v, want ErrInvalidSpec", name, err)
@@ -95,9 +92,7 @@ func newTestVolumeWith(t *testing.T, c Cache) (*Volume, string) {
 	t.Helper()
 	spec, err := ParseSpec(map[string]string{"sources": `
 - uri: file:///app.yaml
-  path: app.yaml
 - uri: file:///flags/
-  path: etc/flags
 `})
 	if err != nil {
 		t.Fatal(err)
@@ -129,24 +124,24 @@ func TestApplyComposesSources(t *testing.T) {
 	if err := v.Apply(1, bundleUpdate(file("x.json", "x"), file("sub/y.json", "y"))); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustRead(t, filepath.Join(data, "app.yaml")); got != "a: 1" {
+	if got := mustRead(t, filepath.Join(data, "file/app.yaml")); got != "a: 1" {
 		t.Errorf("app.yaml = %q", got)
 	}
-	if got := mustRead(t, filepath.Join(data, "etc/flags/sub/y.json")); got != "y" {
-		t.Errorf("etc/flags/sub/y.json = %q", got)
+	if got := mustRead(t, filepath.Join(data, "file/flags/sub/y.json")); got != "y" {
+		t.Errorf("file/flags/sub/y.json = %q", got)
 	}
 
 	// A directory update replaces the directory, and only the directory.
 	if err := v.Apply(1, bundleUpdate(file("z.json", "z"))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(data, "etc/flags/x.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(data, "file/flags/x.json")); !os.IsNotExist(err) {
 		t.Errorf("a file removed from the bundle is still there: %v", err)
 	}
-	if got := mustRead(t, filepath.Join(data, "etc/flags/z.json")); got != "z" {
-		t.Errorf("etc/flags/z.json = %q", got)
+	if got := mustRead(t, filepath.Join(data, "file/flags/z.json")); got != "z" {
+		t.Errorf("file/flags/z.json = %q", got)
 	}
-	if got := mustRead(t, filepath.Join(data, "app.yaml")); got != "a: 1" {
+	if got := mustRead(t, filepath.Join(data, "file/app.yaml")); got != "a: 1" {
 		t.Errorf("app.yaml changed with the other source: %q", got)
 	}
 }
@@ -182,7 +177,7 @@ func TestApplyRefusals(t *testing.T) {
 		if grpcstatus.Code(err) != tc.want {
 			t.Errorf("%s: got %v, want %s", name, err, tc.want)
 		}
-		if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "good" {
+		if got := mustRead(t, filepath.Join(dir, "data", "file/app.yaml")); got != "good" {
 			t.Fatalf("%s: the last known good was replaced by %q", name, got)
 		}
 		if got := v.Applied(0); got != good.GetVersion() {
@@ -258,10 +253,10 @@ func TestLoadRestoresWhatWasWritten(t *testing.T) {
 	if err := loaded.Apply(0, bundleUpdate(file("app.yaml", "a: 2"))); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustRead(t, filepath.Join(dir, "data", "etc/flags/x.json")); got != "x" {
-		t.Errorf("etc/flags/x.json = %q", got)
+	if got := mustRead(t, filepath.Join(dir, "data", "file/flags/x.json")); got != "x" {
+		t.Errorf("file/flags/x.json = %q", got)
 	}
-	if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "a: 2" {
+	if got := mustRead(t, filepath.Join(dir, "data", "file/app.yaml")); got != "a: 2" {
 		t.Errorf("app.yaml = %q", got)
 	}
 
@@ -310,11 +305,11 @@ func TestNodeCache(t *testing.T) {
 		t.Fatalf("ApplyCached: %v", err)
 	}
 	// The newest version held for the URI: v1, which the rollback made so.
-	if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "v1" {
+	if got := mustRead(t, filepath.Join(dir, "data", "file/app.yaml")); got != "v1" {
 		t.Errorf("app.yaml from the cache = %q, want v1", got)
 	}
-	if got := mustRead(t, filepath.Join(dir, "data", "etc/flags/x.json")); got != "x" {
-		t.Errorf("etc/flags/x.json from the cache = %q", got)
+	if got := mustRead(t, filepath.Join(dir, "data", "file/flags/x.json")); got != "x" {
+		t.Errorf("file/flags/x.json from the cache = %q", got)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -332,12 +327,12 @@ func TestNoStoreBypassesTheCache(t *testing.T) {
 	if err := disk.Apply(0, u); grpcstatus.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "medium: Memory") {
 		t.Errorf("no_store on a disk volume: got %v, want FailedPrecondition naming the attribute", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "data", "app.yaml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "data", "file/app.yaml")); !os.IsNotExist(err) {
 		t.Errorf("no_store content was written to a disk volume: %v", err)
 	}
 
 	// One kept in memory does, and the node cache still never sees it.
-	spec, err := ParseSpec(map[string]string{"sources": "- uri: file:///app.yaml\n  path: app.yaml\n", "medium": "Memory"})
+	spec, err := ParseSpec(map[string]string{"sources": "- uri: file:///app.yaml\n", "medium": "Memory"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,13 +344,13 @@ func TestNoStoreBypassesTheCache(t *testing.T) {
 	if err := v.Apply(0, u); err != nil {
 		t.Fatal(err)
 	}
-	if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "secret" {
+	if got := mustRead(t, filepath.Join(dir, "data", "file/app.yaml")); got != "secret" {
 		t.Errorf("app.yaml = %q", got)
 	}
 	if got := v.CachedVersions(0); len(got) != 0 {
 		t.Errorf("a no_store bundle was cached: %v", got)
 	}
-	if _, err := ParseSpec(map[string]string{"sources": "- {uri: file:///a, path: a}", "medium": "Disk"}); !errors.Is(err, ErrInvalidSpec) {
+	if _, err := ParseSpec(map[string]string{"sources": "- {uri: file:///a}", "medium": "Disk"}); !errors.Is(err, ErrInvalidSpec) {
 		t.Errorf("an unknown medium: got %v, want ErrInvalidSpec", err)
 	}
 }
@@ -364,7 +359,7 @@ func TestNoStoreBypassesTheCache(t *testing.T) {
 // overdue, once; one that reports is not; and nothing is reverted for it.
 func TestOverdueReports(t *testing.T) {
 	spec, err := ParseSpec(map[string]string{
-		"sources":       "- uri: file:///app.yaml\n  path: app.yaml\n",
+		"sources":       "- uri: file:///app.yaml\n",
 		"appAck":        "true",
 		"appAckTimeout": "80ms",
 	})
@@ -391,7 +386,7 @@ func TestOverdueReports(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a silent application was never reported overdue")
 	}
-	if got := mustRead(t, filepath.Join(dir, "data", "app.yaml")); got != "v1" {
+	if got := mustRead(t, filepath.Join(dir, "data", "file/app.yaml")); got != "v1" {
 		t.Errorf("the file reads %q: nothing may be reverted for a late report", got)
 	}
 	select {
@@ -439,10 +434,10 @@ func TestOverdueReports(t *testing.T) {
 	}
 
 	for name, attributes := range map[string]map[string]string{
-		"a timeout without appAck":      {"sources": "- {uri: file:///a, path: a}", "appAckTimeout": "1m"},
-		"a timeout that is no duration": {"sources": "- {uri: file:///a, path: a}", "appAck": "true", "appAckTimeout": "soon"},
-		"a negative timeout":            {"sources": "- {uri: file:///a, path: a}", "appAck": "true", "appAckTimeout": "-1m"},
-		"appAck that is not a boolean":  {"sources": "- {uri: file:///a, path: a}", "appAck": "yes"},
+		"a timeout without appAck":      {"sources": "- {uri: file:///a}", "appAckTimeout": "1m"},
+		"a timeout that is no duration": {"sources": "- {uri: file:///a}", "appAck": "true", "appAckTimeout": "soon"},
+		"a negative timeout":            {"sources": "- {uri: file:///a}", "appAck": "true", "appAckTimeout": "-1m"},
+		"appAck that is not a boolean":  {"sources": "- {uri: file:///a}", "appAck": "yes"},
 	} {
 		if _, err := ParseSpec(attributes); !errors.Is(err, ErrInvalidSpec) {
 			t.Errorf("%s: got %v, want ErrInvalidSpec", name, err)

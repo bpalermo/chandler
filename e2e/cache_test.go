@@ -26,7 +26,7 @@ func TestUnusedCacheEntriesMakeRoom(t *testing.T) {
 		publish(ctx, t, key(pod), "for "+pod)
 	}
 	start := func(pod string) {
-		mustApply(ctx, t, ns, consumerPod(pod, true, fmt.Sprintf("- uri: small:///%s\n  path: app.yaml\n", key(pod))))
+		mustApply(ctx, t, ns, consumerPod(pod, true, fmt.Sprintf("- uri: small:///%s\n", key(pod))))
 	}
 
 	for _, pod := range pods[:2] {
@@ -34,7 +34,7 @@ func TestUnusedCacheEntriesMakeRoom(t *testing.T) {
 		if _, err := waitForPodPhase(ctx, ns, pod, "Running"); err != nil {
 			t.Fatal(err)
 		}
-		expectFile(ctx, t, ns, pod, "app.yaml", "for "+pod)
+		expectFile(ctx, t, ns, pod, "small/"+key(pod), "for "+pod)
 	}
 
 	// Both keys are in use, so there is nothing to evict.
@@ -50,12 +50,12 @@ func TestUnusedCacheEntriesMakeRoom(t *testing.T) {
 	if _, err := waitForPodPhase(ctx, ns, "three", "Running"); err != nil {
 		t.Fatal(err)
 	}
-	expectFile(ctx, t, ns, "three", "app.yaml", "for three")
+	expectFile(ctx, t, ns, "three", "small/"+key("three"), "for three")
 
 	// The pod whose configuration stayed in use noticed nothing, and still
 	// gets updates.
 	publish(ctx, t, key("two"), "for two, again")
-	expectFile(ctx, t, ns, "two", "app.yaml", "for two, again")
+	expectFile(ctx, t, ns, "two", "small/"+key("two"), "for two, again")
 
 	err := eventually(ctx, func() error {
 		logs, err := kubectl(ctx, "logs", "-n", driverNamespace, "deployment/otel-collector", "--tail=-1")
